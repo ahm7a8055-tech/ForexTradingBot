@@ -5,15 +5,29 @@ namespace Application.Interfaces
 {
     #region DTOs (Data Transfer Objects) - Fully Upgraded and Corrected
 
+    // --- Existing DTOs ---
     public record IqiData(double Value, string Rating);
     public record AttackData(string TopSourceCountry, double PercentageOfTotal);
     public record HttpProtocolData(double Http2, double Http3);
     public record DeviceTypeData(double Desktop, double Mobile);
     public record BotTrafficData(double Bot, double Human);
     public record TrafficAnomalyData(string Status, DateTime Timestamp);
+    public record ConfirmedOutageData(string Description, DateTime StartDate, DateTime? EndDate, string Cause);
+    public record AttackMitigationData(double Waf, double RateLimiting, double BotManagement);
+    public record TlsVersionData(double Tls13, double Tls12);
+
+    // --- NEW DTO ADDED ---
+    /// <summary>
+    /// Represents the distribution of traffic by IP version.
+    /// </summary>
+    /// <param name="Ipv4">Percentage of traffic using IPv4.</param>
+    /// <param name="Ipv6">Percentage of traffic using IPv6.</param>
+    public record IpVersionData(double Ipv4, double Ipv6);
+
 
     /// <summary>
     /// The main, consolidated report DTO, containing all fetched data points for a country.
+    /// This version is enhanced with new security, stability, and modernization metrics.
     /// </summary>
     public record CloudflareCountryReportDto
     {
@@ -22,14 +36,19 @@ namespace Application.Interfaces
         public string RadarUrl { get; init; } = "";
         public string? ReportTimestamp { get; init; }
 
+        // --- Existing Properties ---
         public IqiData? InternetQuality { get; init; }
         public TrafficAnomalyData? LatestTrafficAnomaly { get; init; }
         public AttackData? Layer7Attacks { get; init; }
         public HttpProtocolData? HttpProtocolDistribution { get; init; }
         public DeviceTypeData? DeviceTypeDistribution { get; init; }
-
-        // CORRECTED: The type name is now 'BotTrafficData', matching its definition above.
         public BotTrafficData? BotVsHumanTraffic { get; init; }
+        public ConfirmedOutageData? LatestOutage { get; init; }
+        public AttackMitigationData? AttackMitigation { get; init; }
+        public TlsVersionData? TlsVersionDistribution { get; init; }
+
+        // --- NEW PROPERTY ADDED ---
+        public IpVersionData? IpVersionDistribution { get; init; }
     }
     #endregion
 
@@ -42,12 +61,6 @@ namespace Application.Interfaces
         /// <summary>
         /// Asynchronously fetches a comprehensive report for a specific country.
         /// </summary>
-        /// <param name="countryCode">The ISO 3166-1 Alpha-2 code for the country (e.g., "US", "DE").</param>
-        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
-        /// <returns>
-        /// A task that represents the asynchronous operation. The task result contains
-        /// a Result object which, on success, holds a <see cref="CloudflareCountryReportDto"/>.
-        /// </returns>
         Task<Result<CloudflareCountryReportDto>> GetCountryReportAsync(string countryCode, CancellationToken cancellationToken);
     }
 }

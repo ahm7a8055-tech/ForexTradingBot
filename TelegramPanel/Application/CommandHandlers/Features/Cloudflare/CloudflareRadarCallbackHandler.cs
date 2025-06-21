@@ -123,7 +123,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
                 if (reportResult.Succeeded && reportResult.Data != null)
                 {
                     var data = reportResult.Data;
-                    var caption = FormatCountryReportMessage(data);
+                    var caption = FormatCountryReportMessage(data); // REWRITTEN LOGIC IS IN THIS METHOD
 
                     var keyboard = new InlineKeyboardMarkup(new List<List<InlineKeyboardButton>>
                     {
@@ -159,33 +159,30 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             return string.Concat(Enumerable.Repeat(filled, filledBlocks)) + string.Concat(Enumerable.Repeat(empty, size - filledBlocks));
         }
 
+        // --- START OF REWRITTEN METHOD ---
+        // This version has major formatting upgrades, more progress bars, and new sections.
         private string FormatCountryReportMessage(CloudflareCountryReportDto data)
         {
             var sb = new StringBuilder();
             sb.AppendLine($"☁️ *Internet Report: {TelegramMessageFormatter.EscapeMarkdownV2(data.CountryName)}*");
             sb.AppendLine("`-----------------------------------`");
 
-            if (data.InternetQuality != null && data.InternetQuality.Value > 0)
+            // --- Section: Stability (Outages & Anomalies) ---
+            if (data.LatestOutage != null)
             {
-                var iqi = data.InternetQuality;
-                var iqiEmoji = iqi.Value < 50 ? "✅" : iqi.Value < 150 ? "🟡" : "⚠️";
-                sb.AppendLine($"*{iqiEmoji} Internet Quality (p90 Latency)*");
-                sb.AppendLine($"  - Performance: `{TelegramMessageFormatter.EscapeMarkdownV2(iqi.Rating)}`");
-                sb.AppendLine($"  - Latency: `{iqi.Value:F0} ms`");
+                var outage = data.LatestOutage;
+                sb.AppendLine($"*🔴 Confirmed Outage*");
+                sb.AppendLine($"  - Cause: `{TelegramMessageFormatter.EscapeMarkdownV2(outage.Cause)}`");
+                sb.AppendLine($"  - Started: `{outage.StartDate:MMM dd, HH:mm} UTC`");
+                sb.AppendLine();
             }
-            else { sb.AppendLine("*⚠️ Quality Index:* `Data Unavailable`"); }
-            sb.AppendLine();
-
-            if (data.LatestTrafficAnomaly != null)
+            else
             {
-                var anomaly = data.LatestTrafficAnomaly;
-                sb.AppendLine($"*🚨 Traffic Anomaly Detected*");
-                sb.AppendLine($"  - Status: `{TelegramMessageFormatter.EscapeMarkdownV2(anomaly.Status)}`");
-                sb.AppendLine($"  - Detected: `{anomaly.Timestamp:MMM dd, HH:mm} UTC`");
+                sb.AppendLine("*✅ Stability:* `No outages detected`");
+                sb.AppendLine();
             }
-            else { sb.AppendLine("*✅ Traffic Anomalies:* `None detected`"); }
-            sb.AppendLine();
 
+            // --- Section: Bot vs Human Traffic ---
             if (data.BotVsHumanTraffic != null)
             {
                 var bots = data.BotVsHumanTraffic;
@@ -193,49 +190,86 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
                 sb.AppendLine($"  - 👨‍💻 Humans: `{bots.Human:F1}%`");
                 sb.AppendLine($"    `{GenerateProgressBar(bots.Human)}`");
                 sb.AppendLine($"  - 🤖 Bots: `{bots.Bot:F1}%`");
+                sb.AppendLine();
             }
-            else { sb.AppendLine("*⚠️ Traffic Source:* `Data Unavailable`"); }
-            sb.AppendLine();
 
+            // --- Section: Layer 7 Attacks & Mitigation ---
+            if (data.Layer7Attacks != null && data.Layer7Attacks.PercentageOfTotal > 0)
+            {
+                var attack = data.Layer7Attacks;
+                sb.AppendLine($"*🛡️ L7 DDoS Attacks (7d)*");
+                // BUG FIX: Only show origin if it's known
+                if (attack.TopSourceCountry != "Unknown")
+                {
+                    sb.AppendLine($"   - Top Origin: `{TelegramMessageFormatter.EscapeMarkdownV2(attack.TopSourceCountry)}`");
+                }
+                sb.AppendLine($"   - Share of Total: `{attack.PercentageOfTotal:F1}%`");
+
+                if (data.AttackMitigation != null)
+                {
+                    var m = data.AttackMitigation;
+                    var totalMitigated = m.Waf + m.RateLimiting + m.BotManagement;
+                    if (totalMitigated > 0)
+                    {
+                        sb.AppendLine($"\n  *🛠️ Top Mitigation Methods*");
+                        if (m.Waf > 0) sb.AppendLine($"   - WAF: `{m.Waf:F1}%`");
+                        if (m.RateLimiting > 0) sb.AppendLine($"   - Rate Limiting: `{m.RateLimiting:F1}%`");
+                        if (m.BotManagement > 0) sb.AppendLine($"   - Bot Management: `{m.BotManagement:F1}%`");
+                    }
+                }
+                sb.AppendLine();
+            }
+
+            // --- Section: HTTP, TLS & IP Version ---
             if (data.HttpProtocolDistribution != null)
             {
                 var http = data.HttpProtocolDistribution;
-                sb.AppendLine($"*🚀 HTTP Protocol Adoption*");
-                sb.AppendLine($"  - HTTP/3: `{http.Http3:F1}%`");
-                sb.AppendLine($"  - HTTP/2: `{http.Http2:F1}%`");
+                sb.AppendLine($"*🚀 Protocol Adoption*");
+                sb.AppendLine($"  - HTTP/3: `{http.Http3:F1}%` / HTTP/2: `{http.Http2:F1}%`");
                 sb.AppendLine($"    `{GenerateProgressBar(http.Http3 + http.Http2)}`");
-            }
-            else { sb.AppendLine("*⚠️ HTTP Adoption:* `Data Unavailable`"); }
-            sb.AppendLine();
 
+                if (data.TlsVersionDistribution != null)
+                {
+                    var tls = data.TlsVersionDistribution;
+                    sb.AppendLine($"\n  *🔒 Modern TLS Adoption (1.3)*");
+                    sb.AppendLine($"   - TLS 1.3: `{tls.Tls13:F1}%` / TLS 1.2: `{tls.Tls12:F1}%`");
+                    sb.AppendLine($"    `{GenerateProgressBar(tls.Tls13)}`");
+                }
+
+                if (data.IpVersionDistribution != null)
+                {
+                    var ip = data.IpVersionDistribution;
+                    sb.AppendLine($"\n  *🌐 IPv6 Adoption*");
+                    sb.AppendLine($"   - IPv6: `{ip.Ipv6:F1}%` / IPv4: `{ip.Ipv4:F1}%`");
+                    sb.AppendLine($"    `{GenerateProgressBar(ip.Ipv6)}`");
+                }
+                sb.AppendLine();
+            }
+
+            // --- Section: Device Type Distribution ---
             if (data.DeviceTypeDistribution != null)
             {
                 var devices = data.DeviceTypeDistribution;
-                sb.AppendLine($"*💻 Device Types (24h)*");
-                sb.AppendLine($"  - Desktop: `{devices.Desktop:F1}%`");
-                sb.AppendLine($"  - Mobile: `{devices.Mobile:F1}%`");
+                sb.AppendLine($"*💻 Device Types (Desktop)*");
+                sb.AppendLine($"  - Desktop: `{devices.Desktop:F1}%` / Mobile: `{devices.Mobile:F1}%`");
+                sb.AppendLine($"    `{GenerateProgressBar(devices.Desktop)}`");
+                sb.AppendLine();
             }
-            else { sb.AppendLine("*⚠️ Device Types:* `Data Unavailable`"); }
-            sb.AppendLine();
 
-            if (data.Layer7Attacks != null && data.Layer7Attacks.PercentageOfTotal > 0 && !string.IsNullOrWhiteSpace(data.Layer7Attacks.TopSourceCountry))
-            {
-                var attack = data.Layer7Attacks;
-                sb.AppendLine($"*🛡️ L7 DDoS Attack Source (7d)*");
-                sb.AppendLine($"   - Top Origin: `{TelegramMessageFormatter.EscapeMarkdownV2(attack.TopSourceCountry)}`");
-                sb.AppendLine($"   - Share of Total: `{attack.PercentageOfTotal:F1}%`");
-            }
-            else { sb.AppendLine("*⚠️ Attack Source:* `Data Unavailable`"); }
-
-            sb.AppendLine("\n`-----------------------------------`");
+            sb.AppendLine("`-----------------------------------`");
             if (!string.IsNullOrWhiteSpace(data.ReportTimestamp) && DateTime.TryParse(data.ReportTimestamp, out var reportTime))
             {
                 sb.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._");
             }
-            else { sb.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._"); }
+            else
+            {
+                sb.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
+            }
 
             return sb.ToString();
         }
+        // --- END OF REWRITTEN METHOD ---
+
         private async Task<TResult> AnimateWhileExecutingAsync<TResult>(long chatId, int messageId, string baseText, Func<CancellationToken, Task<TResult>> operationToExecute, CancellationToken cancellationToken)
         {
             var animationFrames = new[] { "·", "··", "···" };
