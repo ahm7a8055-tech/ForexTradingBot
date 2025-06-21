@@ -1,6 +1,7 @@
 ﻿using Application.Interfaces;
 using Microsoft.Extensions.Logging;
 using Shared.Results;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,15 +9,14 @@ using System.Text.Json.Serialization;
 namespace Infrastructure.Services
 {
     /// <summary>
-    /// A high-performance service to fetch real-time internet insights from the Cloudflare Radar API.
-    /// This implementation uses a hardcoded, public API token as requested.
+    /// A high-performance, robust service to fetch real-time internet insights from the Cloudflare Radar API.
+    /// This implementation uses a correct parallel execution model and the definitive, correct API endpoints.
     /// </summary>
     public class CloudflareRadarService : ICloudflareRadarService
     {
         private readonly ILogger<CloudflareRadarService> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
 
-        // --- API Configuration ---
         private const string ApiToken = "iarYYgFtNTOxBGoPUPd_TYoQ4L5p4xfqOdzKt-pH";
         private const string BaseUrl = "https://api.cloudflare.com/client/v4";
 
@@ -34,64 +34,67 @@ namespace Infrastructure.Services
 
             try
             {
-                // --- Fetch all data points in parallel for maximum speed ---
                 var dateRange = "7d";
-                var anomaliesDateRange = "48h"; // Use a shorter range as suggested by Cloudflare for anomalies
+                var anomaliesDateRange = "7d";
 
-                // CORRECTED API Calls: Added 'metric' parameters as required by Cloudflare Radar API
-                // And split http/summary into distinct metric calls.
-                var iqiTask = GetFromApiAsync<IqiSummaryPayload>($"/radar/quality/iqi/summary?location={countryCode}&dateRange={dateRange}&metric=latency", cancellationToken);
-                var anomaliesTask = GetFromApiAsync<TrafficAnomaliesSummaryPayload>($"/radar/traffic_anomalies/summary?location={countryCode}&dateRange={anomaliesDateRange}&metric=bandwidth", cancellationToken);
-                var attacksTask = GetFromApiAsync<AttackSummaryPayload>($"/radar/attacks/layer7/summary?location={countryCode}&dateRange={dateRange}&metric=requests", cancellationToken);
-                var locationTask = GetFromApiAsync<LocationPayload>($"/radar/locations/{countryCode.ToUpper()}", cancellationToken);
-
-                // These metrics from /http/summary need separate calls with different 'metric' parameters
-                var httpProtocolTask = GetFromApiAsync<HttpProtocolApiResultPayload>($"/radar/http/summary?location={countryCode}&dateRange={dateRange}&metric=http_protocol", cancellationToken);
-                var deviceTypeTask = GetFromApiAsync<DeviceTypeApiResultPayload>($"/radar/http/summary?location={countryCode}&dateRange={dateRange}&metric=device_type", cancellationToken);
-                var botHumanTask = GetFromApiAsync<BotTrafficApiResultPayload>($"/radar/http/summary?location={countryCode}&dateRange={dateRange}&metric=bot_class", cancellationToken);
+                // --- Start all API calls in parallel using the definitive endpoints ---
+                var locationTask = GetFromApiAsync<LocationWrapper>($"/radar/entities/locations/{countryCode.ToUpper()}", cancellationToken);
+                var iqiTask = GetFromApiAsync<IqiSummaryPayloadWrapper>($"/radar/quality/iqi/summary?location={countryCode}&dateRange={dateRange}&metric=latency", cancellationToken);
+                // DEFINITIVE FIX: Using the correct '/top/locations/origin' endpoint to get top attackers for the target country.
+                var attacksTask = GetFromApiAsync<TopAttacksWrapper>($"/radar/attacks/layer7/top/locations/origin?location={countryCode}&dateRange={dateRange}&limit=1", cancellationToken);
+                var httpProtocolTask = GetFromApiAsync<HttpProtocolApiResultPayload>($"/radar/http/summary/http_version?location={countryCode}&dateRange={dateRange}", cancellationToken);
+                var deviceTypeTask = GetFromApiAsync<DeviceTypeApiResultPayload>($"/radar/http/summary/device_type?location={countryCode}&dateRange={dateRange}", cancellationToken);
+                var botHumanTask = GetFromApiAsync<BotTrafficApiResultPayload>($"/radar/http/summary/bot_class?location={countryCode}&dateRange={dateRange}", cancellationToken);
+                var trafficAnomaliesTask = GetFromApiAsync<TrafficAnomaliesWrapper>($"/radar/traffic_anomalies?limit=10&dateRange={anomaliesDateRange}", cancellationToken);
 
                 await Task.WhenAll(
-                    iqiTask, anomaliesTask, attacksTask, locationTask,
-                    httpProtocolTask, deviceTypeTask, botHumanTask
+                    locationTask, iqiTask, attacksTask,
+                    httpProtocolTask, deviceTypeTask, botHumanTask, trafficAnomaliesTask
                 );
 
-                // --- Consolidate results into the final DTO ---
-                var iqiResult = iqiTask.Result;
-                var anomalyResult = anomaliesTask.Result;
-                var attackResult = attacksTask.Result;
-                var locationResult = locationTask.Result;
-                var httpProtocolResult = httpProtocolTask.Result;
-                var deviceTypeResult = deviceTypeTask.Result;
-                var botHumanResult = botHumanTask.Result;
+                var (locationData, _) = locationTask.Result;
+                var (iqiData, _) = iqiTask.Result;
+                var (topAttackData, _) = attacksTask.Result;
+                var (httpProtocolData, httpMeta) = httpProtocolTask.Result;
+                var (deviceTypeData, _) = deviceTypeTask.Result;
+                var (botHumanData, _) = botHumanTask.Result;
+                var (trafficAnomaliesData, _) = trafficAnomaliesTask.Result;
 
-                // Cloudflare API doesn't always provide a top-level timestamp for summary data,
-                // so we'll use UtcNow or the timestamp from a specific result if available.
-                var reportTimestamp = iqiResult?.Timestamp != default ? iqiResult.Timestamp : DateTime.UtcNow;
+                var latestAnomaly = trafficAnomaliesData?.TrafficAnomalies
+                    .FirstOrDefault(a => a.Locations?.Code == countryCode.ToUpper());
+
+                var iqiDto = iqiData?.Summary0 != null ? new IqiData(iqiData.Summary0.P90, iqiData.Summary0.Rating ?? "N/A") : null;
+
+                var topAttack = topAttackData?.Top0.FirstOrDefault();
+                double.TryParse(topAttack?.Value.TrimEnd('%'), CultureInfo.InvariantCulture, out var attackPercentage);
+                var attackDto = topAttack != null ? new AttackData(topAttack.ClientCountryName, attackPercentage) : null;
+
+                double.TryParse(httpProtocolData?.Summary0?.Http2, CultureInfo.InvariantCulture, out var http2);
+                double.TryParse(httpProtocolData?.Summary0?.Http3, CultureInfo.InvariantCulture, out var http3);
+                var httpDto = httpProtocolData?.Summary0 != null ? new HttpProtocolData(http2, http3) : null;
+
+                double.TryParse(deviceTypeData?.Summary0?.Desktop, CultureInfo.InvariantCulture, out var desktop);
+                double.TryParse(deviceTypeData?.Summary0?.Mobile, CultureInfo.InvariantCulture, out var mobile);
+                var deviceDto = deviceTypeData?.Summary0 != null ? new DeviceTypeData(desktop, mobile) : null;
+
+                double.TryParse(botHumanData?.Summary0?.Bot, CultureInfo.InvariantCulture, out var bot);
+                double.TryParse(botHumanData?.Summary0?.Human, CultureInfo.InvariantCulture, out var human);
+                var botDto = botHumanData?.Summary0 != null ? new BotTrafficData(bot, human) : null;
+
+                var anomalyDto = latestAnomaly != null ? new TrafficAnomalyData(latestAnomaly.Status, latestAnomaly.StartDate) : null;
 
                 var report = new CloudflareCountryReportDto
                 {
                     CountryCode = countryCode.ToUpper(),
-                    CountryName = locationResult?.Name ?? countryCode.ToUpper(),
+                    CountryName = locationData?.Location?.Name ?? countryCode.ToUpper(),
                     RadarUrl = $"https://radar.cloudflare.com/locations/{countryCode.ToLower()}",
-                    ReportImageUrl = "https://i.postimg.cc/k4KSy2pS/cloudflare-radar-generic.png",
-
-                    InternetQuality = iqiResult != null ? new IqiData(iqiResult.Value, iqiResult.Rating, iqiResult.Timestamp) : null,
-                    TrafficAnomalies = anomalyResult != null ? new TrafficData(anomalyResult.Percentage, anomalyResult.Direction, anomalyResult.Timestamp) : null,
-                    Layer7Attacks = attackResult != null ? new AttackData(attackResult.TopOriginCountryName, attackResult.Percentage, attackResult.Timestamp) : null,
-
-                    // Map the results from specific HTTP metric calls
-                    HttpProtocolDistribution = httpProtocolResult != null ? new HttpProtocolData(
-                        httpProtocolResult.Dimensions.FirstOrDefault(d => d.Protocol == "HTTP/2")?.Requests ?? 0,
-                        httpProtocolResult.Dimensions.FirstOrDefault(d => d.Protocol == "HTTP/3")?.Requests ?? 0,
-                        reportTimestamp) : null,
-                    DeviceTypeDistribution = deviceTypeResult != null ? new DeviceTypeData(
-                        deviceTypeResult.Dimensions.FirstOrDefault(d => d.DeviceType == "desktop")?.Requests ?? 0,
-                        deviceTypeResult.Dimensions.FirstOrDefault(d => d.DeviceType == "mobile")?.Requests ?? 0,
-                        reportTimestamp) : null,
-                    BotVsHumanTraffic = botHumanResult != null ? new BotTrafficData(
-                        botHumanResult.Dimensions.FirstOrDefault(d => d.BotClass == "bot")?.Requests ?? 0,
-                        botHumanResult.Dimensions.FirstOrDefault(d => d.BotClass == "human")?.Requests ?? 0,
-                        reportTimestamp) : null
+                    ReportTimestamp = httpMeta?.LastUpdated,
+                    InternetQuality = iqiDto,
+                    LatestTrafficAnomaly = anomalyDto,
+                    Layer7Attacks = attackDto,
+                    HttpProtocolDistribution = httpDto,
+                    DeviceTypeDistribution = deviceDto,
+                    BotVsHumanTraffic = botDto
                 };
 
                 _logger.LogInformation("Successfully fetched and compiled live report for {CountryCode}", countryCode);
@@ -100,93 +103,58 @@ namespace Infrastructure.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "An unexpected error occurred while fetching Cloudflare Radar data for {CountryCode}", countryCode);
-                // Return a failure result with specific error message
                 return Result<CloudflareCountryReportDto>.Failure($"API call failed: {ex.Message}");
             }
         }
 
-        private async Task<T?> GetFromApiAsync<T>(string endpoint, CancellationToken cancellationToken) where T : class
+        private async Task<(T? result, Meta? meta)> GetFromApiAsync<T>(string endpoint, CancellationToken cancellationToken) where T : class
         {
-            var client = _httpClientFactory.CreateClient("Cloudflare"); // Use a named client for best practice
+            var client = _httpClientFactory.CreateClient("Cloudflare");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ApiToken);
             var url = $"{BaseUrl}{endpoint}";
-
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 using var response = await client.GetAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
                     _logger.LogWarning("Cloudflare API call to {Url} failed with status {StatusCode}. Response: {ErrorContent}", url, response.StatusCode, errorContent);
-                    return null;
+                    return (null, null);
                 }
-
                 var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-
-                // Deserialize into the generic wrapper and extract the 'result' payload
                 var apiResponse = await JsonSerializer.DeserializeAsync<ApiResponse<T>>(contentStream, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, cancellationToken);
-
-                return apiResponse?.Result;
+                if (apiResponse?.Success == false)
+                {
+                    var errorMessages = string.Join(", ", apiResponse.Errors?.Select(e => e.Message) ?? Enumerable.Empty<string>());
+                    _logger.LogWarning("Cloudflare API call to {Url} was successful but returned an error status. Errors: {Errors}", url, errorMessages);
+                    return (null, null);
+                }
+                return (apiResponse?.Result, apiResponse?.Meta);
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Exception during Cloudflare API call to {Url}", url);
-                return null;
-            }
+            catch (OperationCanceledException) { _logger.LogWarning("Cloudflare API call to {Url} was canceled.", url); return (null, null); }
+            catch (Exception ex) { _logger.LogError(ex, "Exception during Cloudflare API call to {Url}", url); return (null, null); }
         }
 
-        #region API Response Models (Payloads for GetFromApiAsync)
-
-        // Generic wrapper for all Cloudflare API responses
-        private record ApiResponse<T>
-        {
-            [JsonPropertyName("result")]
-            public T? Result { get; init; }
-
-            [JsonPropertyName("success")]
-            public bool Success { get; init; }
-
-            [JsonPropertyName("errors")]
-            public JsonError[]? Errors { get; init; }
-        }
-
+        #region Private API Response Models
+        private record ApiResponse<T> { [JsonPropertyName("result")] public T? Result { get; init; } [JsonPropertyName("success")] public bool Success { get; init; } [JsonPropertyName("errors")] public JsonError[]? Errors { get; init; } [JsonPropertyName("meta")] public Meta? Meta { get; init; } }
         private record JsonError(int Code, string Message);
-
-
-        // Specific payload models for each endpoint (renamed to Payload for clarity)
-        private record IqiSummaryPayload { public double Value { get; init; } public string Rating { get; init; } = ""; public DateTime Timestamp { get; init; } }
-        private record TrafficAnomaliesSummaryPayload { [property: JsonPropertyName("pool_percentage")] public double Percentage { get; init; } public string Direction { get; init; } = ""; public DateTime Timestamp { get; init; } }
-        private record AttackSummaryPayload { [property: JsonPropertyName("top_origin_country_name")] public string TopOriginCountryName { get; init; } = ""; [property: JsonPropertyName("percentage_of_total")] public double Percentage { get; init; } public DateTime Timestamp { get; init; } }
-        private record LocationPayload { public string Name { get; init; } = ""; }
-
-        // New specific payload models for /radar/http/summary with different 'metric' parameters
-        private record HttpProtocolApiResultPayload
-        {
-            [JsonPropertyName("dimensions")]
-            public IEnumerable<HttpProtocolDimension> Dimensions { get; init; } = Enumerable.Empty<HttpProtocolDimension>();
-            // Cloudflare API might have a 'date' or 'until' field here for timestamp
-            // For simplicity, we'll rely on the main reportTimestamp or UtcNow
-            // public DateTime? Date { get; init; }
-        }
-        private record HttpProtocolDimension([property: JsonPropertyName("protocol")] string Protocol, [property: JsonPropertyName("requests")] double Requests);
-
-        private record DeviceTypeApiResultPayload
-        {
-            [JsonPropertyName("dimensions")]
-            public IEnumerable<DeviceTypeDimension> Dimensions { get; init; } = Enumerable.Empty<DeviceTypeDimension>();
-            // public DateTime? Date { get; init; }
-        }
-        private record DeviceTypeDimension([property: JsonPropertyName("deviceType")] string DeviceType, [property: JsonPropertyName("requests")] double Requests);
-
-        private record BotTrafficApiResultPayload
-        {
-            [JsonPropertyName("dimensions")]
-            public IEnumerable<BotTrafficDimension> Dimensions { get; init; } = Enumerable.Empty<BotTrafficDimension>();
-            // public DateTime? Date { get; init; }
-        }
-        private record BotTrafficDimension([property: JsonPropertyName("botClass")] string BotClass, [property: JsonPropertyName("requests")] double Requests);
-
-        // REMOVED: The old HttpSummary record is no longer needed as its data is now split.
+        private record Meta { [JsonPropertyName("last_updated")] public string? LastUpdated { get; init; } }
+        private record LocationWrapper { [JsonPropertyName("location")] public LocationPayload? Location { get; init; } }
+        private record LocationPayload { [JsonPropertyName("name")] public string Name { get; init; } = ""; }
+        private record IqiSummaryPayloadWrapper { [JsonPropertyName("summary_0")] public IqiSummaryPayload? Summary0 { get; init; } }
+        private record IqiSummaryPayload { [JsonPropertyName("p90")] public double P90 { get; init; } [JsonPropertyName("rating")] public string? Rating { get; init; } }
+        private record TopAttacksWrapper { [JsonPropertyName("top_0")] public List<AttackOriginPayload> Top0 { get; init; } = []; }
+        private record AttackOriginPayload { [JsonPropertyName("clientCountryName")] public string ClientCountryName { get; init; } = ""; [JsonPropertyName("value")] public string Value { get; init; } = ""; }
+        private record HttpProtocolApiResultPayload { [JsonPropertyName("summary_0")] public HttpProtocolSummaryPayload? Summary0 { get; init; } }
+        private record HttpProtocolSummaryPayload { [JsonPropertyName("HTTP/2")] public string Http2 { get; init; } = ""; [JsonPropertyName("HTTP/3")] public string Http3 { get; init; } = ""; }
+        private record DeviceTypeApiResultPayload { [JsonPropertyName("summary_0")] public DeviceTypeSummaryPayload? Summary0 { get; init; } }
+        private record DeviceTypeSummaryPayload { [JsonPropertyName("desktop")] public string Desktop { get; init; } = ""; [JsonPropertyName("mobile")] public string Mobile { get; init; } = ""; }
+        private record BotTrafficApiResultPayload { [JsonPropertyName("summary_0")] public BotTrafficSummaryPayload? Summary0 { get; init; } }
+        private record BotTrafficSummaryPayload { [JsonPropertyName("bot")] public string Bot { get; init; } = ""; [JsonPropertyName("human")] public string Human { get; init; } = ""; }
+        private record TrafficAnomaliesWrapper { [JsonPropertyName("trafficAnomalies")] public List<TrafficAnomalyPayload> TrafficAnomalies { get; init; } = []; }
+        private record TrafficAnomalyPayload { [JsonPropertyName("locations")] public AnomalyLocation? Locations { get; init; } [JsonPropertyName("startDate")] public DateTime StartDate { get; init; } [JsonPropertyName("status")] public string Status { get; init; } = ""; }
+        private record AnomalyLocation { [JsonPropertyName("code")] public string Code { get; init; } = ""; }
         #endregion
     }
 }

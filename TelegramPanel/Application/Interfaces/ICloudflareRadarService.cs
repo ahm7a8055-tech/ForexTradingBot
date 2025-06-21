@@ -1,56 +1,34 @@
 ﻿// File: Application/Interfaces/ICloudflareRadarService.cs
-using Shared.Results;
+using Shared.Results; // Or your appropriate namespace for the Result type
 
 namespace Application.Interfaces
 {
-    #region DTOs (Data Transfer Objects) - Upgraded for Real Data
+    #region DTOs (Data Transfer Objects) - Fully Upgraded and Corrected
 
-    /// <summary>
-    /// Represents the Internet Quality Index (IQI) data.
-    /// </summary>
-    public record IqiData(double Value, string Rating, DateTime Timestamp);
-
-    /// <summary>
-    /// Represents traffic anomaly data.
-    /// </summary>
-    public record TrafficData(double PercentageChange, string ChangeDirection, DateTime Timestamp);
-
-    /// <summary>
-    /// Represents Layer 7 DDoS attack data.
-    /// </summary>
-    public record AttackData(string TopSourceCountry, double PercentageOfTotal, DateTime Timestamp);
-
-    /// <summary>
-    /// Represents the distribution of traffic by HTTP protocol version.
-    /// </summary>
-    public record HttpProtocolData(double Http2, double Http3, DateTime Timestamp);
-
-    /// <summary>
-    /// Represents the distribution of traffic by device type.
-    /// </summary>
-    public record DeviceTypeData(double Desktop, double Mobile, DateTime Timestamp);
-
-    /// <summary>
-    /// Represents the distribution of traffic between bots and humans.
-    /// </summary>
-    public record BotTrafficData(double Bot, double Human, DateTime Timestamp);
+    public record IqiData(double Value, string Rating);
+    public record AttackData(string TopSourceCountry, double PercentageOfTotal);
+    public record HttpProtocolData(double Http2, double Http3);
+    public record DeviceTypeData(double Desktop, double Mobile);
+    public record BotTrafficData(double Bot, double Human);
+    public record TrafficAnomalyData(string Status, DateTime Timestamp);
 
     /// <summary>
     /// The main, consolidated report DTO, containing all fetched data points for a country.
     /// </summary>
     public record CloudflareCountryReportDto
     {
-        public required string CountryCode { get; init; }
-        public required string CountryName { get; init; }
-        public required string RadarUrl { get; init; }
-        public required string ReportImageUrl { get; init; }
+        public string CountryCode { get; init; } = "";
+        public string CountryName { get; init; } = "";
+        public string RadarUrl { get; init; } = "";
+        public string? ReportTimestamp { get; init; }
 
-        // --- Upgraded Data Fields ---
         public IqiData? InternetQuality { get; init; }
-        public TrafficData? TrafficAnomalies { get; init; }
+        public TrafficAnomalyData? LatestTrafficAnomaly { get; init; }
         public AttackData? Layer7Attacks { get; init; }
         public HttpProtocolData? HttpProtocolDistribution { get; init; }
         public DeviceTypeData? DeviceTypeDistribution { get; init; }
+
+        // CORRECTED: The type name is now 'BotTrafficData', matching its definition above.
         public BotTrafficData? BotVsHumanTraffic { get; init; }
     }
     #endregion
