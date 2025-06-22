@@ -101,22 +101,25 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 callbackData.Equals(MenuCommandHandler.SubscribeCallbackData, StringComparison.Ordinal) || // "menu_subscribe_plans"
                 callbackData.Equals(MenuCommandHandler.SettingsCallbackData, StringComparison.Ordinal) || // "menu_user_settings"
                  callbackData.Equals(MenuCommandHandler.AnalysisCallbackData, StringComparison.Ordinal) || // <<< NEW: Handle analysis button
+
                 callbackData.StartsWith("select_plan_", StringComparison.Ordinal) ||
                 callbackData.StartsWith("pay_", StringComparison.Ordinal) ||
+
                 callbackData.Equals(BackToMainMenuFromProfile, StringComparison.Ordinal) ||
                 callbackData.Equals(BackToMainMenuFromSubscribe, StringComparison.Ordinal) ||
                 callbackData.Equals(BackToMainMenuFromSettings, StringComparison.Ordinal) ||
-                callbackData.Equals(GeneralBackToMainMenuCallback, StringComparison.Ordinal);
+                callbackData.StartsWith(PayWithCryptoPrefix, StringComparison.Ordinal) ||
+
+                callbackData.Equals(MenuCommandHandler.BackToMainMenuGeneral, StringComparison.Ordinal);
 
             _logger.LogTrace("MenuCBQHandler.CanHandle for '{CallbackData}': Result = {Result}", callbackData, canHandleIt);
             return canHandleIt;
         }
 
+        // In MenuCallbackQueryHandler.cs
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-            // استخراج اطلاعات ضروری از CallbackQuery
             var callbackQuery = update.CallbackQuery;
-            // بررسی null بودن callbackQuery و Message آن در ابتدای متد، قبل از استفاده
             if (callbackQuery?.Message?.Chat == null || callbackQuery.From == null || string.IsNullOrWhiteSpace(callbackQuery.Data))
             {
                 _logger.LogWarning("MenuCallbackHandler: CallbackQuery, its Message, Chat, From user, or Data is null/empty in UpdateID {UpdateId}.", update.Id);
@@ -124,16 +127,15 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 {
                     await AnswerCallbackQuerySilentAsync(callbackQuery.Id, cancellationToken, "Error processing request.");
                 }
-
                 return;
             }
 
-            var chatId = callbackQuery.Message.Chat.Id;          // شناسه چتی که پیام در آن قرار دارد
-            var userId = callbackQuery.From.Id;                 // شناسه کاربر تلگرامی که دکمه را فشار داده
-            var messageId = callbackQuery.Message.MessageId;    // شناسه پیامی که دکمه‌ها روی آن قرار دارند (برای ویرایش پیام)
-            var callbackData = callbackQuery.Data;              // داده مرتبط با دکمه فشرده شده
+            var chatId = callbackQuery.Message.Chat.Id;
+            var userId = callbackQuery.From.Id;
+            var messageId = callbackQuery.Message.MessageId;
+            var callbackData = callbackQuery.Data;
 
-            using (_logger.BeginScope(new Dictionary<string, object> // ایجاد Log Scope برای ردیابی بهتر
+            using (_logger.BeginScope(new Dictionary<string, object>
             {
                 ["TelegramUserId"] = userId,
                 ["ChatId"] = chatId,
@@ -142,23 +144,19 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
             }))
             {
                 _logger.LogInformation("Handling CallbackQuery.");
-
-                //  پاسخ اولیه به CallbackQuery برای حذف حالت "loading" از روی دکمه.
-                //  این کار باید سریع انجام شود. متن آن اختیاری است و به کاربر نمایش داده نمی‌شود مگر اینکه showAlert = true باشد.
                 await AnswerCallbackQuerySilentAsync(callbackQuery.Id, cancellationToken, "Processing...");
 
                 try
                 {
-                    // مسیریابی بر اساس callbackData
-                    if (callbackData.StartsWith(PayWithCryptoPrefix)) //  پرداخت با کریپتو (مثلاً "pay_usdt_for_plan_GUID")
+                    if (callbackData.StartsWith(PayWithCryptoPrefix))
                     {
                         await HandleCryptoPaymentSelectionAsync(chatId, userId, messageId, callbackData, cancellationToken);
                     }
-                    else if (callbackData.StartsWith(SelectPlanPrefix)) //  انتخاب پلن (مثلاً "select_plan_GUID")
+                    else if (callbackData.StartsWith(SelectPlanPrefix))
                     {
                         await HandlePlanSelectionAsync(chatId, userId, messageId, callbackData, cancellationToken);
                     }
-                    else // سایر Callback های ثابت
+                    else
                     {
                         switch (callbackData)
                         {
@@ -168,7 +166,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                             case MenuCommandHandler.ProfileCallbackData:
                                 await HandleMyProfileAsync(chatId, userId, messageId, cancellationToken);
                                 break;
-                            case MenuCommandHandler.SubscribeCallbackData: // دکمه اصلی "Subscribe" که لیست پلن‌ها را نشان می‌دهد
+                            case MenuCommandHandler.SubscribeCallbackData:
                                 await ShowSubscriptionPlansAsync(chatId, messageId, cancellationToken);
                                 break;
                             case MenuCommandHandler.SettingsCallbackData:
@@ -177,10 +175,15 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                             case MenuCommandHandler.AnalysisCallbackData:
                                 await ShowAnalysisMenuAsync(chatId, messageId, cancellationToken);
                                 break;
-                            case BackToMainMenuGeneral:
+
+                            // =================== THIS IS THE FIX ===================
+                            // The case now checks against the correct constant from the correct file.
+                            case MenuCommandHandler.BackToMainMenuGeneral:
+                                // =======================================================
                                 _logger.LogInformation("User requested to go back to main menu.");
                                 await ShowMainMenuAndClearStateAsync(chatId, userId, messageId, cancellationToken);
                                 break;
+
                             default:
                                 _logger.LogWarning("Unhandled CallbackQuery data: {CallbackData}", callbackData);
                                 await _messageSender.SendTextMessageAsync(chatId, "Sorry, this option is not recognized or is under development.", cancellationToken: cancellationToken);
@@ -190,9 +193,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 }
                 catch (Exception ex)
                 {
-                    // ثبت خطای جامع
                     _logger.LogError(ex, "An error occurred while handling callback query data '{CallbackData}'.", callbackData);
-                    // ارسال پیام خطای عمومی به کاربر
                     await _messageSender.SendTextMessageAsync(chatId, "An unexpected error occurred while processing your request. Please try again or contact support.", cancellationToken: cancellationToken);
                 }
             }

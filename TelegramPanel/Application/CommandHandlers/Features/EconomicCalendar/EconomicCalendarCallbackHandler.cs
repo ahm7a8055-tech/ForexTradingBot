@@ -53,10 +53,19 @@ namespace TelegramPanel.Application.CommandHandlers.Features.EconomicCalendar
         /// </summary>
         public bool CanHandle(Update update)
         {
-            return update.CallbackQuery?.Data?.StartsWith(ReleasesCallbackPrefix) == true ||
-           update.CallbackQuery?.Data == SearchSeriesCallback ||
+            // Ensure the update is a callback query with valid data
+            if (update.Type != Telegram.Bot.Types.Enums.UpdateType.CallbackQuery ||
+                string.IsNullOrEmpty(update.CallbackQuery?.Data))
+            {
+                return false;
+            }
 
-           update.CallbackQuery?.Data == MenuCommandHandler.BackToMainMenuGeneral;
+            var callbackData = update.CallbackQuery.Data;
+
+            // This handler should ONLY process callbacks specific to the Economic Calendar feature.
+            return callbackData.StartsWith(ReleasesCallbackPrefix) ||
+                   callbackData.StartsWith(ExploreReleasePrefix) || // Added for completeness
+                   callbackData == SearchSeriesCallback;
         }
 
         private async Task HandleExploreReleaseAsync(CallbackQuery callbackQuery, CancellationToken cancellationToken)

@@ -44,12 +44,16 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             _directMessageSender = directMessageSender ?? throw new ArgumentNullException(nameof(directMessageSender));
         }
 
+        // Inside CloudflareRadarCallbackHandler.cs - (THIS IS AN INCORRECT APPROACH)
         public bool CanHandle(Update update)
         {
-            return update.Type == UpdateType.CallbackQuery &&
-                   update.CallbackQuery?.Data?.StartsWith(CallbackPrefix) == true;
-        }
+            var callbackData = update.CallbackQuery?.Data;
+            if (string.IsNullOrEmpty(callbackData)) return false;
 
+            // Let's add the check for the main menu button
+            return callbackData.StartsWith(CallbackPrefix) || // Handles "cf_radar:..."
+                   callbackData == MenuCommandHandler.BackToMainMenuGeneral; // Handles "menu_main_general"
+        }
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
@@ -115,6 +119,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 
             try
             {
+                // The animation part already uses EditMessageTextDirectAsync, which is great.
                 var reportResult = await AnimateWhileExecutingAsync(chatId, messageId,
                     $"☁️ Analyzing internet health for *{safeCountryName}*",
                     ct => _radarService.GetCountryReportAsync(countryCode, ct),
@@ -123,20 +128,31 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
                 if (reportResult.Succeeded && reportResult.Data != null)
                 {
                     var data = reportResult.Data;
-                    var caption = FormatCountryReportMessage(data); // REWRITTEN LOGIC IS IN THIS METHOD
+                    var caption = FormatCountryReportMessage(data);
 
                     var keyboard = new InlineKeyboardMarkup(new List<List<InlineKeyboardButton>>
-                    {
-                        new() { InlineKeyboardButton.WithUrl("View Full Report on Cloudflare Radar ↗️", data.RadarUrl) },
-                        new() { InlineKeyboardButton.WithCallbackData("⬅️ Back to Country List", $"{CallbackPrefix}:{ListPageAction}:1") }
-                    });
+            {
+                new() { InlineKeyboardButton.WithUrl("View Full Report on Cloudflare Radar ↗️", data.RadarUrl) },
+                new() { InlineKeyboardButton.WithCallbackData("⬅️ Back to Country List", $"{CallbackPrefix}:{ListPageAction}:1") }
+            });
 
-                    await _directMessageSender.DeleteMessageAsync(chatId, messageId, cancellationToken);
-                    await _messageSender.SendTextMessageAsync(chatId: chatId, text: caption, parseMode: ParseMode.MarkdownV2, replyMarkup: keyboard, cancellationToken: cancellationToken);
+                    // --- RECOMMENDED CHANGE ---
+                    // Replace the Delete/Send actions with a single Edit action for a smooth transition.
+                    await _directMessageSender.EditMessageTextDirectAsync(
+                        chatId,
+                        messageId,
+                        caption,
+                        ParseMode.MarkdownV2,
+                        keyboard,
+                        cancellationToken
+                    );
+                    // --- END OF CHANGE ---
+
                     _logger.LogInformation("Sent Cloudflare Radar report for {CountryCode} to Chat {ChatId}.", countryCode, chatId);
                 }
                 else
                 {
+                    // This part already uses Edit, which is correct.
                     var errorText = $"❌ Could not retrieve report for *{safeCountryName}*.\n`{TelegramMessageFormatter.EscapeMarkdownV2(reportResult.Errors.FirstOrDefault() ?? "Unknown error.")}`";
                     var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("⬅️ Back to Countries", $"{CallbackPrefix}:{ListPageAction}:1"));
                     await _directMessageSender.EditMessageTextDirectAsync(chatId, messageId, errorText, ParseMode.MarkdownV2, keyboard, cancellationToken);
@@ -145,13 +161,13 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             }
             catch (Exception ex)
             {
+                // This part also uses Edit correctly.
                 _logger.LogError(ex, "An unexpected error occurred while showing Cloudflare report for {CountryCode} to Chat {ChatId}.", countryCode, chatId);
                 var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("⬅️ Try Again", $"{CallbackPrefix}:{SelectCountryAction}:{countryCode}"));
                 await _directMessageSender.EditMessageTextDirectAsync(chatId, messageId, "An unexpected error occurred. Please try again.", ParseMode.MarkdownV2, replyMarkup: keyboard, cancellationToken: CancellationToken.None);
             }
         }
 
-      
         // --- START OF REWRITTEN METHOD ---
         // This version has major formatting upgrades, more progress bars, and new sections.
         private string GenerateProgressBar(double percentage, int size = 10, string block = "🟩")
