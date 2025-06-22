@@ -1,33 +1,28 @@
 ﻿// File: Application/Interfaces/ICloudflareRadarService.cs
-using Shared.Results; // Or your appropriate namespace for the Result type
+using Shared.Results;
 
 namespace Application.Interfaces
 {
-    #region DTOs (Data Transfer Objects) - Fully Upgraded and Corrected
+    #region DTOs (Data Transfer Objects) - Ultimate Version
 
-    // --- Existing DTOs ---
     public record IqiData(double Value, string Rating);
     public record AttackData(string TopSourceCountry, double PercentageOfTotal);
-    public record HttpProtocolData(double Http2, double Http3);
+    public record HttpProtocolData(double Http3, double Http2, double Http1);
     public record DeviceTypeData(double Desktop, double Mobile);
     public record BotTrafficData(double Bot, double Human);
     public record TrafficAnomalyData(string Status, DateTime Timestamp);
     public record ConfirmedOutageData(string Description, DateTime StartDate, DateTime? EndDate, string Cause);
     public record AttackMitigationData(double Waf, double RateLimiting, double BotManagement);
-    public record TlsVersionData(double Tls13, double Tls12);
-
-    // --- NEW DTO ADDED ---
-    /// <summary>
-    /// Represents the distribution of traffic by IP version.
-    /// </summary>
-    /// <param name="Ipv4">Percentage of traffic using IPv4.</param>
-    /// <param name="Ipv6">Percentage of traffic using IPv6.</param>
+    public record TlsVersionData(double Tls13, double Tls12, double Tls11, double Tls10);
     public record IpVersionData(double Ipv4, double Ipv6);
 
+    // --- NEW DTOS FOR MAXIMUM DETAIL ---
+    public record PostQuantumData(double Supported, double NotSupported);
+    public record OperatingSystemData(double Windows, double MacOS, double Android, double IOS, double Linux);
+    public record Layer3AttackProtocolData(double Udp, double Tcp, double Icmp);
 
     /// <summary>
-    /// The main, consolidated report DTO, containing all fetched data points for a country.
-    /// This version is enhanced with new security, stability, and modernization metrics.
+    /// The ultimate, consolidated report DTO, containing all fetched data points for a country.
     /// </summary>
     public record CloudflareCountryReportDto
     {
@@ -36,31 +31,25 @@ namespace Application.Interfaces
         public string RadarUrl { get; init; } = "";
         public string? ReportTimestamp { get; init; }
 
-        // --- Existing Properties ---
         public IqiData? InternetQuality { get; init; }
-        public TrafficAnomalyData? LatestTrafficAnomaly { get; init; }
+        public ConfirmedOutageData? LatestOutage { get; init; }
+        public BotTrafficData? BotVsHumanTraffic { get; init; }
         public AttackData? Layer7Attacks { get; init; }
         public HttpProtocolData? HttpProtocolDistribution { get; init; }
         public DeviceTypeData? DeviceTypeDistribution { get; init; }
-        public BotTrafficData? BotVsHumanTraffic { get; init; }
-        public ConfirmedOutageData? LatestOutage { get; init; }
         public AttackMitigationData? AttackMitigation { get; init; }
         public TlsVersionData? TlsVersionDistribution { get; init; }
-
-        // --- NEW PROPERTY ADDED ---
         public IpVersionData? IpVersionDistribution { get; init; }
+
+        // --- NEW PROPERTIES FOR MAXIMUM DETAIL ---
+        public PostQuantumData? PostQuantumSupport { get; init; }
+        public OperatingSystemData? OSDistribution { get; init; }
+        public Layer3AttackProtocolData? L3AttackDistribution { get; init; }
     }
     #endregion
 
-    /// <summary>
-    /// Defines the contract for a service that fetches and consolidates
-    /// internet health and security data from Cloudflare's Radar.
-    /// </summary>
     public interface ICloudflareRadarService
     {
-        /// <summary>
-        /// Asynchronously fetches a comprehensive report for a specific country.
-        /// </summary>
         Task<Result<CloudflareCountryReportDto>> GetCountryReportAsync(string countryCode, CancellationToken cancellationToken);
     }
 }

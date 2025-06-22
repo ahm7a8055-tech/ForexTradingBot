@@ -151,123 +151,184 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             }
         }
 
-        private string GenerateProgressBar(double percentage, int size = 10, string filled = "🟩", string empty = "⬜️")
-        {
-            if (double.IsNaN(percentage) || percentage < 0) percentage = 0;
-            if (percentage > 100) percentage = 100;
-            int filledBlocks = (int)Math.Round(percentage / 100.0 * size);
-            return string.Concat(Enumerable.Repeat(filled, filledBlocks)) + string.Concat(Enumerable.Repeat(empty, size - filledBlocks));
-        }
-
+      
         // --- START OF REWRITTEN METHOD ---
         // This version has major formatting upgrades, more progress bars, and new sections.
+        private string GenerateProgressBar(double percentage, int size = 10, string block = "🟩")
+        {
+            if (percentage <= 0) return string.Empty;
+            int filledBlocks = (int)Math.Round(percentage / 100.0 * size);
+            if (filledBlocks == 0 && percentage > 0.1) filledBlocks = 1;
+            return string.Concat(Enumerable.Repeat(block, filledBlocks));
+        }
+
         private string FormatCountryReportMessage(CloudflareCountryReportDto data)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine($"☁️ *Internet Report: {TelegramMessageFormatter.EscapeMarkdownV2(data.CountryName)}*");
-            sb.AppendLine("`-----------------------------------`");
+            var sections = new List<string>();
 
-            // --- Section: Stability (Outages & Anomalies) ---
-            if (data.LatestOutage != null)
+            // --- Section: At a Glance ---
+            var summarySb = new StringBuilder();
+            summarySb.AppendLine("*📊 At a Glance*");
+            summarySb.AppendLine($"  - __Stability:__         {(data.LatestOutage != null ? "🔴 OUTAGE" : "✅ No Outages")}");
+            if (data.InternetQuality != null)
             {
-                var outage = data.LatestOutage;
-                sb.AppendLine($"*🔴 Confirmed Outage*");
-                sb.AppendLine($"  - Cause: `{TelegramMessageFormatter.EscapeMarkdownV2(outage.Cause)}`");
-                sb.AppendLine($"  - Started: `{outage.StartDate:MMM dd, HH:mm} UTC`");
-                sb.AppendLine();
+                var iqiRating = data.InternetQuality.Rating.ToUpper();
+                var iqiEmoji = iqiRating == "GOOD" ? "✅" : (iqiRating == "POOR" ? "⚠️" : "🟠");
+                summarySb.AppendLine($"  - __Internet Quality:__ {iqiEmoji} {data.InternetQuality.Rating}");
             }
-            else
-            {
-                sb.AppendLine("*✅ Stability:* `No outages detected`");
-                sb.AppendLine();
-            }
-
-            // --- Section: Bot vs Human Traffic ---
             if (data.BotVsHumanTraffic != null)
             {
-                var bots = data.BotVsHumanTraffic;
-                sb.AppendLine($"*👥 Traffic Source (24h)*");
-                sb.AppendLine($"  - 👨‍💻 Humans: `{bots.Human:F1}%`");
-                sb.AppendLine($"    `{GenerateProgressBar(bots.Human)}`");
-                sb.AppendLine($"  - 🤖 Bots: `{bots.Bot:F1}%`");
-                sb.AppendLine();
+                var botEmoji = data.BotVsHumanTraffic.Bot > 40 ? "⚠️" : "✅";
+                summarySb.AppendLine($"  - __Bot Traffic:__      {botEmoji} {data.BotVsHumanTraffic.Bot:F1}%");
             }
-
-            // --- Section: Layer 7 Attacks & Mitigation ---
-            if (data.Layer7Attacks != null && data.Layer7Attacks.PercentageOfTotal > 0)
+            if (data.IpVersionDistribution != null)
             {
-                var attack = data.Layer7Attacks;
-                sb.AppendLine($"*🛡️ L7 DDoS Attacks (7d)*");
-                // BUG FIX: Only show origin if it's known
-                if (attack.TopSourceCountry != "Unknown")
-                {
-                    sb.AppendLine($"   - Top Origin: `{TelegramMessageFormatter.EscapeMarkdownV2(attack.TopSourceCountry)}`");
-                }
-                sb.AppendLine($"   - Share of Total: `{attack.PercentageOfTotal:F1}%`");
-
-                if (data.AttackMitigation != null)
-                {
-                    var m = data.AttackMitigation;
-                    var totalMitigated = m.Waf + m.RateLimiting + m.BotManagement;
-                    if (totalMitigated > 0)
-                    {
-                        sb.AppendLine($"\n  *🛠️ Top Mitigation Methods*");
-                        if (m.Waf > 0) sb.AppendLine($"   - WAF: `{m.Waf:F1}%`");
-                        if (m.RateLimiting > 0) sb.AppendLine($"   - Rate Limiting: `{m.RateLimiting:F1}%`");
-                        if (m.BotManagement > 0) sb.AppendLine($"   - Bot Management: `{m.BotManagement:F1}%`");
-                    }
-                }
-                sb.AppendLine();
+                var ipv6Emoji = data.IpVersionDistribution.Ipv6 > 50 ? "✅" : (data.IpVersionDistribution.Ipv6 > 25 ? "🟠" : "⚠️");
+                summarySb.AppendLine($"  - __IPv6 Adoption:__    {ipv6Emoji} {data.IpVersionDistribution.Ipv6:F1}%");
             }
+            sections.Add(summarySb.ToString());
 
-            // --- Section: HTTP, TLS & IP Version ---
-            if (data.HttpProtocolDistribution != null)
+            // --- Section: Stability & Quality ---
+            var stabilitySb = new StringBuilder();
+            if (data.LatestOutage != null || (data.InternetQuality != null && data.InternetQuality.Value > 0))
             {
-                var http = data.HttpProtocolDistribution;
-                sb.AppendLine($"*🚀 Protocol Adoption*");
-                sb.AppendLine($"  - HTTP/3: `{http.Http3:F1}%` / HTTP/2: `{http.Http2:F1}%`");
-                sb.AppendLine($"    `{GenerateProgressBar(http.Http3 + http.Http2)}`");
-
-                if (data.TlsVersionDistribution != null)
+                stabilitySb.AppendLine("*📶 Stability & Quality*");
+                if (data.LatestOutage != null)
                 {
-                    var tls = data.TlsVersionDistribution;
-                    sb.AppendLine($"\n  *🔒 Modern TLS Adoption (1.3)*");
-                    sb.AppendLine($"   - TLS 1.3: `{tls.Tls13:F1}%` / TLS 1.2: `{tls.Tls12:F1}%`");
-                    sb.AppendLine($"    `{GenerateProgressBar(tls.Tls13)}`");
+                    var o = data.LatestOutage;
+                    stabilitySb.AppendLine($"  - __Outage Cause:__ `{TelegramMessageFormatter.EscapeMarkdownV2(o.Cause)}`");
+                    stabilitySb.AppendLine($"  - __Description:__ _{TelegramMessageFormatter.EscapeMarkdownV2(o.Description)}_");
                 }
-
-                if (data.IpVersionDistribution != null)
+                if (data.InternetQuality != null && data.InternetQuality.Value > 0)
                 {
-                    var ip = data.IpVersionDistribution;
-                    sb.AppendLine($"\n  *🌐 IPv6 Adoption*");
-                    sb.AppendLine($"   - IPv6: `{ip.Ipv6:F1}%` / IPv4: `{ip.Ipv4:F1}%`");
-                    sb.AppendLine($"    `{GenerateProgressBar(ip.Ipv6)}`");
+                    var iqi = data.InternetQuality;
+                    stabilitySb.AppendLine($"  - __Quality Rating:__ `{iqi.Rating}`");
+                    stabilitySb.AppendLine($"  - __p90 Latency:__ `{iqi.Value:F0} ms`");
                 }
-                sb.AppendLine();
+                sections.Add(stabilitySb.ToString());
             }
 
-            // --- Section: Device Type Distribution ---
+            // --- Section: Traffic Composition ---
+            var compositionSb = new StringBuilder();
+            compositionSb.AppendLine("*👥 Traffic Composition (24h)*");
+            int compositionItemCount = 0;
+            if (data.BotVsHumanTraffic != null)
+            {
+                compositionSb.AppendLine("  - __Source__");
+                var b = data.BotVsHumanTraffic;
+                compositionSb.AppendLine($"    `{"Human:",-9} {b.Human,5:F1}%` {GenerateProgressBar(b.Human, 10, "🟩")}");
+                compositionSb.AppendLine($"    `{"Bot:",-9} {b.Bot,5:F1}%` {GenerateProgressBar(b.Bot, 10, "🟥")}");
+                compositionItemCount++;
+            }
             if (data.DeviceTypeDistribution != null)
             {
-                var devices = data.DeviceTypeDistribution;
-                sb.AppendLine($"*💻 Device Types (Desktop)*");
-                sb.AppendLine($"  - Desktop: `{devices.Desktop:F1}%` / Mobile: `{devices.Mobile:F1}%`");
-                sb.AppendLine($"    `{GenerateProgressBar(devices.Desktop)}`");
-                sb.AppendLine();
+                compositionSb.AppendLine("  - __Device Types__");
+                var d = data.DeviceTypeDistribution;
+                compositionSb.AppendLine($"    `{"Desktop:",-9} {d.Desktop,5:F1}%` {GenerateProgressBar(d.Desktop, 10, "🟦")}");
+                compositionSb.AppendLine($"    `{"Mobile:",-9} {d.Mobile,5:F1}%` {GenerateProgressBar(d.Mobile, 10, "🟩")}");
+                compositionItemCount++;
             }
+            if (data.OSDistribution != null && data.OSDistribution.GetType().GetProperties().Sum(p => (double)p.GetValue(data.OSDistribution)!) > 0)
+            {
+                compositionSb.AppendLine("  - __Operating Systems__");
+                var os = data.OSDistribution;
+                var osList = new List<(string Name, double Value, string Block)> { ("Windows", os.Windows, "🟦"), ("macOS", os.MacOS, "⬜️"), ("Android", os.Android, "🟩"), ("iOS", os.IOS, "⬛️"), ("Linux", os.Linux, "🟧") }
+                    .Where(x => x.Value > 0).OrderByDescending(x => x.Value).ToList();
 
-            sb.AppendLine("`-----------------------------------`");
+                foreach (var item in osList)
+                {
+                    compositionSb.AppendLine($"    `{item.Name + ":",-9} {item.Value,5:F1}%` {GenerateProgressBar(item.Value, 10, item.Block)}");
+                }
+                compositionItemCount++;
+            }
+            if (compositionItemCount > 0) sections.Add(compositionSb.ToString());
+
+            // --- Section: Security Posture ---
+            var securitySb = new StringBuilder();
+            securitySb.AppendLine("*🛡️ Security Posture (7d)*");
+            securitySb.AppendLine("  - __L7 Attacks__");
+            if (data.Layer7Attacks != null && data.Layer7Attacks.PercentageOfTotal > 0)
+            {
+                var l7 = data.Layer7Attacks;
+                securitySb.AppendLine($"    `Share: {l7.PercentageOfTotal:F1}% of traffic`");
+                if (l7.TopSourceCountry != "Unknown") securitySb.AppendLine($"    `Origin: {l7.TopSourceCountry}`");
+            }
+            else { securitySb.AppendLine("    `✅ No significant attacks`"); }
+            if (data.L3AttackDistribution != null && data.L3AttackDistribution.GetType().GetProperties().Sum(p => (double)p.GetValue(data.L3AttackDistribution)!) > 0)
+            {
+                securitySb.AppendLine("  - __L3 Attack Protocols__");
+                var l3 = data.L3AttackDistribution;
+                if (l3.Udp > 0) securitySb.AppendLine($"    `{"UDP:",-9} {l3.Udp,5:F1}%` {GenerateProgressBar(l3.Udp, 10, "🟧")}");
+                if (l3.Tcp > 0) securitySb.AppendLine($"    `{"TCP:",-9} {l3.Tcp,5:F1}%` {GenerateProgressBar(l3.Tcp, 10, "🟦")}");
+                if (l3.Icmp > 0) securitySb.AppendLine($"    `{"ICMP:",-9} {l3.Icmp,5:F1}%` {GenerateProgressBar(l3.Icmp, 10, "🟥")}");
+            }
+            if (data.AttackMitigation != null && data.AttackMitigation.GetType().GetProperties().Sum(p => (double)p.GetValue(data.AttackMitigation)!) > 0)
+            {
+                securitySb.AppendLine("  - __Attack Mitigation__");
+                var m = data.AttackMitigation;
+                if (m.Waf > 0) securitySb.AppendLine($"    `WAF: {m.Waf,5:F1}%`");
+                if (m.RateLimiting > 0) securitySb.AppendLine($"    `Rate Limit: {m.RateLimiting,5:F1}%`");
+                if (m.BotManagement > 0) securitySb.AppendLine($"    `Bot Mgmt: {m.BotManagement,5:F1}%`");
+            }
+            sections.Add(securitySb.ToString());
+
+            // --- Section: Technology Adoption ---
+            var techSb = new StringBuilder();
+            techSb.AppendLine("*🚀 Technology Adoption (7d)*");
+            techSb.AppendLine("  - __HTTP Versions__");
+            var h = data.HttpProtocolDistribution;
+            if (h != null)
+            {
+                if (h.Http3 > 0) techSb.AppendLine($"    `{"HTTP/3:",-9} {h.Http3,5:F1}%` {GenerateProgressBar(h.Http3, 10, "🟩")}");
+                if (h.Http2 > 0) techSb.AppendLine($"    `{"HTTP/2:",-9} {h.Http2,5:F1}%` {GenerateProgressBar(h.Http2, 10, "🟦")}");
+                if (h.Http1 > 0) techSb.AppendLine($"    `{"HTTP/1.x:",-9} {h.Http1,5:F1}%` {GenerateProgressBar(h.Http1, 10, "🟥")}");
+            }
+            techSb.AppendLine("  - __TLS Versions__");
+            var t = data.TlsVersionDistribution;
+            if (t != null)
+            {
+                if (t.Tls13 > 0) techSb.AppendLine($"    `{"TLS 1.3:",-9} {t.Tls13,5:F1}%` {GenerateProgressBar(t.Tls13, 10, "🟩")}");
+                if (t.Tls12 > 0) techSb.AppendLine($"    `{"TLS 1.2:",-9} {t.Tls12,5:F1}%` {GenerateProgressBar(t.Tls12, 10, "🟦")}");
+                if (t.Tls11 + t.Tls10 > 0) techSb.AppendLine($"    `{"Legacy:",-9} {t.Tls11 + t.Tls10,5:F1}%` {GenerateProgressBar(t.Tls11 + t.Tls10, 10, "🟥")}");
+            }
+            techSb.AppendLine("  - __IP Versions (IPv6 Adoption)__");
+            var ip = data.IpVersionDistribution;
+            if (ip != null)
+            {
+                techSb.AppendLine($"    `{"IPv6:",-9} {ip.Ipv6,5:F1}%` {GenerateProgressBar(ip.Ipv6, 10, "🟩")}");
+                techSb.AppendLine($"    `{"IPv4:",-9} {ip.Ipv4,5:F1}%` {GenerateProgressBar(ip.Ipv4, 10, "🟥")}");
+            }
+            if (data.PostQuantumSupport != null && data.PostQuantumSupport.Supported > 0)
+            {
+                techSb.AppendLine("  - __Post-Quantum Ready__");
+                var pq = data.PostQuantumSupport;
+                techSb.AppendLine($"    `{"Supported:",-9} {pq.Supported,5:F1}%` {GenerateProgressBar(pq.Supported, 10, "🟩")}");
+            }
+            sections.Add(techSb.ToString());
+
+            // --- Combine everything ---
+            var finalReport = new StringBuilder();
+            finalReport.AppendLine($"☁️ *Internet Report: {TelegramMessageFormatter.EscapeMarkdownV2(data.CountryName)}*");
+            finalReport.AppendLine("`-----------------------------------`");
+            finalReport.Append(string.Join("\n─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n", sections.Where(s => !string.IsNullOrWhiteSpace(s))));
+
+            // --- Footer & Legend ---
+            finalReport.AppendLine("\n─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─");
+            finalReport.AppendLine("*Legend*");
+            finalReport.AppendLine("`OS: 🟦Win ⬜️Mac 🟩And ⬛️iOS 🟧Lin`");
+            finalReport.AppendLine("`Dev: 🟦Desktop 🟩Mobile`");
+            finalReport.AppendLine("`HTTP/TLS: 🟩Newest 🟦Modern 🟥Old`");
+            finalReport.AppendLine("`Source/IP: 🟩Human/IPv6 🟥Bot/IPv4`");
+
+            finalReport.AppendLine("\n`-----------------------------------`");
             if (!string.IsNullOrWhiteSpace(data.ReportTimestamp) && DateTime.TryParse(data.ReportTimestamp, out var reportTime))
-            {
-                sb.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._");
-            }
+                finalReport.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._");
             else
-            {
-                sb.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
-            }
+                finalReport.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
 
-            return sb.ToString();
+            return finalReport.ToString();
         }
+
         // --- END OF REWRITTEN METHOD ---
 
         private async Task<TResult> AnimateWhileExecutingAsync<TResult>(long chatId, int messageId, string baseText, Func<CancellationToken, Task<TResult>> operationToExecute, CancellationToken cancellationToken)
