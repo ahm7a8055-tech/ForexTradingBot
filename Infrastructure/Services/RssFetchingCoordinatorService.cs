@@ -306,8 +306,8 @@ namespace Infrastructure.Services
                     var result = await _coordinatorRetryPolicy.ExecuteAsync(async (ctx, ct) =>
                     {
                         // Ensure the cancellation token is propagated from Parallel.ForEachAsync's lambda -> Polly -> IRssReaderService
-                        return await _rssReaderService.FetchAndProcessFeedAsync(source, ct).ConfigureAwait(false); // Level 1: ConfigureAwait(false)
-                    }, pollyContext, cancellationToken).ConfigureAwait(false); // Level 1: ConfigureAwait(false)
+                        return await _rssReaderService.FetchAndProcessFeedAsync(source, ct).ConfigureAwait(true); // Level 1: ConfigureAwait(false)
+                    }, pollyContext, cancellationToken).ConfigureAwait(true); // Level 1: ConfigureAwait(false)
 
                     // Level 9: Analyze the result from FetchAndProcessFeedAsync.
                     if (result.Succeeded)
