@@ -451,8 +451,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                     2 => "🥈 Silver",
                     3 => "🥇 Gold",
                     4 => "💎 Platinum",
-                    100 => "🛠️ 
-                    ",
+                    100 => "🛠️ Admin",
                     _ when level > 100 => $"👑 Custom ({level})",
                     _ => $"❓ Unknown ({level})"
                 };
