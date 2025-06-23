@@ -1,294 +1,325 @@
 ﻿// File: TelegramPanel/Queue/UpdateQueueConsumerService.cs
 #region Usings
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
-using Polly.Timeout;
 using Polly.Wrap;
 using StackExchange.Redis;
 using System;
-using System.Collections.Concurrent; // For BlockingCollection
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading; // For SemaphoreSlim and CancellationToken
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
-using Telegram.Bot;
-using Telegram.Bot.Types; // For Update type
+using Telegram.Bot.Types;
 using TelegramPanel.Application.Interfaces;
+using TelegramPanel.Queue.Models; // Ensure this using is present
 #endregion
 
 namespace TelegramPanel.Queue
 {
-    public class UpdateQueueConsumerService : BackgroundService
+    public sealed class UpdateQueueConsumerService : BackgroundService
     {
-        #region Private Readonly Fields
+        #region Core Components
         private readonly ILogger<UpdateQueueConsumerService> _logger;
-        private readonly ITelegramUpdateChannel _updateChannel; // Source of incoming updates from primary Redis queue
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ITelegramUpdateChannel _updateChannel;
+        private readonly IQueueMetricsService _metrics;
+        private readonly UpdateQueueOptions _options;
+        #endregion
+
+        #region Concurrency & State Management
+        private readonly BlockingCollection<Update> _workQueue;
+        private readonly SemaphoreSlim _concurrencyLimiter;
+        private CancellationTokenSource _serviceStoppingCts;
+        private readonly Dictionary<string, Task> _workerTasks = new(); // UPGRADED: Dictionary for named tasks
+        private int _activeProcessingTasksCount; // UPGRADED: Efficient counter for in-flight work
+        #endregion
+
+        #region Resilience Policies
         private readonly AsyncPolicyWrap _redisResiliencePolicy;
         private readonly AsyncRetryPolicy _processingRetryPolicy;
-
-        // --- Concurrency and Throughput Control ---
-        // BlockingCollection acts as our explicit in-memory queue for tasks awaiting processing.
-        private readonly BlockingCollection<Telegram.Bot.Types.Update> _pendingProcessingQueue;
-        private readonly int _maxConcurrentProcessors; // Max number of concurrent processing tasks
-
-        private readonly TimeSpan _redisBreakDuration = TimeSpan.FromMinutes(1);
-        private readonly TimeSpan _redisReadTimeout = TimeSpan.FromMinutes(1);
-        private static readonly Random _jitterer = new Random();
         #endregion
 
-        #region Constructor
-        public UpdateQueueConsumerService(IConfiguration configuration,
+        public UpdateQueueConsumerService(
             ILogger<UpdateQueueConsumerService> logger,
+            IServiceScopeFactory scopeFactory,
             ITelegramUpdateChannel updateChannel,
-            IServiceScopeFactory scopeFactory)
+            IQueueMetricsService metrics,
+            IOptions<UpdateQueueOptions> options)
         {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _updateChannel = updateChannel ?? throw new ArgumentNullException(nameof(updateChannel));
-            _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
+            _logger = logger;
+            _scopeFactory = scopeFactory;
+            _updateChannel = updateChannel;
+            _metrics = metrics;
+            _options = options.Value;
 
-            // Configure max concurrent processors. This will be the capacity of our blocking collection.
-            // For 10000+ requests, set this to a high number, but be mindful of system resources.
-            // The BlockingCollection will buffer items up to this capacity.
-            _maxConcurrentProcessors = configuration.GetValue<int>("TelegramPanel:Queue:MaxConcurrentProcessors", 10000);
-            // Use BlockingCollection as an explicit, bounded, thread-safe queue.
-            _pendingProcessingQueue = new BlockingCollection<Telegram.Bot.Types.Update>(
-                new ConcurrentQueue<Telegram.Bot.Types.Update>(), // Use ConcurrentQueue as the underlying collection
-                _maxConcurrentProcessors // The bounded capacity. If full, .Add() will block.
-            );
-            _logger.LogInformation("Update processor configured with a maximum of {MaxConcurrency} concurrent processing tasks. Using a bounded collection as an explicit queue.", _maxConcurrentProcessors);
+            _concurrencyLimiter = new SemaphoreSlim(_options.MaxConcurrency, _options.MaxConcurrency);
+            _workQueue = new BlockingCollection<Update>(new ConcurrentQueue<Update>(), _options.QueueCapacity);
 
-            // Resilience policies for Redis interaction.
-            var circuitBreakerPolicy = Policy
+            _logger.LogInformation(
+                "UpdateQueueConsumer initialized. Concurrency: {MaxConcurrency}, QueueCapacity: {QueueCapacity}",
+                _options.MaxConcurrency, _options.QueueCapacity);
+
+            #region Polly Policy Setup
+            var redisCircuitBreaker = Policy
                 .Handle<RedisException>()
-                .Or<RedisConnectionException>()
-                .Or<RedisTimeoutException>()
-                .Or<KeyNotFoundException>()
-                .Or<TimeoutRejectedException>()
-                .CircuitBreakerAsync(
-                    exceptionsAllowedBeforeBreaking: 5, // Slightly more resilient before breaking
-                    durationOfBreak: TimeSpan.FromSeconds(30), // Shorter break duration
-                    onBreak: (exception, timespan) => _logger.LogCritical(exception, "Redis Circuit Breaker OPENED for {BreakDuration}. Halting all queue consumption.", timespan),
-                    onReset: () => _logger.LogInformation("Redis Circuit Breaker RESET. Resuming normal queue consumption."),
-                    onHalfOpen: () => _logger.LogWarning("Redis Circuit Breaker is now HALF-OPEN. The next read will test the connection.")
-                );
+                .CircuitBreakerAsync(5, TimeSpan.FromSeconds(60),
+                    (ex, ts) => _logger.LogCritical(ex, "Redis circuit breaker opened for {BreakDuration}", ts),
+                    () => _logger.LogInformation("Redis circuit breaker reset"));
 
-            var timeoutPolicy = Policy.TimeoutAsync(_redisReadTimeout, TimeoutStrategy.Pessimistic);
-            _redisResiliencePolicy = Policy.WrapAsync(timeoutPolicy, circuitBreakerPolicy);
+            _redisResiliencePolicy = Policy.WrapAsync(redisCircuitBreaker, Policy.TimeoutAsync(30));
 
-            // Retry policy for the actual processing of an update.
             _processingRetryPolicy = Policy
-                .Handle<Exception>(ex => ex is not (OperationCanceledException or TaskCanceledException))
-                .WaitAndRetryAsync(
-                    retryCount: 5, // Increased retries
-                    sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), // Exponential backoff
-                    onRetry: (exception, timeSpan, retryAttempt, context) =>
-                    {
-                        var updateId = context.TryGetValue("UpdateId", out var id) ? (int?)id : null;
-                        _logger.LogWarning(exception, "PollyRetry: Processing update {UpdateId} failed. Retrying in {TimeSpan} (attempt {RetryAttempt}).",
-                            updateId, timeSpan, retryAttempt);
-                    });
+                .Handle<Exception>(ex => ex is not OperationCanceledException)
+                .WaitAndRetryAsync(5,
+                    retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                    (ex, ts, attempt, ctx) => _logger.LogWarning(ex,
+                        "Processing failed. Retrying in {TimeSpan} (Attempt {Attempt})", ts, attempt)); // Scope provides UpdateId
+            #endregion
         }
-        #endregion
-
-        #region Main Execution Logic
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _logger.LogInformation("Update Queue Consumer Service is starting...");
+            _logger.LogInformation("Update Queue Consumer Service starting.");
+            _serviceStoppingCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            var ct = _serviceStoppingCts.Token;
 
-            // Task to continuously pull updates from the source channel and add them to the processing queue.
-            // This is our producer.
-            var producerTask = Task.Run(() => ProduceUpdatesAsync(stoppingToken), stoppingToken);
+            // UPGRADED: Start and name core worker tasks
+            _workerTasks["Producer"] = Task.Run(() => ProducerLoopAsync(ct), ct);
+            _workerTasks["Dispatcher"] = Task.Run(() => DispatcherLoopAsync(ct), ct);
+            _workerTasks["Metrics"] = Task.Run(() => MetricsLoopAsync(ct), ct);
 
-            // Create and start consumer tasks that will pull updates from the _pendingProcessingQueue.
-            // The number of consumer tasks determines the maximum concurrency.
-            var consumerTasks = new List<Task>();
-            for (int i = 0; i < _maxConcurrentProcessors; i++)
-            {
-                // Pass the main stoppingToken to each consumer task.
-                consumerTasks.Add(Task.Run(() => ConsumeUpdatesAsync(stoppingToken), stoppingToken));
-            }
-
-            _logger.LogInformation("Started producer task and {ConsumerCount} consumer tasks.", _maxConcurrentProcessors);
-
-            // Wait for all producer and consumer tasks to complete.
-            // This ensures the service doesn't exit prematurely.
-            await Task.WhenAll(producerTask, Task.WhenAll(consumerTasks)).ConfigureAwait(false);
-
-            _logger.LogInformation("Update Queue Consumer Service has stopped.");
-        }
-
-        /// <summary>
-        /// Producer task: Continuously dequeues updates from the source channel (e.g., primary Redis queue)
-        /// and adds them to the _pendingProcessingQueue.
-        /// </summary>
-        private async Task ProduceUpdatesAsync(CancellationToken stoppingToken)
-        {
-            _logger.LogInformation("Producer task started. Pulling from ITelegramUpdateChannel.");
-            try
-            {
-                // Apply resilience policies to the source fetching operation.
-                await _redisResiliencePolicy.ExecuteAsync(async (ct) =>
-                {
-                    _logger.LogTrace("Polling source channel for updates...");
-
-                    // Use await foreach to get updates from the channel.
-                    // This will block if the channel is empty, and will break on cancellation.
-                    await foreach (var update in _updateChannel.ReadAllAsync(ct).WithCancellation(ct))
-                    {
-                        if (update == null) continue; // Safety check
-
-                        _logger.LogTrace("Dequeued update {UpdateId} of type {UpdateType} from source channel.", update.Id, update.Type);
-
-                        // Add the update to our bounded processing queue.
-                        // This operation will block if the _pendingProcessingQueue is full,
-                        // thus providing back-pressure to the source channel if processing is slow.
-                        if (!_pendingProcessingQueue.IsAddingCompleted)
-                        {
-                            _pendingProcessingQueue.Add(update, ct);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("Processing queue is marked as completed. Cannot add update {UpdateId}. Stopping producer.", update.Id);
-                            break; // Stop producing if the queue is completed.
-                        }
-                    }
-                }, stoppingToken).ConfigureAwait(false);
-            }
-            catch (BrokenCircuitException)
-            {
-                _logger.LogWarning("Redis circuit is OPEN. Pausing producer for {BreakDuration}.", _redisBreakDuration);
-                await Task.Delay(GetJitteredDelay(_redisBreakDuration), stoppingToken).ConfigureAwait(false);
-                // The outer ExecuteAsync loop will re-enter the ExecuteAsync block and attempt to poll again.
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                _logger.LogInformation("Producer task is stopping due to cancellation.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogCritical(ex, "Unhandled exception in producer task. Pausing for {Delay} before continuing.", TimeSpan.FromSeconds(10));
-                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                // Signal that no more items will be added to the queue.
-                // This allows consumers to finish processing remaining items and exit gracefully.
-                _pendingProcessingQueue.CompleteAdding();
-                _logger.LogInformation("Producer task has finished and marked processing queue as complete.");
-            }
-        }
-
-        /// <summary>
-        /// Consumer task: Continuously consumes updates from the _pendingProcessingQueue and processes them.
-        /// Multiple instances of this task run concurrently, limited by _maxConcurrentProcessors.
-        /// </summary>
-        private async Task ConsumeUpdatesAsync(CancellationToken stoppingToken)
-        {
-            _logger.LogInformation("Consumer task started. Processing updates from the queue...");
-            try
-            {
-                // GetConsumingEnumerable provides a blocking (or cancellable) enumeration of the collection.
-                // It will block if the collection is empty and wait for items, or it will exit
-                // gracefully when CompleteAdding() is called and the collection is empty.
-                var processingQueueEnumerator = _pendingProcessingQueue.GetConsumingEnumerable(stoppingToken);
-
-                foreach (var update in processingQueueEnumerator)
-                {
-                    // We've retrieved an update from the processing queue.
-                    _logger.LogTrace("Consumer got update {UpdateId} of type {UpdateType} from processing queue.", update.Id, update.Type);
-
-                    // Process the update with retries. Pass the stoppingToken so the processing itself can be cancelled.
-                    await ProcessSingleUpdateWithRetries(update, stoppingToken).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // This is expected when the service is shutting down.
-                _logger.LogInformation("Consumer task cancelled. Finishing up.");
-            }
-            catch (Exception ex)
-            {
-                // Catch any unexpected exceptions that were not handled by ProcessSingleUpdateWithRetries.
-                _logger.LogCritical(ex, "Unhandled exception in consumer task. This consumer will stop.");
-                // In a robust system, you might want to restart consumers or report critical failures.
-            }
-            finally
-            {
-                _logger.LogInformation("Consumer task finished.");
-            }
-        }
-        #endregion
-
-        #region Private Helper for Processing
-        private async Task ProcessSingleUpdateWithRetries(Telegram.Bot.Types.Update update, CancellationToken stoppingToken)
-        {
-            var pollyContext = new Polly.Context($"UpdateProcessing_{update.Id}", new Dictionary<string, object>
-            {
-                { "UpdateId", update.Id },
-                { "UpdateType", update.Type.ToString() }
-            });
-
-            using (_logger.BeginScope(pollyContext.ToDictionary(kv => kv.Key, kv => (object?)kv.Value)))
+            // UPGRADED: Supervisor loop with named task restarting
+            while (!ct.IsCancellationRequested)
             {
                 try
                 {
-                    // Apply retry policy to the actual update processing.
-                    await _processingRetryPolicy.ExecuteAsync(async (context, ct) =>
+                    var completedTask = await Task.WhenAny(_workerTasks.Values);
+
+                    if (completedTask.IsFaulted && !ct.IsCancellationRequested)
                     {
-                        await using var scope = _scopeFactory.CreateAsyncScope();
-                        var updateProcessor = scope.ServiceProvider.GetRequiredService<ITelegramUpdateProcessor>();
-                        // Pass the stoppingToken to the processor itself, so it can also react to cancellation.
-                        await updateProcessor.ProcessUpdateAsync(update, ct).ConfigureAwait(false);
-                    }, pollyContext, stoppingToken).ConfigureAwait(false);
+                        // Find the name of the faulted task
+                        var taskName = _workerTasks.FirstOrDefault(kvp => kvp.Value == completedTask).Key ?? "Unknown Task";
+
+                        _logger.LogCritical(completedTask.Exception, "Critical worker task '{TaskName}' has failed. Restarting...", taskName);
+
+                        // Restart the specific task that failed
+                        _workerTasks[taskName] = taskName switch
+                        {
+                            "Producer" => Task.Run(() => ProducerLoopAsync(ct), ct),
+                            "Dispatcher" => Task.Run(() => DispatcherLoopAsync(ct), ct),
+                            "Metrics" => Task.Run(() => MetricsLoopAsync(ct), ct),
+                            _ => throw new InvalidOperationException("Attempted to restart an unknown worker task.")
+                        };
+                    }
+
+                    await Task.Delay(_options.SupervisorLoopIntervalMs, ct);
                 }
+                catch (OperationCanceledException) { break; } // Expected on shutdown
                 catch (Exception ex)
                 {
-                    // This catch block is for exceptions that _processingRetryPolicy did NOT handle and rethrow.
-                    // This means the retries have been exhausted, or the exception type was not configured for retry.
-                    _logger.LogError(ex, "Update {UpdateId} failed processing permanently after all retries.", update.Id);
-                    // Admin notification logic removed.
+                    _logger.LogCritical(ex, "An unexpected error occurred in the supervisor loop.");
+                }
+            }
+            _logger.LogInformation("Supervisor loop has ended.");
+        }
+
+        #region Core Loops
+
+        private async Task ProducerLoopAsync(CancellationToken ct)
+        {
+            _logger.LogInformation("Producer loop started.");
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    await _redisResiliencePolicy.ExecuteAsync(async token =>
+                    {
+                        await foreach (var update in _updateChannel.ReadAllAsync(token).WithCancellation(token))
+                        {
+                            if (update != null) _workQueue.Add(update, token);
+                        }
+                    }, ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Producer loop encountered a critical error. Retrying after a delay...");
+                    await Task.Delay(5000, ct);
+                }
+            }
+            _logger.LogInformation("Producer loop finished.");
+        }
+
+        private async Task DispatcherLoopAsync(CancellationToken ct)
+        {
+            _logger.LogInformation("Dispatcher loop started.");
+
+            // The loop continues as long as the service is running OR there's still work in the queue.
+            // This ensures the queue is drained during shutdown.
+            while (!ct.IsCancellationRequested || _workQueue.Count > 0)
+            {
+                try
+                {
+                    var update = _workQueue.Take(ct); // Blocks until an item is available or cancelled
+
+                    await _concurrencyLimiter.WaitAsync(ct);
+
+                    Interlocked.Increment(ref _activeProcessingTasksCount);
+
+                    // Fire-and-forget the processing. The task handles its own lifecycle,
+                    // including decrementing the counter and releasing the semaphore.
+                    _ = Task.Run(() => ProcessUpdateAndCleanupAsync(update, ct), ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (InvalidOperationException) { break; } // Thrown by Take if queue is completed and empty
+            }
+            _logger.LogInformation("Dispatcher loop finished.");
+        }
+
+        private async Task MetricsLoopAsync(CancellationToken ct)
+        {
+            _logger.LogInformation("Metrics reporting loop started.");
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    _metrics.UpdateQueueDepth(_workQueue.Count);
+                    _metrics.UpdateConcurrency(_options.MaxConcurrency - _concurrencyLimiter.CurrentCount, _options.MaxConcurrency);
+                    await _metrics.ReportMetricsAsync(ct);
+
+                    // UPGRADED: Delay is now from configuration
+                    await Task.Delay(TimeSpan.FromSeconds(_options.MetricsReportIntervalSeconds), ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Metrics reporting failed.");
+                }
+            }
+            _logger.LogInformation("Metrics reporting loop finished.");
+        }
+
+        #endregion
+
+        #region Processing Logic
+
+        private async Task ProcessUpdateAndCleanupAsync(Update update, CancellationToken ct)
+        {
+            try
+            {
+                await ProcessSingleUpdateWithRetries(update, ct);
+            }
+            catch (Exception ex)
+            {
+                // This catch is a safeguard. The inner method should handle everything.
+                _logger.LogCritical(ex, "An untrapped exception occurred during ProcessUpdateAndCleanupAsync for Update {UpdateId}", update.Id);
+            }
+            finally
+            {
+                // CRITICAL: Ensure resources are always released and counters updated.
+                _concurrencyLimiter.Release();
+                Interlocked.Decrement(ref _activeProcessingTasksCount);
+            }
+        }
+
+        private async Task ProcessSingleUpdateWithRetries(Update update, CancellationToken ct)
+        {
+            // UPGRADED: Using a logger scope to tag all subsequent logs with the UpdateId.
+            using (_logger.BeginScope("UpdateId: {UpdateId}", update.Id))
+            {
+                var pollyContext = new Context($"UpdateProcessing_{update.Id}");
+                try
+                {
+                    await _processingRetryPolicy.ExecuteAsync(async (context, token) =>
+                    {
+                        await using var scope = _scopeFactory.CreateAsyncScope();
+                        var processor = scope.ServiceProvider.GetRequiredService<ITelegramUpdateProcessor>();
+                        await processor.ProcessUpdateAsync(update, token);
+                    }, pollyContext, ct);
+
+                    _metrics.IncrementProcessed();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _metrics.IncrementFailed();
+                    _logger.LogError(ex, "Update processing failed permanently. Moving to Dead Letter Queue.");
+                    await MoveToDeadLetterQueueAsync(update, ex);
                 }
             }
         }
-        #endregion
 
-        #region Resilience Helpers
-        private static TimeSpan GetJitteredDelay(TimeSpan baseDelay)
+        private async Task MoveToDeadLetterQueueAsync(Update update, Exception lastException)
         {
-            if (baseDelay == TimeSpan.Zero) return TimeSpan.Zero;
-
-            var jitterRange = baseDelay.TotalMilliseconds * 0.2;
-            var actualJitterRange = Math.Max(0, jitterRange);
-            var randomJitter = _jitterer.NextDouble() * (actualJitterRange * 2) - actualJitterRange;
-
-            return baseDelay + TimeSpan.FromMilliseconds(randomJitter);
+            try
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var redis = scope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>().GetDatabase();
+                var payload = JsonSerializer.Serialize(new { FailedUpdate = update, LastException = lastException.Message, TimestampUtc = DateTime.UtcNow });
+                await redis.ListRightPushAsync(_options.DeadLetterQueueName, payload);
+                _metrics.IncrementDeadLettered();
+            }
+            catch (Exception dqlEx)
+            {
+                _logger.LogCritical(dqlEx, "FATAL: Could not move poison message to DLQ.");
+            }
         }
+
         #endregion
 
         #region Service Lifecycle
+
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
-            _logger.LogInformation("Update Queue Consumer Service stop requested. Waiting for active tasks to complete...");
+            _logger.LogInformation("Stop requested. Initiating graceful shutdown...");
 
-            // Signal that no more items will be added to the processing queue.
-            // This allows the existing consumers to finish processing their current item
-            // and then exit cleanly once the queue is empty.
-            _pendingProcessingQueue.CompleteAdding();
+            // 1. Stop adding new items to the queue.
+            //    The dispatcher loop will continue to process existing items.
+            _workQueue.CompleteAdding();
 
-            // Now, signal the main ExecuteAsync loop to stop.
-            // This will eventually cause the producer task to exit and the consumer tasks
-            // (which are waiting on GetConsumingEnumerable) to also exit gracefully.
+            // 2. Wait for all in-flight processing tasks to finish.
+            _logger.LogInformation("Draining queue: waiting for {ActiveCount} active tasks to complete.", _activeProcessingTasksCount);
+            var drainTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_options.ShutdownTimeoutSeconds));
+            while (_activeProcessingTasksCount > 0 && !drainTimeoutCts.IsCancellationRequested)
+            {
+                await Task.Delay(100, CancellationToken.None);
+            }
 
-            await base.StopAsync(cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation("Update Queue Consumer Service stop complete.");
+            if (_activeProcessingTasksCount > 0)
+            {
+                _logger.LogWarning("Graceful drain timed out. {RemainingCount} tasks may be terminated.", _activeProcessingTasksCount);
+            }
+            else
+            {
+                _logger.LogInformation("All active tasks completed.");
+            }
+
+            // 3. Signal the main worker loops to stop.
+            if (_serviceStoppingCts != null && !_serviceStoppingCts.IsCancellationRequested)
+            {
+                _logger.LogInformation("Stopping all background worker loops.");
+                _serviceStoppingCts.Cancel();
+            }
+
+            // 4. Wait for the main worker tasks (Producer, Dispatcher, Metrics) to finish.
+            await Task.WhenAll(_workerTasks.Values);
+
+            _logger.LogInformation("Update Queue Consumer Service has stopped.");
+            await base.StopAsync(cancellationToken);
+        }
+
+        public override void Dispose()
+        {
+            base.Dispose();
+            _serviceStoppingCts?.Dispose();
+            _workQueue?.Dispose();
+            _concurrencyLimiter?.Dispose();
         }
         #endregion
     }

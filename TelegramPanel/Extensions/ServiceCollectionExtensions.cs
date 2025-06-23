@@ -24,8 +24,10 @@ using TelegramPanel.Application.States;
 using TelegramPanel.Infrastructure;         // For concrete service implementations if any are directly used here (less common)
 using TelegramPanel.Infrastructure.Services; // For concrete service implementations like TelegramMessageSender
 using TelegramPanel.Queue;
+using TelegramPanel.Queue.Models;
 using TelegramPanel.Settings;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
+
 // using Scrutor; // Scrutor is available via IServiceCollection extensions, no direct using needed here
 
 #endregion
@@ -39,7 +41,7 @@ namespace TelegramPanel.Extensions
             // 1. Configure Settings
             _ = services.Configure<TelegramPanelSettings>(configuration.GetSection(TelegramPanelSettings.SectionName));
             _ = services.Configure<List<ForwardingRule>>(configuration.GetSection("ForwardingRules"));
-
+            _ = services.Configure<UpdateQueueOptions>(configuration.GetSection("TelegramPanel:Queue"));
             // 2. Register ITelegramBotClient
             _ = services.AddSingleton<ITelegramBotClient>(serviceProvider =>
             {
@@ -195,6 +197,8 @@ namespace TelegramPanel.Extensions
             _ = services.AddScoped<ITelegramCallbackQueryHandler, CryptoCallbackHandler>();
             // ------------------- 8. Register Hosted Services -------------------
             _ = services.AddHostedService<TelegramBotService>();
+          
+            _ = services.AddSingleton<IQueueMetricsService, ConsoleQueueMetricsService>(); // Register the metrics service
             _ = services.AddHostedService<UpdateQueueConsumerService>();
 
             // Register the new CryptoCallbackHandler

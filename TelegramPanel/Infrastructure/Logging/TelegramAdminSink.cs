@@ -7,7 +7,6 @@ using Serilog.Core;
 using Serilog.Events;
 using System.Text;
 using Telegram.Bot;
-using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 
@@ -21,7 +20,7 @@ namespace Infrastructure.Logging
         private readonly AsyncRetryPolicy _telegramRetryPolicy;
         private readonly SinkState _sinkState;
         private readonly TelegramMessageBuilder _messageBuilder;
-
+        private readonly bool _sendMetricsReport;
         public TelegramAdminSink(IConfiguration configuration)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
