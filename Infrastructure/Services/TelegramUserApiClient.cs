@@ -7,7 +7,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Retry;
-using System;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -1257,20 +1256,7 @@ namespace Infrastructure.Services
                 return null;
             }
         }
-        private static readonly IReadOnlyList<string> _adviceEmojis = new List<string>
-{
-    "💡", "✨", "🚀", "🤔", "😊", "👍", "🎉", "🌟", "🔥", "💯",
-    "🤖", "🧠", "🌍", "💬", "✅", "🎯", "🧐", "🙌", "🤓", "🤗"
-};
-        // Add these fields to your class, outside of any method.
-        // A single Random instance, created once and reused. This is the best practice.
-        private static readonly Random _random = new Random();
-        // A small helper method to get a random emoji from the list.
-        private static string GetRandomEmoji()
-        {
-            int index = _random.Next(_adviceEmojis.Count);
-            return _adviceEmojis[index];
-        }
+
 
         /// <summary>
         /// Sends a message (text or media) to a specified peer.
@@ -1371,16 +1357,12 @@ namespace Infrastructure.Services
                 string? randomAdvice = await get_random_advice(cancellationToken).ConfigureAwait(false);
                 if (!string.IsNullOrWhiteSpace(randomAdvice))
                 {
-                    // --- DYNAMIC EMOJI CHANGE IS HERE ---
-                    // Get a random emoji from our package
-                    string emoji = GetRandomEmoji();
-
-                    // Format the footer with the random emoji
-                    string footer = $"\n\n{emoji} {randomAdvice}";
+                    // Format the footer with an emoji
+                    string footer = $"\n\n💡 {randomAdvice}";
 
                     // If the original message is null/empty (e.g., for a media caption), the advice becomes the message.
                     // Otherwise, it's appended to the existing message.
-                    message = string.IsNullOrEmpty(message) ? $"{emoji} {randomAdvice}" : $"{message}{footer}";
+                    message = string.IsNullOrEmpty(message) ? $"💡 {randomAdvice}" : $"{message}{footer}";
 
                     _logger.LogDebug("SendMessageAsync: Appended random advice footer to the message for Peer {PeerId}.", peerIdForLog);
 
