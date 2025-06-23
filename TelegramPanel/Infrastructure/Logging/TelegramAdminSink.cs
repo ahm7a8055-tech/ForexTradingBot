@@ -95,6 +95,20 @@ namespace Infrastructure.Logging
                 await File.AppendAllTextAsync("telegram_sink_errors.log", errorMessage + Environment.NewLine);
             }
         }
+        private string BuildMetricsReport(string rawReportText)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("<b>📊 Queue Metrics Report</b>");
+            sb.AppendLine(); // Add a blank line for spacing
+
+            // The <pre> HTML tag preserves whitespace and uses a monospaced font,
+            // which is perfect for displaying reports exactly as they appear in the console.
+            sb.Append("<pre>");
+            sb.Append(System.Net.WebUtility.HtmlEncode(rawReportText)); // IMPORTANT: Encode to prevent any HTML conflicts
+            sb.Append("</pre>");
+
+            return sb.ToString();
+        }
 
         private InputFileStream? BuildExceptionAttachment(LogEvent logEvent)
         {

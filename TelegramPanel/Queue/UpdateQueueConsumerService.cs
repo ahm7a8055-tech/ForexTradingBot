@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
+using Polly.Timeout;
 using Polly.Wrap;
 using StackExchange.Redis;
 using System;
@@ -36,16 +37,18 @@ namespace TelegramPanel.Queue
         #region Concurrency & State Management
         private readonly BlockingCollection<Update> _workQueue;
         private readonly SemaphoreSlim _concurrencyLimiter;
-        private CancellationTokenSource _serviceStoppingCts;
-        private readonly Dictionary<string, Task> _workerTasks = new(); // UPGRADED: Dictionary for named tasks
-        private int _activeProcessingTasksCount; // UPGRADED: Efficient counter for in-flight work
+        private CancellationTokenSource? _serviceStoppingCts;
+        private readonly Dictionary<string, Task> _workerTasks = new();
+        private int _activeProcessingTasksCount;
         #endregion
 
         #region Resilience Policies
-        private readonly AsyncPolicyWrap _redisResiliencePolicy;
+        // SECURE-FIX: Renamed for clarity, as it's now specifically for the producer.
+        private readonly AsyncPolicyWrap _producerResiliencePolicy;
         private readonly AsyncRetryPolicy _processingRetryPolicy;
         #endregion
 
+        #region Constructor
         public UpdateQueueConsumerService(
             ILogger<UpdateQueueConsumerService> logger,
             IServiceScopeFactory scopeFactory,
@@ -67,49 +70,70 @@ namespace TelegramPanel.Queue
                 _options.MaxConcurrency, _options.QueueCapacity);
 
             #region Polly Policy Setup
-            var redisCircuitBreaker = Policy
-                .Handle<RedisException>()
-                .CircuitBreakerAsync(5, TimeSpan.FromSeconds(60),
-                    (ex, ts) => _logger.LogCritical(ex, "Redis circuit breaker opened for {BreakDuration}", ts),
-                    () => _logger.LogInformation("Redis circuit breaker reset"));
 
-            _redisResiliencePolicy = Policy.WrapAsync(redisCircuitBreaker, Policy.TimeoutAsync(30));
+            // SECURE-FIX: A much more robust, configurable, and intention-revealing policy setup for the producer.
+
+            // Policy 1: Timeout (Innermost) - For the long-poll operation.
+            var producerTimeoutPolicy = Policy.TimeoutAsync(
+                _options.ProducerRedisTimeoutSeconds,
+                TimeoutStrategy.Optimistic);
+
+            // Policy 2: Circuit Breaker - Protects against a faulty Redis connection.
+            // It will only be triggered by actual Redis exceptions, not by timeouts.
+            var producerCircuitBreaker = Policy
+                .Handle<RedisException>() // Only handle real connection errors
+                .Or<RedisConnectionException>()
+                .CircuitBreakerAsync(
+                    _options.ProducerCircuitBreakerFailures,
+                    TimeSpan.FromSeconds(_options.ProducerCircuitBreakSeconds),
+                    (ex, ts) => _logger.LogCritical(ex, "PRODUCER circuit breaker opened for {BreakDuration}. The source queue is likely unavailable.", ts),
+                    () => _logger.LogInformation("PRODUCER circuit breaker reset. Resuming normal operation."),
+                    () => _logger.LogWarning("PRODUCER circuit breaker is in half-open state. Next attempt will test the connection."));
+
+            // Policy 3: Retry (Outermost) - Retries on connection errors with exponential backoff.
+            var producerRetryPolicy = Policy
+                .Handle<RedisException>()
+                .Or<RedisConnectionException>()
+                .WaitAndRetryAsync(
+                    _options.ProducerMaxRetryAttempts,
+                    retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                    (ex, ts, attempt, ctx) => _logger.LogWarning(ex,
+                        "Producer failed to connect to source queue. Retrying in {TimeSpan} (Attempt {Attempt}/{MaxAttempts})",
+                        ts, attempt, _options.ProducerMaxRetryAttempts));
+
+            // Wrap them together. Execution order is outside-in: Retry -> Circuit Breaker -> Timeout.
+            _producerResiliencePolicy = Policy.WrapAsync(producerRetryPolicy, producerCircuitBreaker, producerTimeoutPolicy);
 
             _processingRetryPolicy = Policy
                 .Handle<Exception>(ex => ex is not OperationCanceledException)
                 .WaitAndRetryAsync(5,
                     retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
                     (ex, ts, attempt, ctx) => _logger.LogWarning(ex,
-                        "Processing failed. Retrying in {TimeSpan} (Attempt {Attempt})", ts, attempt)); // Scope provides UpdateId
+                        "Processing failed. Retrying in {TimeSpan} (Attempt {Attempt})", ts, attempt));
             #endregion
         }
+        #endregion
 
+        #region Main Loop
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _logger.LogInformation("Update Queue Consumer Service starting.");
             _serviceStoppingCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             var ct = _serviceStoppingCts.Token;
 
-            // UPGRADED: Start and name core worker tasks
             _workerTasks["Producer"] = Task.Run(() => ProducerLoopAsync(ct), ct);
             _workerTasks["Dispatcher"] = Task.Run(() => DispatcherLoopAsync(ct), ct);
             _workerTasks["Metrics"] = Task.Run(() => MetricsLoopAsync(ct), ct);
 
-            // UPGRADED: Supervisor loop with named task restarting
             while (!ct.IsCancellationRequested)
             {
                 try
                 {
                     var completedTask = await Task.WhenAny(_workerTasks.Values);
-
                     if (completedTask.IsFaulted && !ct.IsCancellationRequested)
                     {
-                        // Find the name of the faulted task
                         var taskName = _workerTasks.FirstOrDefault(kvp => kvp.Value == completedTask).Key ?? "Unknown Task";
-
                         _logger.LogCritical(completedTask.Exception, "Critical worker task '{TaskName}' has failed. Restarting...", taskName);
-
-                        // Restart the specific task that failed
                         _workerTasks[taskName] = taskName switch
                         {
                             "Producer" => Task.Run(() => ProducerLoopAsync(ct), ct),
@@ -118,10 +142,9 @@ namespace TelegramPanel.Queue
                             _ => throw new InvalidOperationException("Attempted to restart an unknown worker task.")
                         };
                     }
-
                     await Task.Delay(_options.SupervisorLoopIntervalMs, ct);
                 }
-                catch (OperationCanceledException) { break; } // Expected on shutdown
+                catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
                     _logger.LogCritical(ex, "An unexpected error occurred in the supervisor loop.");
@@ -130,16 +153,20 @@ namespace TelegramPanel.Queue
             _logger.LogInformation("Supervisor loop has ended.");
         }
 
+        #endregion
+
         #region Core Loops
 
         private async Task ProducerLoopAsync(CancellationToken ct)
         {
-            _logger.LogInformation("Producer loop started.");
+            _logger.LogInformation("Producer loop started. Polling source queue for updates.");
             while (!ct.IsCancellationRequested)
             {
                 try
                 {
-                    await _redisResiliencePolicy.ExecuteAsync(async token =>
+                    // SECURE-FIX: The resilience policy now correctly handles everything internally.
+                    // We just need to catch the specific exceptions Polly throws to control the loop.
+                    await _producerResiliencePolicy.ExecuteAsync(async token =>
                     {
                         await foreach (var update in _updateChannel.ReadAllAsync(token).WithCancellation(token))
                         {
@@ -147,15 +174,39 @@ namespace TelegramPanel.Queue
                         }
                     }, ct);
                 }
-                catch (OperationCanceledException) { break; }
+                // SECURE-FIX: Handle specific, expected exceptions gracefully.
+                catch (TimeoutRejectedException)
+                {
+                    // This is NORMAL. It means the long-poll timed out without a message.
+                    // We log it at a low level (Trace) and immediately loop again to re-poll.
+                    _logger.LogTrace("Producer poll timed out as expected. Re-polling immediately.");
+                    continue; // No delay needed.
+                }
+                catch (BrokenCircuitException)
+                {
+                    // The circuit is open. Polly has already logged this. We just wait before trying again.
+                    // The delay prevents a tight loop while the source (Redis) is down.
+                    _logger.LogWarning("Producer is paused due to an open circuit. Will check again in {Delay}s.", _options.ProducerCircuitBreakSeconds);
+                    await Task.Delay(TimeSpan.FromSeconds(_options.ProducerCircuitBreakSeconds), ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    // The service is shutting down.
+                    break;
+                }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Producer loop encountered a critical error. Retrying after a delay...");
-                    await Task.Delay(5000, ct);
+                    // Catch any other unexpected, genuine errors from the producer logic.
+                    // This is now for TRUE errors, not timeouts.
+                    _logger.LogError(ex, "Producer loop encountered an unhandled critical error. Retrying after a delay...");
+                    await Task.Delay(5000, ct); // A small delay before retrying a genuine failure.
                 }
             }
             _logger.LogInformation("Producer loop finished.");
         }
+        #endregion
+
+        #region Core Loops
 
         private async Task DispatcherLoopAsync(CancellationToken ct)
         {
@@ -323,4 +374,5 @@ namespace TelegramPanel.Queue
         }
         #endregion
     }
+
 }
