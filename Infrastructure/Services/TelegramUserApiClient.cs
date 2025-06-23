@@ -1357,12 +1357,30 @@ namespace Infrastructure.Services
                 string? randomAdvice = await get_random_advice(cancellationToken).ConfigureAwait(false);
                 if (!string.IsNullOrWhiteSpace(randomAdvice))
                 {
-                    // Format the footer with an emoji
-                    string footer = $"\n\n💡 {randomAdvice}";
+                    // --- START: DYNAMIC EMOJI LOGIC ---
+
+                    // 1. Define your package of emojis right here.
+                    var adviceEmojis = new[] // Using an array `[]` is simple and direct
+                    {
+                   "💡", "✨", "🚀", "🤔", "😊", "👍", "🎉", "🌟", "🔥", "💯",
+                   "🤖", "🧠", "🌍", "💬", "✅", "🎯", "🧐", "🙌", "🤓", "🤗"
+                     };
+
+                    // 2. Create a Random object to pick one.
+                    var random = new Random();
+
+                    // 3. Get a random emoji from the list.
+                    string emoji = adviceEmojis[random.Next(adviceEmojis.Length)];
+
+                    // --- END: DYNAMIC EMOJI LOGIC ---
+
+
+                    // Format the footer with the chosen random emoji
+                    string footer = $"\n\n{emoji} {randomAdvice}";
 
                     // If the original message is null/empty (e.g., for a media caption), the advice becomes the message.
                     // Otherwise, it's appended to the existing message.
-                    message = string.IsNullOrEmpty(message) ? $"💡 {randomAdvice}" : $"{message}{footer}";
+                    message = string.IsNullOrEmpty(message) ? $"{emoji} {randomAdvice}" : $"{message}{footer}";
 
                     _logger.LogDebug("SendMessageAsync: Appended random advice footer to the message for Peer {PeerId}.", peerIdForLog);
 
