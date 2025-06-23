@@ -10,8 +10,14 @@ using Polly.Retry;
 using Polly.Timeout;
 using Polly.Wrap;
 using StackExchange.Redis;
+using System; // Ensure System is referenced
+using System.Collections.Generic;
+using System.Linq; // Still needed for `Any` on lists etc.
 using System.Text;
+using System.Threading; // For SemaphoreSlim and CancellationToken
+using System.Threading.Tasks; // For Task and Task.Run
 using Telegram.Bot;
+using Telegram.Bot.Types; // For Update type
 using TelegramPanel.Application.Interfaces;
 #endregion
 
@@ -101,63 +107,85 @@ namespace TelegramPanel.Queue
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _logger.LogInformation("Update Queue Consumer Service is starting...");
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
 
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
+                    // The _redisResiliencePolicy wraps the entire dequeuing and processing initiation.
+                    // If the circuit breaker is open, this ExecuteAsync will immediately throw BrokenCircuitException.
                     await _redisResiliencePolicy.ExecuteAsync(async (ct) =>
                     {
                         _logger.LogTrace("Polling Redis queue for updates...");
 
-                        // The `await foreach` loop is now only responsible for dequeuing.
+                        // Use await foreach to process items as they become available from the channel.
+                        // The semaphore inside ProcessSingleUpdateConcurrentlyAsync will limit how many
+                        // actual processing tasks run in parallel.
                         await foreach (var update in _updateChannel.ReadAllAsync(ct).WithCancellation(ct))
                         {
-                            // ✅ REAL-TIME: Don't await the processing.
-                            // Fire-and-forget the processing task to allow the loop to continue dequeuing immediately.
-                            // The semaphore controls how many of these can run at once.
-                            _ = ProcessUpdateConcurrentlyAsync(update, ct);
+                            if (update == null) continue; // Should not happen if ReadAllAsync is implemented correctly
+
+                            _logger.LogTrace("Dequeued update {UpdateId} of type {UpdateType}.", update.Id, update.Type);
+
+                            // ✅ MODIFIED: Fire-and-forget the processing task using Task.Run.
+                            // This allows the await foreach loop to continue fetching the next message
+                            // while the processing happens in the background, controlled by the semaphore.
+                            _ = Task.Run(() => ProcessSingleUpdateConcurrentlyAsync(update, ct), ct);
                         }
-                    }, stoppingToken).ConfigureAwait(false);
+                        // If ReadAllAsync finishes or throws and is caught below,
+                        // this await foreach loop will exit and the outer while loop will continue.
+
+                    }, stoppingToken).ConfigureAwait(false); // Pass stoppingToken to ExecuteAsync
                 }
                 catch (BrokenCircuitException)
                 {
                     _logger.LogWarning("Redis circuit is OPEN. Pausing consumption for {BreakDuration}.", _redisBreakDuration);
+                    // Use the jittered delay to avoid thundering herd.
                     await Task.Delay(GetJitteredDelay(_redisBreakDuration), stoppingToken).ConfigureAwait(false);
                 }
                 catch (TimeoutRejectedException)
                 {
-                    // A timeout on a long-poll is normal. It means no messages arrived.
+                    // A timeout on a long-poll (if _updateChannel used one) is normal. It means no messages arrived.
                     // Log it at a low level and immediately loop again to start the next poll.
                     _logger.LogTrace("Redis queue read timed out (no new messages). Polling again immediately.");
-                    continue;
+                    // No need for delay here, the loop will naturally restart.
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Update Queue Consumer Service was cancelled gracefully.");
-                    break;
+                    break; // Exit the while loop if cancellation occurred.
                 }
                 catch (Exception ex)
                 {
-                    // A truly unexpected error in the dequeuing loop.
-                    _logger.LogCritical(ex, "An unhandled exception ({ExceptionType}) occurred in the main consumer loop. Pausing before retrying.", ex.GetType().Name);
+                    // A truly unexpected error that wasn't handled by resilience policies or specific catches.
+                    _logger.LogCritical(ex, "An unhandled exception ({ExceptionType}) occurred in the main consumer loop. Pausing for {Delay} before retrying.", ex.GetType().Name, TimeSpan.FromSeconds(10));
                     await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
                 }
             }
         }
 
-        private async Task ProcessUpdateConcurrentlyAsync(Telegram.Bot.Types.Update update, CancellationToken cancellationToken)
+        // This method is now correctly fire-and-forgotten by Task.Run in ExecuteAsync.
+        private async Task ProcessSingleUpdateConcurrentlyAsync(Telegram.Bot.Types.Update update, CancellationToken cancellationToken)
         {
             // Wait until a "slot" is available in the semaphore.
             // This safely limits concurrency.
-            await _concurrencySemaphore.WaitAsync(cancellationToken);
+            // Pass the cancellation token to WaitAsync.
+            await _concurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             try
             {
                 // Once a slot is acquired, execute the processing logic.
-                // This call is still awaited here to ensure the semaphore is released correctly in the finally block.
-                await ProcessSingleUpdateWithRetries(update, cancellationToken);
+                // This call is awaited here to ensure the semaphore is released correctly in the finally block.
+                await ProcessSingleUpdateWithRetries(update, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // This catch block is for exceptions that might occur *after* acquiring the semaphore
+                // but *before* ProcessSingleUpdateWithRetries itself catches and handles them permanently.
+                // For instance, an exception within the _concurrencySemaphore.WaitAsync or the try block
+                // itself that isn't caught by the inner policies.
+                _logger.LogError(ex, "Error during concurrent processing of update {UpdateId}. This might be a transient issue.", update.Id);
+                // Depending on your needs, you might want to re-evaluate the semaphore acquisition if a critical error happens here.
             }
             finally
             {
@@ -166,8 +194,6 @@ namespace TelegramPanel.Queue
                 _concurrencySemaphore.Release();
             }
         }
-
-
         #endregion
 
         #region Private Helper for Processing
@@ -183,21 +209,27 @@ namespace TelegramPanel.Queue
             {
                 try
                 {
+                    // Pass the cancellation token to ExecuteAsync so it can be respected by the policy.
                     await _processingRetryPolicy.ExecuteAsync(async (context, ct) =>
                     {
                         await using var scope = _scopeFactory.CreateAsyncScope();
                         var updateProcessor = scope.ServiceProvider.GetRequiredService<ITelegramUpdateProcessor>();
-                        await updateProcessor.ProcessUpdateAsync(update, ct);
-                    }, pollyContext, stoppingToken);
+                        await updateProcessor.ProcessUpdateAsync(update, ct).ConfigureAwait(false); // Pass ct to the actual processor
+                    }, pollyContext, stoppingToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
+                    // This catch block is for exceptions that _processingRetryPolicy did NOT handle and rethrow.
+                    // This means the retries have been exhausted, or the exception type was not configured for retry.
                     var errorMessage = new StringBuilder();
                     errorMessage.AppendLine("❌ *PERMANENT FAILURE: Update Processing Failed*");
-                    // ... (rest of error message construction is the same) ...
+                    errorMessage.AppendLine($"*Update ID:* `{update.Id}`");
+                    errorMessage.AppendLine($"*Update Type:* `{update.Type}`");
                     errorMessage.AppendLine($"*Message:* `{ex.Message}`");
 
                     _logger.LogError(ex, "Update {UpdateId} failed processing permanently after all retries. NOTIFYING ADMIN.", update.Id);
+                    // IMPORTANT: Do not await NotifyAdminAsync here if you want the main loop to continue quickly.
+                    // Use _ = NotifyAdminAsync(...) to fire-and-forget the admin notification.
                     _ = NotifyAdminAsync(errorMessage.ToString());
                 }
             }
@@ -218,12 +250,13 @@ namespace TelegramPanel.Queue
             {
                 try
                 {
+                    // Use CancellationToken.None for admin notifications as we don't want these to be cancelled easily.
                     await botClient.SendMessage(
                         chatId: adminId,
                         text: message,
                         parseMode: Telegram.Bot.Types.Enums.ParseMode.Markdown,
-                        cancellationToken: CancellationToken.None
-                    );
+                        cancellationToken: CancellationToken.None // Use None or a long-lived token for critical notifications.
+                    ).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -250,7 +283,13 @@ namespace TelegramPanel.Queue
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Update Queue Consumer Service stop requested.");
-            await base.StopAsync(cancellationToken);
+
+            // Signal cancellation to any tasks waiting on the semaphore or processing.
+            // This is crucial for graceful shutdown. The tokens passed to Task.Run and WaitAsync
+            // will pick up this cancellation.
+
+            await base.StopAsync(cancellationToken).ConfigureAwait(false); // Crucial to call base method
+            _logger.LogInformation("Update Queue Consumer Service stop complete.");
         }
         #endregion
     }
