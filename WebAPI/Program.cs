@@ -300,7 +300,7 @@ try
         try
         {
             Log.Information("Running on Windows (not in a container). Checking for local SQL Server services...");
-            SqlServiceManager.EnsureSqlServicesRunning();
+            ServiceManagerHelper.EnsureAllServicesRunningAndHealthy(); // Changed 
             Log.Information("SQL Server service check complete.");
         }
         catch (Exception exSql)
