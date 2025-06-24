@@ -372,9 +372,9 @@ namespace BackgroundTasks.Services
             #region Configuration
             const int freeUserRssHourlyLimit = 20;
             const int vipUserRssHourlyLimit = 100;
-            // NOTE: This period MUST match the period used in the rate limiter calls.
             TimeSpan rssLimitPeriod = TimeSpan.FromHours(1);
-            long targetUserId = -1; // Default for logging in case of early failure
+            const int sendDelaySeconds = 5; // The requested delay
+            long targetUserId = -1;
             #endregion
 
             using IDisposable? logScope = _logger.BeginScope(new Dictionary<string, object?>
@@ -388,9 +388,6 @@ namespace BackgroundTasks.Services
             try
             {
                 // STEP 1: VALIDATE CORE DATA (FAIL CRITICALLY)
-                // Fetch the news item first. If it's gone, the entire job is invalid and must fail.
-                // This is the earliest critical failure point and prevents wasting resources on users
-                // for a non-existent item.
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, CancellationToken.None);
                 if (newsItem == null)
                 {
@@ -399,50 +396,45 @@ namespace BackgroundTasks.Services
                 }
 
                 // STEP 2: RETRIEVE TARGET USER (FAIL GRACEFULLY)
-                // Get the specific user for this job instance from the cache and then the database.
-                // This helper returns null if the user can't be processed (e.g., cache expired, user deleted).
                 (Application.DTOs.UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex);
                 if (userDto == null)
                 {
-                    // Logging is handled inside the helper. This job instance is done, but it's not a failure.
                     return;
                 }
 
                 // STEP 3: ENFORCE RATE LIMIT (SKIP FAST)
-                // This is the primary "skip fast" point. We check the user's limit before building payloads or sending.
-                // NOTE: This check depends on the user's level (Free/VIP), so it MUST come after the user DB lookup.
                 _logger.LogDebug("Enforcing rate limit for User {TargetUserId} (Level: {UserLevel}).", targetUserId, userDto.Level);
                 int applicableLimit = (userDto.Level is UserLevel.Platinum or UserLevel.Bronze) ? vipUserRssHourlyLimit : freeUserRssHourlyLimit;
 
                 if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, applicableLimit, rssLimitPeriod))
                 {
                     _logger.LogInformation("SKIP: User {TargetUserId} has met the rate limit of {Limit}/{Period}. No notification will be sent.", targetUserId, applicableLimit, rssLimitPeriod);
-                    return; // Graceful stop: This is correct, expected behavior.
+                    return;
                 }
 
                 // STEP 4: DISPATCH & POST-SEND ACTIONS
-                // All checks have passed. Now we build the payload and delegate sending.
                 _logger.LogDebug("Preparing and dispatching notification for User {TargetUserId}.", targetUserId);
 
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
 
-                // 4a. Delegate the "last mile" sending to our dedicated, robust sender method.
+                // =================================================================
+                // == DELAY ADDED HERE AS REQUESTED                             ==
+                // =================================================================
+                _logger.LogInformation("Introducing a {DelaySeconds}-second delay before sending to User {TargetUserId} to regulate outbound traffic.", sendDelaySeconds, targetUserId);
+                await Task.Delay(TimeSpan.FromSeconds(sendDelaySeconds), CancellationToken.None);
+                // =================================================================
+
+                // 4a. Delegate the "last mile" sending.
                 await SendNotificationAsync(payload, CancellationToken.None);
 
-                // 4b. IMPORTANT: This line is ONLY reached if SendNotificationAsync did not throw an exception.
-                // This correctly ensures we only count *successful* sends against the user's quota.
+                // 4b. Increment usage counter only after a successful send.
                 await _rateLimiter.IncrementUsageAsync(targetUserId, rssLimitPeriod);
                 _logger.LogInformation("Successfully sent notification and incremented rate limit counter for User {UserId}.", targetUserId);
             }
             catch (Exception ex)
             {
                 // STEP 5: ULTIMATE FAILURE CATCH-ALL
-                // This block catches critical failures (like the missing NewsItem) or transient errors
-                // from SendNotificationAsync that should be retried.
                 _logger.LogCritical(ex, "A critical, retriable exception occurred in job for User {TargetUserId}. Hangfire will process the retry.", targetUserId);
-
-                // Re-throw the exception. This is crucial for telling Hangfire to mark this attempt
-                // as "failed" and to schedule a retry.
                 throw;
             }
         }
