@@ -369,15 +369,14 @@ namespace BackgroundTasks.Services
         [AutomaticRetry(Attempts = 3)]
         public async Task ProcessNotificationFromCacheAsync(Guid newsItemId, string userListCacheKey, int userIndex)
         {
-            #region V4 Configuration - Business Rules
+            #region Configuration
             const int freeUserRssHourlyLimit = 20;
             const int vipUserRssHourlyLimit = 100;
-            TimeSpan rssLimitPeriod = TimeSpan.FromMinutes(15);
-            long targetUserId = -1;
-
+            // NOTE: This period MUST match the period used in the rate limiter calls.
+            TimeSpan rssLimitPeriod = TimeSpan.FromHours(1);
+            long targetUserId = -1; // Default for logging in case of early failure
             #endregion
 
-            // V4: A single, top-level scope for ultimate traceability in logs like Seq or Datadog.
             using IDisposable? logScope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["JobType"] = "RssNotification",
@@ -388,102 +387,117 @@ namespace BackgroundTasks.Services
 
             try
             {
-                #region Step 1: Pre-Flight Checks & User Retrieval (Fail Fast)
-                _logger.LogDebug("Starting pre-flight checks.");
-
-                // 1a. Retrieve user list from Redis cache.
-                RedisValue serializedUserIds = await _redisDb.StringGetAsync(userListCacheKey);
-                if (!serializedUserIds.HasValue || serializedUserIds.IsNullOrEmpty)
-                {
-                    _logger.LogWarning("Job aborted: Cache key {CacheKey} is missing or empty. The user list may have expired.", userListCacheKey);
-                    return; // Graceful stop: The batch is done.
-                }
-
-                // 1b. Deserialize and validate the user index.
-                List<long>? allUserIds = JsonSerializer.Deserialize<List<long>>(serializedUserIds.ToString());
-                if (allUserIds == null || userIndex >= allUserIds.Count)
-                {
-                    _logger.LogError("Job aborted: User index {UserIndex} is out of bounds for the list (Size: {ListSize}). This may indicate a dispatch logic error.", userIndex, allUserIds?.Count ?? 0);
-                    return; // Graceful stop: A bug might exist, but don't fail the job.
-                }
-
-                targetUserId = allUserIds[userIndex];
-                _logger.LogInformation("Processing job for UserID: {TargetUserId}", targetUserId);
-
-                // 1c. Fetch user profile from the primary database.
-                Application.DTOs.UserDto? userDto = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), CancellationToken.None);
-                if (userDto == null)
-                {
-                    _logger.LogWarning("Job skipped: User {TargetUserId} was in the dispatch cache but no longer exists in the database.", targetUserId);
-                    return; // Graceful stop: User has been deleted.
-                }
-                #endregion
-
-                #region Step 2: Enforce Business Rules (Rate Limiting)
-                _logger.LogDebug("Enforcing business rules for User {TargetUserId} (Level: {UserLevel}).", targetUserId, userDto.Level);
-
-                int applicableLimit = (userDto.Level is UserLevel.Platinum or UserLevel.Bronze) ? vipUserRssHourlyLimit : freeUserRssHourlyLimit;
-                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, applicableLimit, rssLimitPeriod))
-                {
-                    _logger.LogInformation("SKIP: User {TargetUserId} has met the rate limit of {Limit}/{Period}. No notification will be sent.", targetUserId, applicableLimit, rssLimitPeriod);
-                    return; // Graceful stop: This is correct behavior.
-                }
-                #endregion
-
-                #region Step 3: Data Preparation & Sanitization
-                _logger.LogDebug("Preparing notification payload.");
-
-                // 3a. Fetch the core content.
+                // STEP 1: VALIDATE CORE DATA (FAIL CRITICALLY)
+                // Fetch the news item first. If it's gone, the entire job is invalid and must fail.
+                // This is the earliest critical failure point and prevents wasting resources on users
+                // for a non-existent item.
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, CancellationToken.None);
                 if (newsItem == null)
                 {
-                    // This is a critical failure. The job was scheduled for a NewsItem that has since been deleted.
                     _logger.LogError("Job failed critically: NewsItem {NewsItemId} not found in the database. This job cannot be completed.", newsItemId);
                     throw new InvalidOperationException($"NewsItem {newsItemId} not found, but a job was scheduled for it.");
                 }
 
-                // 3b. Build the payload, relying on a central formatter for sanitization.
-                // STEP 5: Build payload (No change here)
-                NotificationJobPayload payload = new()
+                // STEP 2: RETRIEVE TARGET USER (FAIL GRACEFULLY)
+                // Get the specific user for this job instance from the cache and then the database.
+                // This helper returns null if the user can't be processed (e.g., cache expired, user deleted).
+                (Application.DTOs.UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex);
+                if (userDto == null)
                 {
-                    TargetTelegramUserId = targetUserId,
-                    MessageText = BuildMessageText(newsItem),
-                    UseMarkdown = true,
-                    ImageUrl = newsItem.ImageUrl ?? string.Empty,
-                    Buttons = BuildSimpleNotificationButtons(newsItem),
-                    NewsItemId = newsItemId
-                };
-                #endregion
+                    // Logging is handled inside the helper. This job instance is done, but it's not a failure.
+                    return;
+                }
 
-                #region Step 4: Dispatch & Post-Send Actions
-                _logger.LogDebug("Dispatching notification payload to the sender.");
+                // STEP 3: ENFORCE RATE LIMIT (SKIP FAST)
+                // This is the primary "skip fast" point. We check the user's limit before building payloads or sending.
+                // NOTE: This check depends on the user's level (Free/VIP), so it MUST come after the user DB lookup.
+                _logger.LogDebug("Enforcing rate limit for User {TargetUserId} (Level: {UserLevel}).", targetUserId, userDto.Level);
+                int applicableLimit = (userDto.Level is UserLevel.Platinum or UserLevel.Bronze) ? vipUserRssHourlyLimit : freeUserRssHourlyLimit;
+
+                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, applicableLimit, rssLimitPeriod))
+                {
+                    _logger.LogInformation("SKIP: User {TargetUserId} has met the rate limit of {Limit}/{Period}. No notification will be sent.", targetUserId, applicableLimit, rssLimitPeriod);
+                    return; // Graceful stop: This is correct, expected behavior.
+                }
+
+                // STEP 4: DISPATCH & POST-SEND ACTIONS
+                // All checks have passed. Now we build the payload and delegate sending.
+                _logger.LogDebug("Preparing and dispatching notification for User {TargetUserId}.", targetUserId);
+
+                NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
 
                 // 4a. Delegate the "last mile" sending to our dedicated, robust sender method.
-                // This method contains all the API-specific error handling and retry logic.
                 await SendNotificationAsync(payload, CancellationToken.None);
 
-                // 4b. This line is ONLY reached if SendToTelegramAsync did not throw an exception.
+                // 4b. IMPORTANT: This line is ONLY reached if SendNotificationAsync did not throw an exception.
                 // This correctly ensures we only count *successful* sends against the user's quota.
                 await _rateLimiter.IncrementUsageAsync(targetUserId, rssLimitPeriod);
                 _logger.LogInformation("Successfully sent notification and incremented rate limit counter for User {UserId}.", targetUserId);
-                #endregion
             }
             catch (Exception ex)
             {
-                #region Step 5: Ultimate Failure Catch-All
-                // This block will ONLY catch exceptions that were deliberately re-thrown by our sub-methods
-                // (i.e., true transient errors from SendToTelegramAsync) or critical failures from this method
-                // itself (e.g., the InvalidOperationException if a NewsItem is missing).
-
-                _logger.LogCritical(ex,
-                    "A critical, retriable exception occurred in job for User {TargetUserId}. Hangfire will process the retry. Content (Sanitized)'",
-                    targetUserId);
+                // STEP 5: ULTIMATE FAILURE CATCH-ALL
+                // This block catches critical failures (like the missing NewsItem) or transient errors
+                // from SendNotificationAsync that should be retried.
+                _logger.LogCritical(ex, "A critical, retriable exception occurred in job for User {TargetUserId}. Hangfire will process the retry.", targetUserId);
 
                 // Re-throw the exception. This is crucial for telling Hangfire to mark this attempt
-                // as "failed" and to schedule a retry according to the [AutomaticRetry] SaveNewsItemsToDatabaseAsyncattribute.
+                // as "failed" and to schedule a retry.
                 throw;
-                #endregion
             }
+        }
+
+        /// <summary>
+        /// Retrieves and validates a user for processing.
+        /// </summary>
+        /// <returns>A tuple containing the UserDto and their ID, or (null, -1) if the user should be skipped.</returns>
+        private async Task<(Application.DTOs.UserDto? user, long userId)> GetTargetUserAsync(string userListCacheKey, int userIndex)
+        {
+            // 1. Retrieve user list from Redis cache.
+            RedisValue serializedUserIds = await _redisDb.StringGetAsync(userListCacheKey);
+            if (!serializedUserIds.HasValue || serializedUserIds.IsNullOrEmpty)
+            {
+                _logger.LogWarning("Job aborted: Cache key {CacheKey} is missing or empty. The user list may have expired.", userListCacheKey);
+                return (null, -1);
+            }
+
+            // 2. Deserialize and validate the user index.
+            List<long>? allUserIds = JsonSerializer.Deserialize<List<long>>(serializedUserIds.ToString());
+            if (allUserIds == null || userIndex >= allUserIds.Count)
+            {
+                _logger.LogError("Job aborted: User index {UserIndex} is out of bounds for the list (Size: {ListSize}). This may indicate a dispatch logic error.", userIndex, allUserIds?.Count ?? 0);
+                return (null, -1);
+            }
+
+            long targetUserId = allUserIds[userIndex];
+            _logger.BeginScope(new Dictionary<string, object> { ["TargetUserId"] = targetUserId });
+            _logger.LogInformation("Processing job for UserID: {TargetUserId}", targetUserId);
+
+            // 3. Fetch user profile from the primary database.
+            Application.DTOs.UserDto? userDto = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), CancellationToken.None);
+            if (userDto == null)
+            {
+                _logger.LogWarning("Job skipped: User {TargetUserId} was in the dispatch cache but no longer exists in the database.", targetUserId);
+                return (null, targetUserId);
+            }
+
+            return (userDto, targetUserId);
+        }
+
+        /// <summary>
+        /// Builds the notification payload from a NewsItem.
+        /// </summary>
+        private NotificationJobPayload BuildNotificationPayload(NewsItem newsItem, long targetUserId)
+        {
+            return new()
+            {
+                TargetTelegramUserId = targetUserId,
+                MessageText = BuildMessageText(newsItem), // Assuming you have this method
+                UseMarkdown = true,
+                ImageUrl = newsItem.ImageUrl ?? string.Empty,
+                Buttons = BuildSimpleNotificationButtons(newsItem), // Assuming you have this method
+                NewsItemId = newsItem.Id // Assuming the ID property is named 'Id'
+            };
         }
 
 
