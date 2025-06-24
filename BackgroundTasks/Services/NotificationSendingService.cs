@@ -173,7 +173,7 @@ namespace BackgroundTasks.Services
          );
         }
         #endregion
-
+        private const string RedisDedupeTitleHashKeyPrefix = "dedupe:title_hash:";
         /// <summary>
         /// **[DEPRECATED AND NON-FUNCTIONAL]**
         /// This method previously orchestrated the sending of batch notifications to a list of Telegram users.
