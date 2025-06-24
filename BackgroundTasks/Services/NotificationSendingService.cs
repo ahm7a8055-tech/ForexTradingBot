@@ -737,7 +737,7 @@ namespace BackgroundTasks.Services
                         await _botClient.SendPhoto(
                             chatId: payload.TargetTelegramUserId,
                             photo: new InputFileUrl(payload.ImageUrlOrDefault),
-                            caption: sanitizedMessageForSending, // <<< FIX: Using pre-calculated sanitized message >>>
+                            caption: payload.MessageText, // <<< FIX: Using pre-calculated sanitized message >>>
                             parseMode: ParseMode.MarkdownV2,
                             replyMarkup: finalKeyboard, // Using pre-calculated keyboard
                             cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -748,7 +748,7 @@ namespace BackgroundTasks.Services
                         // send a plain text message. This is a fallback in case the default image URL was also invalid.
                         await _botClient.SendMessage(
                             chatId: payload.TargetTelegramUserId,
-                            text: sanitizedMessageForSending,
+                            text: payload.MessageText,
                             parseMode: ParseMode.MarkdownV2,
                             replyMarkup: finalKeyboard,
                             linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
