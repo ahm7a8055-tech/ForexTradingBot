@@ -702,13 +702,6 @@ namespace BackgroundTasks.Services
             _logger.LogWarning("No valid buttons were found after filtering. Returning null keyboard.");
             return null;
         }
-        private readonly int _perMessageSendDelayMs; // Your delay setting
-        /// <summary>
-        /// The "last mile" sender responsible for dispatching the notification payload to Telegram.
-        /// This V3 "God Mode" version centralizes all API error handling, deciding whether an error
-        /// is permanent (and should be swallowed) or transient (and should be retried by Polly).
-        /// </summary>
-        private readonly SemaphoreSlim _telegramApiConcurrencyLimiter = new SemaphoreSlim(10, 10); // Example: Limit to 10 concurrent API calls at any time
 
         private async Task SendToTelegramAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {
@@ -717,35 +710,42 @@ namespace BackgroundTasks.Services
                 // A unique key for logging and Polly context
                 Context pollyContext = new($"NotificationTo_{payload.TargetTelegramUserId}");
 
-                // We execute the API call within the Polly policy.
-                // The throttling logic is now MOVED INSIDE the lambda.
+                // <<< PERFORMANCE CHANGE: Prepare the message payload *before* the retry loop. >>>
+                // This work is expensive (string manipulation, object creation) and its result
+                // is the same for every retry attempt. By doing it once, we save significant
+                // CPU cycles on every subsequent retry.
+                var sanitizedMessageForSending = EscapeTelegramMarkdownV2(payload.MessageText);
+                InlineKeyboardMarkup? finalKeyboard = BuildTelegramKeyboard(payload.Buttons);
+
+                // Execute the core logic within the Polly policy for retries.
                 await _telegramApiRetryPolicy.ExecuteAsync(async (ctx) =>
                 {
-                    // <<< FIX: ACQUIRE PERMIT *INSIDE* THE RETRY POLICY >>>
-                    // A permit is now only consumed right before an API call is attempted.
-                    // If Polly retries, it will correctly try to acquire a new permit for the next attempt.
+                    // Acquire a permit from the global throttler right before the API call.
+                    // This remains inside the loop, which is the correct pattern.
+                    // <<< ASYNC HYGIENE: Added .ConfigureAwait(false) to the WaitAsync call >>>
+                    // This prevents potential deadlocks by not attempting to resume on the original synchronization context.
                     await _globalApiThrottler.WaitAsync(
                         TELEGRAM_API_THROTTLE_KEY,
                         TELEGRAM_MESSAGES_PER_SECOND_LIMIT,
                         TimeSpan.FromSeconds(1),
-                        cancellationToken);
+                        cancellationToken).ConfigureAwait(false);
 
-                    // The rest of the logic remains the same
-                    var sanitizedMessageForSending = EscapeTelegramMarkdownV2(payload.MessageText);
-                    InlineKeyboardMarkup? finalKeyboard = BuildTelegramKeyboard(payload.Buttons);
-
+                    // Use the pre-calculated, sanitized payload for the API call.
+                    // Check if payload.ImageUrlOrDefault is populated (it will be, either from RSS or default).
                     if (!string.IsNullOrWhiteSpace(payload.ImageUrlOrDefault))
                     {
                         await _botClient.SendPhoto(
                             chatId: payload.TargetTelegramUserId,
                             photo: new InputFileUrl(payload.ImageUrlOrDefault),
-                            caption: payload.MessageText,
+                            caption: sanitizedMessageForSending, // <<< FIX: Using pre-calculated sanitized message >>>
                             parseMode: ParseMode.MarkdownV2,
-                            replyMarkup: finalKeyboard,
+                            replyMarkup: finalKeyboard, // Using pre-calculated keyboard
                             cancellationToken: cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
+                        // If ImageUrlOrDefault is *still* null/empty after the dispatch logic,
+                        // send a plain text message. This is a fallback in case the default image URL was also invalid.
                         await _botClient.SendMessage(
                             chatId: payload.TargetTelegramUserId,
                             text: sanitizedMessageForSending,
@@ -754,7 +754,7 @@ namespace BackgroundTasks.Services
                             linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
                             cancellationToken: cancellationToken).ConfigureAwait(false);
                     }
-                }, pollyContext);
+                }, pollyContext).ConfigureAwait(false); // Added ConfigureAwait(false) to the ExecuteAsync call itself.
 
                 _logger.LogInformation("Notification sent successfully to User {UserId}", payload.TargetTelegramUserId);
             }
@@ -769,22 +769,26 @@ namespace BackgroundTasks.Services
                     _logger.LogWarning("Attempting to mark user {UserId} as unreachable due to permanent error (Code: {ErrorCode}).", payload.TargetTelegramUserId, apiEx.ErrorCode);
                     try
                     {
+                        // CancellationToken.None is used here, which is fine for a critical self-healing action if it must complete.
                         await _userService.MarkUserAsUnreachableAsync(payload.TargetTelegramUserId.ToString(), $"ApiError_{apiEx.ErrorCode}", CancellationToken.None);
                         _logger.LogInformation("Successfully marked user {UserId} as unreachable.", payload.TargetTelegramUserId);
                     }
                     catch (Exception markEx)
                     {
                         _logger.LogError(markEx, "FAILED during self-healing attempt to mark user {UserId} as unreachable. Re-throwing for Hangfire.", payload.TargetTelegramUserId);
-                        throw;
+                        throw; // Re-throwing ensures Hangfire knows this job attempt failed.
                     }
                 }
             }
             catch (Exception ex)
             {
+                // This catch block handles general exceptions that are not specific API errors.
+                // It's crucial for telling Hangfire that a job attempt failed so it can retry based on [AutomaticRetry].
                 _logger.LogError(ex, "FATAL or UNRESOLVED exception for User {UserId}. Re-throwing for Hangfire.", payload.TargetTelegramUserId);
                 throw;
             }
         }
+
         /// <summary>
 
         /// <summary>

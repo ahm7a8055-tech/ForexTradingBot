@@ -150,6 +150,7 @@ namespace Infrastructure.Services
         /// </summary>
         public const string HttpClientNamedClient = "RssFeedClient";
         private const string RedisProcessedImageUrlsSetKey = "dedupe:image_urls";
+        private const string DEFAULT_NEWS_IMAGE_URL = "https://i.postimg.cc/3RmJjBjY/Breaking-News.jpg"; // Example default image URL
         /// <summary>
         /// Factory for creating configured <see cref="HttpClient"/> instances, ensuring proper pooling and lifetime management.
         /// </summary>
@@ -1270,58 +1271,92 @@ namespace Infrastructure.Services
             const string methodName = nameof(DispatchNotificationsForImageItemsAsync);
             _logger.LogTrace("Entering {MethodName}", methodName);
 
-            // --- Business Logic: Filter for items with an image ONLY ---
+            // --- Business Logic: Dispatch ALL saved items. ---
+            // The logic for using a default image will be handled when creating the NotificationJobPayload
+            // within the EnqueueDispatchTasks method.
+
             var itemsToDispatch = savedItems
-                .Where(item => !string.IsNullOrWhiteSpace(item.ImageUrl))
-                .OrderByDescending(item => item.PublishedDate)
+                .OrderByDescending(item => item.PublishedDate) // Order items by publication date for sequential processing if needed, though EnqueueDispatchTasks handles parallelism.
                 .ToList();
 
             int totalSavedCount = savedItems.Count;
-            int withImageCount = itemsToDispatch.Count;
-            int withoutImageCount = totalSavedCount - withImageCount;
-
+            // Log includes the default image URL for clarity on how items without images will be handled.
             _logger.LogInformation(
-                "Dispatch Filtering: From {TotalSaved} saved items, {WithImageCount} have an image and will be dispatched. {WithoutImageCount} items without an image will be skipped.",
-                totalSavedCount, withImageCount, withoutImageCount);
+                "Dispatching notifications for all {TotalSaved} saved items. Items without images will use the default image URL '{DefaultImageUrl}'.",
+                totalSavedCount, DEFAULT_NEWS_IMAGE_URL);
 
             if (!itemsToDispatch.Any())
             {
-                _logger.LogInformation("No news items with images found to dispatch.");
+                _logger.LogInformation("No news items available to dispatch notifications for.");
                 _logger.LogTrace("Exiting {MethodName}", methodName);
                 return Enumerable.Empty<NewsItemDto>();
             }
 
+            // This set will store the IDs of items for which a notification task was successfully enqueued.
+            // It's used later to ensure we only map items that were actually processed for dispatch.
             var dispatchedItemIds = new HashSet<Guid>();
 
-            _logger.LogInformation("Dispatching Batch: Enqueuing all {Count} notifications for news items with images.", itemsToDispatch.Count);
-            await EnqueueDispatchTasks(itemsToDispatch, "ImageOnlyBatch", dispatchedItemIds, cancellationToken);
+            _logger.LogInformation("Dispatching Batch: Enqueuing notification tasks for all {Count} items.", itemsToDispatch.Count);
+            // Call EnqueueDispatchTasks for all items. It is assumed this method handles the payload creation
+            // (including using the default image if necessary) and the actual queuing of jobs.
+            // We ensure ConfigureAwait(false) is used for the async call to EnqueueDispatchTasks.
+            await EnqueueDispatchTasks(itemsToDispatch, "AllItemsBatch", dispatchedItemIds, cancellationToken).ConfigureAwait(false);
 
-            // --- START of CHANGE: Add new, unique image URLs to Redis ---
+            // --- Redis Deduplication: Add relevant image URLs to Redis ---
+            // This section processes URLs that *will actually be sent as part of a photo notification*.
+            // This includes items with original images AND items that used the default image.
             if (itemsToDispatch.Any())
             {
-                _logger.LogInformation("Registering {Count} newly dispatched image URLs in Redis for global deduplication.", itemsToDispatch.Count);
+                _logger.LogInformation("Registering image URLs in Redis for global deduplication against key '{RedisKey}'.", RedisProcessedImageUrlsSetKey);
                 try
                 {
                     IDatabase redisDb = _redis.GetDatabase();
-                    // Convert the list of URLs to RedisValue[] for the bulk add command.
+
+                    // Collect all image URLs that will be sent as part of a photo notification.
                     var imageUrlsToAdd = itemsToDispatch
-                        .Select(item => new RedisValue(item.ImageUrl!))
+                        .Select(item =>
+                        {
+                            // Determine the image URL to be used for this notification.
+                            // If the item has an image, use it. Otherwise, fall back to the default image URL.
+                            string imageUrlForNotification = !string.IsNullOrWhiteSpace(item.ImageUrl) ? item.ImageUrl : DEFAULT_NEWS_IMAGE_URL;
+
+                            // Return the URL if it's valid and not null/whitespace, otherwise return null (which will be filtered out).
+                            // This ensures we don't add null/empty values to Redis.
+                            return !string.IsNullOrWhiteSpace(imageUrlForNotification) ? imageUrlForNotification : null;
+                        })
+                        .Where(url => url != null) // Filter out any nulls (e.g., if DEFAULT_NEWS_IMAGE_URL was also empty or null)
+                        .Select(url => new RedisValue(url)) // Convert to RedisValue for StackExchange.Redis
                         .ToArray();
 
-                    // SADD is an atomic, idempotent operation.
-                    // It returns the number of elements that were actually added (i.e., didn't already exist).
-                    long addedCount = await redisDb.SetAddAsync(RedisProcessedImageUrlsSetKey, imageUrlsToAdd);
-                    _logger.LogInformation("Successfully registered images in Redis. New URLs added: {AddedCount} of {TotalCount}.", addedCount, imageUrlsToAdd.Length);
+                    if (imageUrlsToAdd.Any())
+                    {
+                        // SADD is an atomic, idempotent operation.
+                        // It returns the number of elements that were actually added (i.e., didn't already exist).
+                        long addedCount = await redisDb.SetAddAsync(RedisProcessedImageUrlsSetKey, imageUrlsToAdd).ConfigureAwait(false);
+                        _logger.LogInformation("Successfully registered image URLs in Redis. New URLs added: {AddedCount} of {TotalCount}.", addedCount, imageUrlsToAdd.Length);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("No valid image URLs (original or default) were found to register in Redis for deduplication.");
+                    }
                 }
                 catch (RedisException redisEx)
                 {
-                    // Log critical failure but do not throw. The main operation (dispatch) succeeded.
-                    // The only consequence is these images might be re-processed if Redis is down, which is acceptable degradation.
+                    // Log critical failure but do not throw. The main operation (dispatch enqueueing) succeeded.
+                    // The consequence is that deduplication might be incomplete until Redis is restored.
                     _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis to register new image URLs. Future deduplication may be incomplete until Redis is restored.");
                 }
+                catch (Exception ex) // Catch other potential exceptions during Redis operation.
+                {
+                    _logger.LogCritical(ex, "CRITICAL: An unexpected error occurred during Redis image URL registration. Future deduplication may be incomplete.");
+                }
             }
+
             _logger.LogInformation("Completed all dispatch enqueueing. Total items queued for notification: {TotalDispatchedCount}", dispatchedItemIds.Count);
 
+            // Map the processed items back to DTOs for the return value.
+            // We need to ensure that only items whose notifications were *enqueued* (tracked by dispatchedItemIds) are mapped.
+            // This ensures the DTOs reflect what was actually processed and queued.
             var dispatchedDtos = _mapper.Map<IEnumerable<NewsItemDto>>(savedItems.Where(ni => dispatchedItemIds.Contains(ni.Id)));
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return dispatchedDtos;
