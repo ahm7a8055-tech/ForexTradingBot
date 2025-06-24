@@ -10,6 +10,7 @@ using Application.Interfaces;              // ✅ Namespace اصلی برای ا
 using Application.Services;
 using Application.Services.CoinGecko;
 using FluentValidation;                     // برای services.AddValidatorsFromAssembly()
+using Infrastructure.Services;
 using Microsoft.Extensions.DependencyInjection; // برای IServiceCollection و متدهای توسعه‌دهنده DI
 using Microsoft.Extensions.Logging;         // برای ILogger (مثلاً در DummyNotificationService)
 using System.Reflection;                    // برای Assembly.GetExecutingAssembly()
@@ -122,7 +123,7 @@ namespace Application // ✅ Namespace ریشه پروژه Application
             // ------------------- پیاده‌سازی پیش‌فرض/Dummy برای اینترفیس‌های عمومی -------------------
             // این پیاده‌سازی‌ها به لایه Application اجازه می‌دهند بدون وابستگی به پیاده‌سازی‌های لایه‌های دیگر (مانند TelegramPanel)
             // کامپایل و تست شوند. پیاده‌سازی واقعی در لایه مربوطه (مثلاً TelegramPanel) این رجیستری را override خواهد کرد.
-
+           _ = services.AddSingleton<IDistributedThrottler, RedisDistributedThrottler>();
             // سرویس عمومی نوتیفیکیشن (پیاده‌سازی Dummy)
             _ = services.AddScoped<INotificationService, DummyNotificationService>();
             // Register the new, functional CoinGecko service
