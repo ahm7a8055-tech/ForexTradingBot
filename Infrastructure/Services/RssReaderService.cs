@@ -37,6 +37,7 @@ using Domain.Entities;
 using Shared.Extensions;
 using Shared.Results;
 using System.Xml.Linq;
+using StackExchange.Redis;
 
 #endregion
 
@@ -148,7 +149,7 @@ namespace Infrastructure.Services
         /// from the <see cref="IHttpClientFactory"/> for RSS feed requests.
         /// </summary>
         public const string HttpClientNamedClient = "RssFeedClient";
-
+        private const string RedisProcessedImageUrlsSetKey = "dedupe:image_urls";
         /// <summary>
         /// Factory for creating configured <see cref="HttpClient"/> instances, ensuring proper pooling and lifetime management.
         /// </summary>
@@ -347,6 +348,7 @@ namespace Infrastructure.Services
             RssSource RssSource,
             HashSet<string> ExistingSourceItemIds,
             HashSet<string> ProcessedInThisBatch);
+        private readonly IConnectionMultiplexer _redis;
 
         #endregion
 
@@ -364,7 +366,7 @@ namespace Infrastructure.Services
         /// <param name="backgroundJobClient">Hangfire client to enqueue background processing jobs.</param>
         /// <exception cref="ArgumentNullException">Thrown if any injected dependency is null.</exception>
         /// <exception cref="InvalidOperationException">Thrown if the required database connection string is not found.</exception>
-        public RssReaderService(
+        public RssReaderService(IConnectionMultiplexer redis,
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
             IOptions<RssReaderServiceSettings> settingsOptions,
@@ -378,7 +380,7 @@ namespace Infrastructure.Services
             _mapper = mapper ?? throw new ArgumentNullException(nameof(mapper));
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
-
+            _redis = redis ?? throw new ArgumentNullException(nameof(redis)); // ADD THIS LINE
             _connectionString = configuration.GetConnectionString("DefaultConnection")
                                 ?? throw new InvalidOperationException("The 'DefaultConnection' connection string was not found in the application configuration.");
 
@@ -388,11 +390,12 @@ namespace Infrastructure.Services
 
             // Fix for CS1929: Ensure the correct Polly namespace is used and the WaitAndRetryAsync method is properly invoked.  
             _httpRetryPolicy = Policy<HttpResponseMessage>
-               .Handle<HttpRequestException>()
+               .Handle<HttpRequestException>(ex => ex.StatusCode != HttpStatusCode.UnsupportedMediaType) // DO NOT retry our specific validation error
                .OrResult(response =>
-                   response.StatusCode >= HttpStatusCode.InternalServerError ||
-                   response.StatusCode == HttpStatusCode.RequestTimeout ||
-                   response.StatusCode == HttpStatusCode.TooManyRequests)
+                   // Only retry server-side or transient errors
+                   response.StatusCode >= HttpStatusCode.InternalServerError || // 5xx errors
+                   response.StatusCode == HttpStatusCode.RequestTimeout ||     // 408
+                   response.StatusCode == HttpStatusCode.TooManyRequests)     // 429
                .WaitAndRetryAsync(
                    retryCount: _settings.HttpRetryCount,
                    sleepDurationProvider: retryAttempt =>
@@ -492,60 +495,63 @@ namespace Infrastructure.Services
             RssFetchOutcome outcome;
             try
             {
-                // The `using` statement ensures the HttpResponseMessage is always disposed, even if errors occur.
-                // This simplifies the code by removing the need for a finally block for disposal.
+                // PHASE 1: NETWORK OPERATION
+                // ExecuteHttpRequestAsync has its own internal timeout for the network part.
+                // The `cancellationToken` passed here is for external cancellation (e.g., Hangfire job stopping).
                 using HttpResponseMessage httpResponse = await ExecuteHttpRequestAsync(rssSource, correlationId, cancellationToken);
 
-                // Delegate all response processing (success, http error, parsing, etc.) to a dedicated method.
-                outcome = await ProcessHttpResponseAsync(httpResponse, rssSource, cancellationToken);
+                // PHASE 2: CONTENT PROCESSING
+                // We introduce a new, separate timeout for the CPU-bound parsing and processing phase.
+                // This prevents the network timeout from causing a cancellation during a long-running parse.
+                using var processingTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_settings.HttpClientTimeoutSeconds));
+                // Link it ONLY with the external cancellation token, not the (now expired) HTTP request timeout token.
+                using var linkedProcessingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, processingTimeoutCts.Token);
+
+                // Delegate all response processing using this new, dedicated cancellation token.
+                outcome = await ProcessHttpResponseAsync(httpResponse, rssSource, linkedProcessingCts.Token);
             }
             // --- 3. Granular and Specific Exception Handling ---
             catch (OperationCanceledException oce) when (cancellationToken.IsCancellationRequested)
             {
-                // Case A: The CancellationToken provided to THIS method was triggered.
-                // This is a deliberate, clean shutdown (e.g., application stopping). It is NOT a source failure.
+                // Case A: The EXTERNAL CancellationToken was triggered (e.g., Hangfire job stopping).
+                // This is a deliberate, clean shutdown. It is NOT a source failure.
                 _logger.LogInformation(oce, "Operation was deliberately cancelled by the application. This is not a source error.");
                 outcome = RssFetchOutcome.Failure(RssFetchErrorType.Cancellation, "The fetch operation was cancelled by the calling process.", oce);
             }
             catch (OperationCanceledException oce)
             {
-                // Case B: An OperationCanceledException was thrown, but our token was NOT cancelled.
-                // This is the classic signature of an HttpClient timeout. This IS a source failure.
-                _logger.LogWarning(oce, "The HTTP request timed out. This is a transient network error for the source.");
-                outcome = RssFetchOutcome.Failure(RssFetchErrorType.TransientHttp, "The HTTP request timed out.", oce);
+                // Case B: An OperationCanceledException was thrown, but our external token was NOT cancelled.
+                // This is the classic signature of an internal timeout (from HttpClient OR our new processingTimeoutCts).
+                _logger.LogWarning(oce, "The operation timed out. This could be either the HTTP request or the subsequent content parsing. This is a transient error for the source.");
+                outcome = RssFetchOutcome.Failure(RssFetchErrorType.TransientHttp, "The operation (HTTP or Parsing) timed out.", oce);
             }
             catch (HttpRequestException hre)
             {
-                // Case C: Catches fundamental network issues like DNS resolution failure, connection refused, etc.
-                // These are transient errors related to the source's availability.
-                _logger.LogWarning(hre, "A network error occurred while trying to connect to the source.");
-                outcome = RssFetchOutcome.Failure(RssFetchErrorType.TransientHttp, $"A network error occurred: {hre.Message}", hre);
+                // Case C: Catches fundamental network issues (DNS failure, etc.) or permanent HTTP errors like 404.
+                _logger.LogWarning(hre, "A network or HTTP error occurred while trying to connect to the source. StatusCode: {StatusCode}", hre.StatusCode);
+                var errorType = IsPermanentHttpError(hre.StatusCode) ? RssFetchErrorType.PermanentHttp : RssFetchErrorType.TransientHttp;
+                outcome = RssFetchOutcome.Failure(errorType, $"A network/HTTP error occurred: {hre.Message}", hre);
             }
-            // --- NEWLY ADDED CATCH BLOCK ---
-            catch (XmlException xmlEx) // Specifically catch XML parsing errors.
+            catch (XmlException xmlEx)
             {
-                // Case E: XML parsing failed. This is a content-specific error.
-                _logger.LogWarning(xmlEx, "XML parsing error encountered for RssSource '{SourceName}' (ID: {RssSourceId}). The feed content is malformed.", rssSource.SourceName, rssSource.Id);
-                // Classify it as XmlParsing error.
-                outcome = RssFetchOutcome.Failure(RssFetchErrorType.XmlParsing, $"The RSS feed content is malformed: {xmlEx.Message}", xmlEx);
+                // Case D: XML parsing failed. This is a permanent content error with the source.
+                _logger.LogWarning(xmlEx, "XML parsing error encountered for RssSource '{SourceName}'. The feed content is malformed. This is a permanent parsing issue.", rssSource.SourceName);
+                outcome = RssFetchOutcome.Failure(RssFetchErrorType.PermanentParsing, $"The RSS feed content is not valid XML: {xmlEx.Message}", xmlEx);
             }
-            // --- END OF NEWLY ADDED CATCH BLOCK ---
-            catch (Exception ex) // Case D: A final safety net for any other unexpected errors during the pipeline.
+            catch (Exception ex)
             {
-                // These are treated as serious, unknown failures.
+                // Case E: A final safety net for any other unexpected errors during the pipeline.
                 _logger.LogCritical(ex, "An unexpected critical error occurred during the fetch pipeline for RssSource '{SourceName}' (ID: {RssSourceId}).", rssSource.SourceName, rssSource.Id);
                 outcome = RssFetchOutcome.Failure(RssFetchErrorType.Unknown, $"An unexpected error occurred: {ex.Message}", ex);
             }
 
             // --- 4. Final Status Update & Self-Healing ---
             _logger.LogInformation("Fetch cycle concluded. Updating final status of RssSource in the database.");
-            // The outcome object now correctly holds the error type and exception for the XML error if it occurred.
             var finalResult = await UpdateRssSourceStatusAfterFetchOutcomeAsync(rssSource, outcome, cancellationToken);
 
-            // --- V2 UPGRADE: SMARTER SELF-HEALING LOGIC & LOGGING ---
+            // Self-healing logic for unrecoverable database errors.
             if (!finalResult.Succeeded && outcome.ErrorType == RssFetchErrorType.Database)
             {
-                // Log the *intent* with full context before taking action.
                 _logger.LogWarning(outcome.Exception,
                     "SELF-HEALING TRIGGERED for RssSource {RssSourceId} ('{SourceName}') due to a persistent database error. Attempting to delete the source to prevent future job failures.",
                     rssSource.Id, rssSource.SourceName);
@@ -763,49 +769,69 @@ namespace Infrastructure.Services
             const string methodName = nameof(ExecuteHttpRequestAsync);
             _logger.LogTrace("Entering {MethodName} for RssSourceId: {RssSourceId}, URL: {RssSourceUrl}", methodName, rssSource.Id, rssSource.Url);
 
-            // Get an HttpClient instance from the factory. HttpClientFactory ensures proper pooling,
-            // lifetime management, and applies pre-configured handlers (like logging, Polly policies if configured in Startup).
             var httpClient = _httpClientFactory.CreateClient("RssFeedClient");
 
-            // Execute the HTTP GET request within the configured Polly retry policy.
-            // The lambda passed to ExecuteAsync is re-executed on each retry, ensuring a fresh HttpRequestMessage.
+            // Execute the entire operation, including validation, within the Polly retry policy.
             var response = await _httpRetryPolicy.ExecuteAsync(async (context, ct) =>
             {
-                // CRITICAL FIX: Create a NEW HttpRequestMessage instance for EACH attempt (initial call and all retries).
-                // HttpRequestMessage is designed for single use.
+                // --- START of CHANGE: Moved logic inside the Polly lambda ---
+
+                // Pre-flight validation should only run on the FIRST attempt for a given Polly execution cycle.
+                // `context.Count` is Polly's way of tracking the attempt number (1 for initial, 2 for first retry, etc.).
+                if (context.Count == 1 && string.IsNullOrWhiteSpace(rssSource.ETag))
+                {
+                    _logger.LogDebug("Polly Attempt 1: Performing pre-flight HEAD request validation for '{SourceName}'.", rssSource.SourceName);
+                    try
+                    {
+                        using var headRequest = new HttpRequestMessage(HttpMethod.Head, rssSource.Url);
+                        headRequest.Headers.UserAgent.ParseAdd(_settings.UserAgent);
+                        using var headTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                        using var linkedHeadCts = CancellationTokenSource.CreateLinkedTokenSource(ct, headTimeoutCts.Token);
+
+                        var headResponse = await httpClient.SendAsync(headRequest, linkedHeadCts.Token);
+                        headResponse.EnsureSuccessStatusCode();
+
+                        var contentType = headResponse.Content.Headers.ContentType?.MediaType?.ToLowerInvariant();
+                        if (contentType != null && contentType.Contains("html"))
+                        {
+                            var errorMessage = $"Validation failed: Content-Type is '{contentType}', not a valid RSS/XML feed.";
+                            _logger.LogWarning("Pre-flight check failed for '{SourceName}'. {ErrorMessage}", rssSource.SourceName, errorMessage);
+                            // Throw an exception that Polly can catch. We configure Polly NOT to retry this specific error.
+                            // This is a permanent failure.
+                            throw new HttpRequestException(errorMessage, null, HttpStatusCode.UnsupportedMediaType);
+                        }
+                        _logger.LogDebug("Pre-flight check passed for '{SourceName}'. Proceeding with GET request.", rssSource.SourceName);
+                    }
+                    catch (Exception ex) when (ex is not HttpRequestException { StatusCode: HttpStatusCode.UnsupportedMediaType })
+                    {
+                        // Log a warning but proceed. The HEAD method may be blocked or fail for transient reasons.
+                        // The main GET request will be the final arbiter.
+                        _logger.LogWarning(ex, "Pre-flight HEAD request for '{SourceName}' failed or was inconclusive. Proceeding with standard GET request.", rssSource.SourceName);
+                    }
+                }
+
+                // --- END of CHANGE ---
+
+                // This is the main GET request logic, which now runs on every attempt (or after a successful HEAD check).
                 using var requestMessage = new HttpRequestMessage(HttpMethod.Get, rssSource.Url);
-
-                // Set a descriptive User-Agent header for polite identification to the RSS feed server.
                 requestMessage.Headers.UserAgent.ParseAdd(_settings.UserAgent);
-
-                // Apply conditional GET headers (If-None-Match, If-Modified-Since) to minimize bandwidth
-                // by allowing the server to return HTTP 304 Not Modified if content hasn't changed.
                 AddConditionalGetHeaders(requestMessage, rssSource);
 
-                // Create a CancellationTokenSource for the specific HTTP request timeout.
                 using var requestTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_settings.HttpClientTimeoutSeconds));
-                // Link all relevant cancellation tokens: Polly's internal token (`ct`), the request timeout token,
-                // and the external method's cancellation token (`cancellationToken`). This ensures cancellation
-                // from any source is propagated.
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, requestTimeoutCts.Token, cancellationToken);
 
                 _logger.LogDebug("Polly Execute: Sending HTTP GET request to '{RequestUrl}' with a {Timeout}s timeout. Attempt {RetryAttempt}.",
                                  rssSource.Url, _settings.HttpClientTimeoutSeconds, context.Count);
 
-                // Send the HTTP request. HttpCompletionOption.ResponseHeadersRead is used for performance,
-                // as it returns the HttpResponseMessage as soon as headers are received, without waiting
-                // for the entire response body to download. The body will be streamed later if needed.
+                // THIS IS THE RETURN VALUE FOR THE LAMBDA. It is now guaranteed to be reached on all successful code paths.
                 return await httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, linkedCts.Token);
             },
-            // Pass the Polly Context (including CorrelationId and RssSource details) for enhanced logging within Polly callbacks.
             new Context(correlationId) { ["RssSourceId"] = rssSource.Id.ToString(), ["RssSourceName"] = rssSource.SourceName },
-            // Pass the external cancellation token to Polly's ExecuteAsync to allow cancellation of the entire retry sequence.
-            cancellationToken).ConfigureAwait(false); // ConfigureAwait(false) is used for library methods to prevent deadlocks and optimize performance.
+            cancellationToken).ConfigureAwait(false);
 
             _logger.LogTrace("Exiting {MethodName} for RssSourceId: {RssSourceId}", methodName, rssSource.Id);
             return response;
         }
-
         #endregion
 
         #region Feed Parsing, Filtering, and Entity Creation
@@ -876,28 +902,43 @@ namespace Infrastructure.Services
                 _logger.LogInformation("The parsed feed contained no syndication items to process.");
                 return [];
             }
-
             var creationContext = new NewsItemCreationContext(
-                SyndicationItem: null!, // This is a placeholder; it will be set inside the loop.
+                SyndicationItem: null!,
                 RssSource: rssSource,
                 ExistingSourceItemIds: await GetExistingSourceItemIdsAsync(rssSource.Id, cancellationToken),
                 ProcessedInThisBatch: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             );
 
-            var newNewsEntities = new List<NewsItem>();
-            _logger.LogDebug("Beginning iteration through {ItemCount} fetched syndication items.", syndicationItems.Count());
+            var newNewsEntitiesBag = new System.Collections.Concurrent.ConcurrentBag<NewsItem>();
+            _logger.LogDebug("Beginning PARALLEL processing of {ItemCount} fetched syndication items.", syndicationItems.Count());
 
-            foreach (var syndicationItem in syndicationItems.OrderByDescending(i => i.PublishDate.UtcDateTime))
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var contextWithItem = creationContext with { SyndicationItem = syndicationItem };
-                var newsEntity = TryCreateNewsItemEntity(contextWithItem);
-                if (newsEntity != null)
-                {
-                    newNewsEntities.Add(newsEntity);
-                }
+                syndicationItems
+                    .AsParallel() // Enable parallel processing.
+                    .WithCancellation(cancellationToken) // Allow the entire operation to be cancelled.
+                    .ForAll(syndicationItem =>
+                    {
+                        // Note: The original loop was ordered. Parallel processing is inherently unordered.
+                        // We can re-apply ordering later if needed before dispatch. For filtering/creation, it's not required.
+
+                        var contextWithItem = creationContext with { SyndicationItem = syndicationItem };
+                        var newsEntity = TryCreateNewsItemEntity(contextWithItem);
+                        if (newsEntity != null)
+                        {
+                            newNewsEntitiesBag.Add(newsEntity);
+                        }
+                    });
+            
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("Parallel processing of syndication items was cancelled.");
+                // Return what we have so far, or an empty list.
+                return [];
             }
 
+            var newNewsEntities = newNewsEntitiesBag.ToList();
             _logger.LogInformation("Finished filtering. Original items: {OriginalCount}, New unique items created: {NewCount}.", syndicationItems.Count(), newNewsEntities.Count);
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return newNewsEntities;
@@ -978,44 +1019,73 @@ namespace Infrastructure.Services
         ///     <item><description>Any other internal condition prevents the successful creation of a valid <see cref="NewsItem"/> (though current logic primarily covers the above).</description></item>
         /// </list>
         /// </returns>
+        // In RssReaderService.cs
+
         private NewsItem? TryCreateNewsItemEntity(NewsItemCreationContext context)
         {
+            // 1. Unpack the context object to define local variables. This resolves all scope errors.
             var syndicationItem = context.SyndicationItem;
             var rssSource = context.RssSource;
 
+            // 2. Derive key variables needed for processing and validation.
             string? originalLink = syndicationItem.Links.FirstOrDefault(l => l.Uri != null)?.Uri?.ToString();
             string title = syndicationItem.Title?.Text?.Trim() ?? "Untitled News Item";
 
+            // Use the corrected, globally unique DetermineSourceItemId method
             string itemSourceId = DetermineSourceItemId(syndicationItem, originalLink, title, rssSource.Id);
 
+            // 3. Perform all validation and deduplication checks upfront.
             if (string.IsNullOrWhiteSpace(itemSourceId))
             {
                 _logger.LogWarning("Skipping item because a stable SourceItemId could not be determined. Title: '{Title}'", title.Truncate(50));
                 return null;
             }
 
+            // Check for duplicates within this specific feed's current processing batch.
             if (!context.ProcessedInThisBatch.Add(itemSourceId))
             {
                 _logger.LogTrace("Skipping duplicate item within this fetch batch. SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
                 return null;
             }
 
+            // Check for duplicates against items already in the database from this source.
             if (context.ExistingSourceItemIds.Contains(itemSourceId))
             {
                 _logger.LogTrace("Skipping existing item already found in database. SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
                 return null;
             }
 
+            // 4. Extract and perform GLOBAL deduplication for the image URL using Redis.
+            string? imageUrl = ExtractImageUrlWithHtmlAgility(syndicationItem, syndicationItem.Summary?.Text, syndicationItem.Content?.ToString());
+
+            if (!string.IsNullOrWhiteSpace(imageUrl))
+            {
+                try
+                {
+                    IDatabase redisDb = _redis.GetDatabase();
+                    if (redisDb.SetContains(RedisProcessedImageUrlsSetKey, imageUrl))
+                    {
+                        _logger.LogInformation("Global Dedupe Hit: Image URL '{ImageUrl}' has already been processed (found in Redis). It will not be assigned to this new item.", imageUrl.Truncate(100));
+                        imageUrl = null; // Nullify the URL to prevent redundant storage.
+                    }
+                }
+                catch (RedisException redisEx)
+                {
+                    _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis for image deduplication check. Processing will continue without deduplication for this item. Please check Redis server health.");
+                }
+            }
+
+            // 5. If all checks pass, construct and return the new NewsItem entity.
             _logger.LogDebug("Validation passed. Creating new NewsItem entity for SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
             return new NewsItem
             {
                 Id = Guid.NewGuid(),
                 CreatedAt = DateTime.UtcNow,
                 Title = title.Truncate(NewsTitleMaxLenDb),
-                Link = (originalLink ?? itemSourceId).Truncate(NewsLinkMaxLenDb),
+                Link = (originalLink ?? itemSourceId).Truncate(NewsLinkMaxLenDb), // Corrected constant name
                 Summary = CleanHtmlWithHtmlAgility(syndicationItem.Summary?.Text),
                 FullContent = CleanHtmlWithHtmlAgility(syndicationItem.Content is TextSyndicationContent tc ? tc.Text : syndicationItem.Summary?.Text),
-                ImageUrl = ExtractImageUrlWithHtmlAgility(syndicationItem, syndicationItem.Summary?.Text, syndicationItem.Content?.ToString()),
+                ImageUrl = imageUrl, // Use the final, potentially nullified image URL
                 PublishedDate = syndicationItem.PublishDate.UtcDateTime,
                 RssSourceId = rssSource.Id,
                 SourceName = rssSource.SourceName.Truncate(NewsSourceNameMaxLenDb),
@@ -1024,7 +1094,6 @@ namespace Infrastructure.Services
                 AssociatedSignalCategoryId = rssSource.DefaultSignalCategoryId
             };
         }
-
         #endregion
 
         #region Database Interaction and Notification Dispatch (REWRITTEN)
@@ -1227,13 +1296,36 @@ namespace Infrastructure.Services
             _logger.LogInformation("Dispatching Batch: Enqueuing all {Count} notifications for news items with images.", itemsToDispatch.Count);
             await EnqueueDispatchTasks(itemsToDispatch, "ImageOnlyBatch", dispatchedItemIds, cancellationToken);
 
+            // --- START of CHANGE: Add new, unique image URLs to Redis ---
+            if (itemsToDispatch.Any())
+            {
+                _logger.LogInformation("Registering {Count} newly dispatched image URLs in Redis for global deduplication.", itemsToDispatch.Count);
+                try
+                {
+                    IDatabase redisDb = _redis.GetDatabase();
+                    // Convert the list of URLs to RedisValue[] for the bulk add command.
+                    var imageUrlsToAdd = itemsToDispatch
+                        .Select(item => new RedisValue(item.ImageUrl!))
+                        .ToArray();
+
+                    // SADD is an atomic, idempotent operation.
+                    // It returns the number of elements that were actually added (i.e., didn't already exist).
+                    long addedCount = await redisDb.SetAddAsync(RedisProcessedImageUrlsSetKey, imageUrlsToAdd);
+                    _logger.LogInformation("Successfully registered images in Redis. New URLs added: {AddedCount} of {TotalCount}.", addedCount, imageUrlsToAdd.Length);
+                }
+                catch (RedisException redisEx)
+                {
+                    // Log critical failure but do not throw. The main operation (dispatch) succeeded.
+                    // The only consequence is these images might be re-processed if Redis is down, which is acceptable degradation.
+                    _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis to register new image URLs. Future deduplication may be incomplete until Redis is restored.");
+                }
+            }
             _logger.LogInformation("Completed all dispatch enqueueing. Total items queued for notification: {TotalDispatchedCount}", dispatchedItemIds.Count);
 
             var dispatchedDtos = _mapper.Map<IEnumerable<NewsItemDto>>(savedItems.Where(ni => dispatchedItemIds.Contains(ni.Id)));
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return dispatchedDtos;
         }
-
 
 
         /// <summary>
@@ -1623,11 +1715,36 @@ namespace Infrastructure.Services
         /// </returns>
         private string DetermineSourceItemId(SyndicationItem item, string? link, string title, Guid sourceId)
         {
-            if (!string.IsNullOrWhiteSpace(item.Id) && item.Id.Length > 20) return item.Id.Truncate(NewsSourceItemIdMaxLenDb);
-            if (!string.IsNullOrWhiteSpace(link) && Uri.IsWellFormedUriString(link, UriKind.Absolute)) return link.Truncate(NewsSourceItemIdMaxLenDb);
+            // Priority 1: Use the primary link if it's a well-formed absolute URL. This is the best for canonical identification.
+            if (!string.IsNullOrWhiteSpace(link) && Uri.IsWellFormedUriString(link, UriKind.Absolute))
+            {
+                return link.Truncate(NewsSourceItemIdMaxLenDb);
+            }
 
+            // Priority 2: Use the item's ID if it's a stable, non-URL identifier (like a GUID from the feed).
+            if (!string.IsNullOrWhiteSpace(item.Id) && !item.Id.StartsWith("http") && item.Id.Length > 20)
+            {
+                return item.Id.Truncate(NewsSourceItemIdMaxLenDb);
+            }
+
+            // Priority 3: If no stable ID or link, fall back to a hash based on content.
+            // This creates a globally unique ID based on content, not source.
+            string normalizedTitle = new string(title.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+            // A title must have some substance to be used for reliable hashing.
+            if (normalizedTitle.Length < 25)
+            {
+                // Fallback to a source-specific hash to avoid collisions on generic titles like "News" or "Update".
+                // This is a safety net. The goal is to rely on the link (Priority 1).
+                _logger.LogWarning("Using fallback source-specific hash for item with short/generic title: '{Title}' from source {SourceId}", title.Truncate(50), sourceId);
+                using var shaFallback = SHA256.Create();
+                byte[] fallbackHash = shaFallback.ComputeHash(Encoding.UTF8.GetBytes($"{sourceId}_{title}_{item.PublishDate:o}"));
+                return Convert.ToHexString(fallbackHash).ToLowerInvariant().Truncate(NewsSourceItemIdMaxLenDb);
+            }
+
+            // Use a hash of the normalized title as the primary content-based identifier.
             using var sha = SHA256.Create();
-            byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes($"{sourceId}_{title}_{item.PublishDate:o}"));
+            byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(normalizedTitle));
             return Convert.ToHexString(hash).ToLowerInvariant().Truncate(NewsSourceItemIdMaxLenDb);
         }
 

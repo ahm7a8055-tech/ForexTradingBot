@@ -2,6 +2,8 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
+using System.Threading.Channels;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;  // ✅ برای ApiRequestException
 using Telegram.Bot.Polling; // ✅ برای IUpdateHandler, DefaultUpdateHandlerOptions
@@ -21,7 +23,7 @@ namespace TelegramPanel.Infrastructure
         private readonly ITelegramUpdateChannel _updateChannel;
         private CancellationTokenSource? _cancellationTokenSourceForPolling; // جداگانه برای Polling
         private readonly BotCommandSetupService _commandSetupService; // برای تنظیم کامندها
-
+        private readonly ActivitySource _activitySource;
         public TelegramBotService(
             ILogger<TelegramBotService> logger,
             ITelegramBotClient botClient,
@@ -29,6 +31,7 @@ namespace TelegramPanel.Infrastructure
             ITelegramUpdateChannel updateChannel,
             IBotCommandSetupService commandSetupService) // تزریق BotCommandSetupService
         {
+            _activitySource = new ActivitySource("TelegramPanel.Infrastructure");
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
@@ -211,59 +214,130 @@ namespace TelegramPanel.Infrastructure
 
 
         #region IUpdateHandler Implementation (for Polling)
-
         /// <summary>
-        /// این متد توسط مکانیزم Polling کتابخانه Telegram.Bot برای هر آپدیت جدید فراخوانی می‌شود.
-        /// مسئولیت آن ارسال آپدیت به صف پردازش داخلی (<see cref="ITelegramUpdateChannel"/>) است.
+        /// This method is invoked by the Telegram.Bot library's Polling mechanism for every new update.
+        /// Its responsibility is to safely and efficiently send the update to the internal processing channel (<see cref="ITelegramUpdateChannel"/>).
+        /// This enhanced version prioritizes robustness, detailed logging, and graceful handling of various scenarios.
         /// </summary>
-        /// <param name="botClient">کلاینت ربات که آپدیت را دریافت کرده است (معمولاً همان <see cref="_botClient"/>).</param>
-        /// <param name="update">آبجکت آپدیت دریافتی از تلگرام.</param>
-        /// <param name="cancellationToken">توکنی که توسط حلقه Polling پاس داده می‌شود و نشان‌دهنده درخواست توقف Polling است.</param>
+        /// <param name="botClient">The bot client that received the update (typically the same as <see cref="_botClient"/>).</param>
+        /// <param name="update">The update object received from Telegram.</param>
+        /// <param name="cancellationToken">A token passed by the Polling loop, indicating a request to stop polling.</param>
         public async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
         {
+            // --- 1. Input Validation ---
             if (botClient == null)
             {
-                throw new ArgumentNullException(nameof(botClient));
+                // Critical configuration error, should halt startup or be caught higher up.
+                throw new ArgumentNullException(nameof(botClient), "The bot client cannot be null when handling an update.");
             }
 
             if (update == null)
             {
-                _logger.LogWarning("Polling: HandleUpdateAsync received a null update object.");
+                // Log warning and exit gracefully. Null updates might occur in rare edge cases.
+                _logger.LogWarning("Polling: Received a null update object. Skipping processing.");
+                // Note: No tracing span is created here as there's no meaningful update context.
                 return;
             }
 
+            // --- 2. Distributed Tracing Setup ---
+            // Use a descriptive name for the activity. ActivityKind.Internal is suitable for internal processing.
+            using var activity = _activitySource.CreateActivity("HandleUpdateAsync", ActivityKind.Internal);
+
+            // Add common tags for tracing context. These tags are visible in distributed tracing systems (like Jaeger, Zipkin).
+            activity?.AddTag("app.update.id", update.Id);
+            activity?.AddTag("app.update.type", update.Type.ToString());
+
+            // Extract user ID and add it as a tag if available.
             var userId = update.Message?.From?.Id ?? update.CallbackQuery?.From?.Id;
+            if (userId.HasValue)
+            {
+                activity?.AddTag("app.telegram.user.id", userId.Value);
+            }
+
+            // Extract chat ID and add it as a tag if available.
+            var chatId = update.Message?.Chat?.Id ?? update.CallbackQuery?.Message?.Chat?.Id;
+            if (chatId.HasValue)
+            {
+                activity?.AddTag("app.telegram.chat.id", chatId.Value);
+            }
+
+            // Log a snippet of message text for context, but only if it's a message update.
+            string? messageTextSnippet = null;
+            if (update.Message?.Text != null)
+            {
+                messageTextSnippet = update.Message.Text.Length > 50
+                    ? update.Message.Text.Substring(0, 50) + "..."
+                    : update.Message.Text;
+                activity?.AddTag("app.message.text.snippet", messageTextSnippet);
+            }
+
+            // Start the activity (trace span).
+            activity?.Start();
+
+            // --- 3. Structured Logging Context ---
+            // Combine tracing tags with logging scope properties for comprehensive context.
             var logScopeProps = new Dictionary<string, object?>
             {
-                ["Source"] = "Polling",
+                ["Source"] = nameof(HandleUpdateAsync),
                 ["UpdateId"] = update.Id,
-                ["UpdateType"] = update.Type,
-                ["TelegramUserId"] = userId
+                ["UpdateType"] = update.Type.ToString(),
+                ["TelegramUserId"] = userId,
+                ["TelegramChatId"] = chatId,
+                ["MessageTextSnippet"] = messageTextSnippet,
+                // Add a reference to the current trace/span ID for easier log correlation
+                ["TraceId"] = activity?.TraceId.ToString(),
+                ["SpanId"] = activity?.SpanId.ToString()
             };
 
             using (_logger.BeginScope(logScopeProps))
             {
-                _logger.LogDebug("Polling received update. Attempting to write to the processing channel.");
+                _logger.LogDebug("Received update. Attempting to enqueue for processing.");
+
+                // --- 4. Channel Write Operation with Enhanced Error Handling ---
                 try
                 {
+                    // Attempt to write the update to the channel.
+                    // cancellationToken ensures this operation respects the polling cancellation request.
                     await _updateChannel.WriteAsync(update, cancellationToken).ConfigureAwait(false);
-                    _logger.LogDebug("Update successfully written to channel from polling.");
+
+                    _logger.LogTrace("Update successfully enqueued to the processing channel.");
+                    // Potential Metric: Increment a counter for successful enqueues
+                    // _metrics.EnqueueSuccessCount.Inc();
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException oce) when (cancellationToken.IsCancellationRequested)
                 {
-                    _logger.LogInformation("Write to update channel was canceled for an update (polling cancellation requested).");
+                    // Expected during graceful shutdown. Log as Information.
+                    _logger.LogInformation(oce, "Enqueueing update was canceled due to polling cancellation request.");
+                    // Potential Metric: Increment a counter for canceled operations
+                    // _metrics.EnqueueCanceledCount.Inc();
                 }
-                catch (System.Threading.Channels.ChannelClosedException ex)
+                catch (ChannelClosedException cce)
                 {
-                    _logger.LogError(ex, "Failed to write update to channel because the channel is closed. This might occur during application shutdown.");
+                    // Critical error: Channel is closed, cannot enqueue. Application shutdown likely.
+                    _logger.LogError(cce, "Failed to enqueue update to the processing channel because the channel is closed. Application might be shutting down or channel terminated unexpectedly.");
+                    // Potential Metric: Increment a counter for channel closed errors
+                    // _metrics.EnqueueChannelClosedErrorCount.Inc();
+
+                    // Mark the activity as failed if the channel write fails critically.
+                    activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "An unexpected error occurred while writing update from polling to the processing channel.");
+                    // Catch-all for any other unexpected errors during the enqueue operation.
+                    _logger.LogError(ex, "An unexpected error occurred while enqueueing update from polling to the processing channel.");
+                    // Potential Metric: Increment a counter for general enqueue errors
+                    // _metrics.EnqueueGenericErrorCount.Inc();
+
+                    // Mark the activity as failed.
+                    activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}");
+                }
+                finally
+                {
+                    // Ensure the activity is always stopped, regardless of success or failure.
+                    activity?.Stop();
                 }
             }
         }
-
 
 
         #endregion
@@ -276,81 +350,192 @@ namespace TelegramPanel.Infrastructure
         /// <param name="exception">Exception رخ داده.</param>
         /// <param name="source">منبع خطا در حلقه Polling (مثلاً از GetUpdates, HandleUpdate, یا HandleError).</param> // ✅ پارامتر جدید
         /// <param name="cancellationToken">توکن کنسل شدن Polling.</param>
-        public Task HandleErrorAsync( // ✅ نام متد صحیح است
-            ITelegramBotClient botClient,
-            Exception exception,
-            HandleErrorSource source, // ✅ پارامتر HandleErrorSource اضافه شد
-            CancellationToken cancellationToken)
+        public Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
         {
-            var errorMessage = exception switch
-            {
-                ApiRequestException apiRequestException =>
-                    $"Telegram API Error during polling (Source: {source}): Code=[{apiRequestException.ErrorCode}], Message='{apiRequestException.Message}'. Parameters: {apiRequestException.Parameters}",
-                _ => $"Polling Exception (Source: {source}): Type='{exception.GetType().FullName}', Message='{exception.Message}'"
-            };
+            // This call is correct for modern .NET/DiagnosticSource versions.
+            using var activity = _activitySource.CreateActivity(name: "TelegramBot.HandleError", kind: ActivityKind.Internal);
+            activity?.Start();
 
-            // لاگ کردن خود Exception برای جزئیات کامل (شامل StackTrace)
-            _logger.LogError(exception, "An error occurred during Telegram Bot polling: {FormattedErrorMessage}", errorMessage);
-
-            // برای خطاهای بحرانی مانند توکن نامعتبر (401 Unauthorized) یا مسدود شدن ربات توسط کاربر (403 Forbidden),
-            // Polling باید متوقف شود چون ادامه آن بی‌فایده یا مضر است.
-            if (exception is ApiRequestException apiEx)
+            try
             {
-                if (apiEx.ErrorCode == 401) // Unauthorized
+                string formattedErrorMessage;
+                string logMessage = "An error occurred during Telegram Bot polling.";
+                ActivityStatusCode? activityStatus = null;
+                string? activityStatusDescription = null;
+
+                if (exception is ApiRequestException apiEx)
                 {
-                    _logger.LogCritical("CRITICAL POLLING ERROR: Unauthorized (401). Bot token is likely invalid or revoked. Stopping polling. Source: {ErrorSource}", source);
-                    _cancellationTokenSourceForPolling.Cancel(); // درخواست توقف حلقه Polling
+                    switch (apiEx.ErrorCode)
+                    {
+                        case 401:
+                            formattedErrorMessage = $"Telegram API Error (Unauthorized - 401, Source: {source}): Bot token invalid or revoked. Message='{apiEx.Message}'.";
+                            logMessage = $"CRITICAL POLLING ERROR: {formattedErrorMessage}";
+                            activityStatus = ActivityStatusCode.Error;
+                            activityStatusDescription = "Unauthorized (401)";
+                            break;
+                        case 403:
+                            formattedErrorMessage = $"Telegram API Warning (Forbidden - 403, Source: {source}): Bot blocked or lacks permissions. Message='{apiEx.Message}'.";
+                            logMessage = $"POLLING INFO: {formattedErrorMessage}";
+                            // FIX for CS1503: The ActivityEvent constructor takes (name, timestamp, tags). We omit the timestamp to use UtcNow.
+                            activity?.AddEvent(new ActivityEvent("TelegramApiWarning", tags: new ActivityTagsCollection {
+                                { "error.code", 403 }, { "error.message", apiEx.Message }
+                            }));
+                            break;
+                        case 429:
+                            formattedErrorMessage = $"Telegram API Warning (Too Many Requests - 429, Source: {source}): Bot hitting rate limits. Message='{apiEx.Message}'.";
+                            logMessage = $"POLLING WARNING: {formattedErrorMessage}";
+                            // FIX for CS1503: Correct constructor usage.
+                            activity?.AddEvent(new ActivityEvent("TelegramApiRateLimit", tags: new ActivityTagsCollection {
+                                { "error.code", 429 }, { "error.message", apiEx.Message }
+                            }));
+                            break;
+                        default:
+                            formattedErrorMessage = $"Telegram API Error (Code: {apiEx.ErrorCode}, Source: {source}): Message='{apiEx.Message}'.";
+                            logMessage = $"Telegram API Error encountered: {formattedErrorMessage}";
+                            activityStatus = ActivityStatusCode.Error;
+                            activityStatusDescription = $"API Error {apiEx.ErrorCode}";
+                            break;
+                    }
                 }
-                else if (apiEx.ErrorCode == 403) // Forbidden
+                else
                 {
-                    _logger.LogWarning("POLLING INFO: Forbidden (403). Bot might be blocked by a user or group. Error: {ApiMessage}. Source: {ErrorSource}", apiEx.Message, source);
-                    // در این حالت، Polling می‌تواند ادامه یابد چون ممکن است برای کاربران دیگر کار کند.
-                    // اما اگر این خطا به طور مداوم برای تمام آپدیت‌ها رخ دهد، نشان‌دهنده مشکل بزرگتری است.
+                    formattedErrorMessage = $"Polling Exception (Source: {source}): Type='{exception.GetType().FullName}', Message='{exception.Message}'";
+                    logMessage = $"An unexpected polling exception occurred: {formattedErrorMessage}";
+                    activityStatus = ActivityStatusCode.Error;
+                    activityStatusDescription = $"Polling Exception: {exception.GetType().Name}";
                 }
-                else if (apiEx.ErrorCode == 429) // Too Many Requests
+
+                var logScopeProps = new Dictionary<string, object?>
                 {
-                    _logger.LogWarning("POLLING WARNING: Too Many Requests (429). Bot is hitting API rate limits. Consider increasing polling interval or reducing API calls. Error: {ApiMessage}. Source: {ErrorSource}", apiEx.Message, source);
-                    // کتابخانه Polling معمولاً به طور خودکار با backoff سعی در ادامه کار می‌کند.
+                    ["ErrorSource"] = source.ToString(),
+                    ["ExceptionType"] = exception.GetType().Name,
+                    ["TraceId"] = activity?.TraceId.ToString(),
+                    ["SpanId"] = activity?.SpanId.ToString()
+                };
+
+                using (_logger.BeginScope(logScopeProps))
+                {
+                    _logger.LogError(exception, "{LogMessage}", logMessage);
+                }
+
+                if (exception is ApiRequestException apiExForPollingStop && apiExForPollingStop.ErrorCode == 401)
+                {
+                    _logger.LogCritical("CRITICAL: Unauthorized (401) error detected. Stopping polling to prevent further issues.");
+                    _cancellationTokenSourceForPolling?.Cancel();
+                }
+
+                if (activityStatus.HasValue)
+                {
+                    activity?.SetStatus(activityStatus.Value, activityStatusDescription);
+                }
+                else if (activity?.Status == ActivityStatusCode.Unset && exception is ApiRequestException apiExForStatus && !(apiExForStatus.ErrorCode == 403 || apiExForStatus.ErrorCode == 429))
+                {
+                    activity?.SetStatus(ActivityStatusCode.Error, $"Unhandled API error: {apiExForStatus.ErrorCode}");
                 }
             }
-            // برای سایر خطاها، کتابخانه Polling معمولاً به طور خودکار با یک تاخیر کوتاه، مجدداً سعی در دریافت آپدیت‌ها می‌کند.
-            // اگر خطاها مداوم باشند، باید بررسی شوند.
+            catch (Exception handlerEx)
+            {
+                Console.Error.WriteLine($"FATAL ERROR IN HandleErrorAsync: Handler failed. Original: {exception?.GetType().Name ?? "Unknown"}, Handler: {handlerEx.GetType().Name}.");
+                activity?.SetStatus(ActivityStatusCode.Error, $"Handler failed: {handlerEx.GetType().Name}");
+            }
+            finally
+            {
+                activity?.Stop();
+            }
+
             return Task.CompletedTask;
         }
 
 
 
-
         /// <summary>
-        /// با توقف سرویس، Webhook (اگر تنظیم شده بود) را حذف می‌کند و Polling را متوقف می‌نماید.
+        /// This method is called when the host requests the service to stop.
+        /// It's responsible for initiating a graceful shutdown of the Telegram bot,
+        /// including stopping polling and cleaning up the webhook if necessary.
         /// </summary>
-        /// <summary>
-        /// این متد هنگام درخواست توقف برنامه توسط هاست .NET Core فراخوانی می‌شود.
-        /// مسئول توقف Polling و حذف Webhook (در صورت تنظیم) است.
-        /// </summary>
-        public async Task StopAsync(CancellationToken hostCancellationToken) // توکن کنسل شدن از هاست
+        /// <param name="hostCancellationToken">A token indicating that the host is shutting down.</param>
+        public async Task StopAsync(CancellationToken hostCancellationToken)
         {
-            _logger.LogInformation("Bot Service StopAsync called. Initiating shutdown procedures...");
+            _logger.LogInformation("Bot Service StopAsync called. Initiating shutdown procedures.");
 
-            // اگر از Webhook استفاده می‌کردیم و برنامه در حال خاموش شدن است، بهتر است Webhook را حذف کنیم
-            // تا تلگرام دیگر آپدیت به آدرس مرده ارسال نکند.
+            // --- 1. Webhook Cleanup ---
+            // If webhook mode is enabled, attempt to delete the webhook to prevent Telegram
+            // from sending updates to a defunct address.
             if (_settings.UseWebhook && !string.IsNullOrWhiteSpace(_settings.WebhookAddress))
             {
-                // از یک CancellationToken جدید برای این عملیات استفاده کنید چون hostCancellationToken ممکن است زودتر منقضی شود.
-                // یا می‌توانید از یک CancellationTokenSource با Timeout استفاده کنید.
-                using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // Timeout 10 ثانیه
-                await TryDeleteWebhookAsync(cleanupCts.Token, "Application shutting down.");
+                _logger.LogInformation("Webhook mode is active. Attempting to delete webhook for cleanup.");
+                // Use a dedicated CancellationTokenSource with a timeout for webhook cleanup.
+                // This prevents a stuck webhook deletion from blocking the entire shutdown process.
+                using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Increased timeout to 15 seconds for webhook operations
+                var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(hostCancellationToken, cleanupCts.Token);
+
+                try
+                {
+                    await TryDeleteWebhookAsync(linkedCts.Token, "Application shutting down.");
+                    _logger.LogInformation("Webhook cleanup process completed.");
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogWarning("Webhook cleanup operation was canceled (host shutdown or cleanup timeout).");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "An error occurred during webhook cleanup while stopping the service.");
+                    // We don't want cleanup errors to prevent other shutdown steps.
+                }
+                finally
+                {
+                    // Ensure the linked CTS is disposed, which also disposes the individual CTSs.
+                    linkedCts.Dispose();
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Webhook mode is not active or address is not configured. Skipping webhook cleanup.");
             }
 
-            // CancellationTokenSource داخلی را که برای Polling (و سایر عملیات StartAsync) استفاده شده، کنسل کنید.
+            // --- 2. Polling Shutdown ---
+            // Cancel the internal CancellationTokenSource that controls the polling loop.
             if (_cancellationTokenSourceForPolling != null && !_cancellationTokenSourceForPolling.IsCancellationRequested)
             {
-                _logger.LogInformation("Requesting cancellation of internal operations (e.g., polling).");
-                _cancellationTokenSourceForPolling.Cancel();
+                _logger.LogInformation("Requesting cancellation of internal operations (e.g., polling loop).");
+                try
+                {
+                    _cancellationTokenSourceForPolling.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    _logger.LogWarning("The internal CancellationTokenSource was already disposed. No action taken.");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "An error occurred while attempting to cancel the internal CancellationTokenSource.");
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Internal CancellationTokenSource is null or already canceled. No action needed for polling shutdown.");
             }
 
-            _cancellationTokenSourceForPolling?.Dispose(); // Dispose کردن CancellationTokenSource
+            // --- 3. Resource Management ---
+            // Dispose the CancellationTokenSource to release its resources.
+            // It's good practice to do this after signaling cancellation.
+            if (_cancellationTokenSourceForPolling != null)
+            {
+                try
+                {
+                    _cancellationTokenSourceForPolling.Dispose();
+                    _logger.LogInformation("Internal CancellationTokenSource disposed.");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "An error occurred while disposing the internal CancellationTokenSource.");
+                }
+                // Set to null to indicate it's no longer valid.
+                _cancellationTokenSourceForPolling = null;
+            }
+
             _logger.LogInformation("Bot Service has completed its stopping procedures.");
         }
     }
-}
+    }
