@@ -40,6 +40,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private const string AdminManualRssFetchCallback = "admin_manual_rss";
         private const string PurgeHangfireCallback = "admin_purge_hangfire";
         private const string BackToAdminPanelCallback = "admin_panel_main";
+        private const string DownloadLogsCallback = "admin_download_logs";
 
         public AdminCallbackHandler(
             ILogger<AdminCallbackHandler> logger,
@@ -62,23 +63,22 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         public bool CanHandle(Update update)
         {
             if (update.Type != UpdateType.CallbackQuery || update.CallbackQuery?.Data == null || update.CallbackQuery.From == null)
-            {
                 return false;
-            }
 
             if (!_settings.AdminUserIds.Contains(update.CallbackQuery.From.Id))
-            {
                 return false;
-            }
 
             var data = update.CallbackQuery.Data;
 
-            // This handler is now responsible for all these stateless admin actions.
+            // --- MODIFIED: Handle the new callback ---
             return data is AdminServerStatsCallback or
                    AdminManualRssFetchCallback or
                    PurgeHangfireCallback or
+                   DownloadLogsCallback or // NEW
                    BackToAdminPanelCallback;
         }
+
+
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
@@ -87,15 +87,48 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
             _logger.LogInformation("Admin {UserId} initiated action: {Action}", callbackQuery.From.Id, callbackQuery.Data);
 
+            // --- MODIFIED: Add new case to switch ---
             var handlerTask = callbackQuery.Data switch
             {
                 AdminServerStatsCallback => HandleServerStatsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                 AdminManualRssFetchCallback => HandleManualRssFetchAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                 PurgeHangfireCallback => HandlePurgeHangfireAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                DownloadLogsCallback => HandleDownloadLogsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken), // NEW
                 BackToAdminPanelCallback => ShowAdminPanelAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                 _ => Task.CompletedTask
             };
             await handlerTask;
+        }
+        private async Task HandleDownloadLogsAsync(long chatId, int messageId, CancellationToken cancellationToken)
+        {
+            // Give immediate feedback to the admin
+            await _messageSender.EditMessageTextAsync(chatId, messageId, "🗜️ Finding and zipping log files, please wait...", cancellationToken: cancellationToken);
+
+            var (zipContents, fileName, errorMessage) = await _adminService.GetLogFilesAsZipAsync(cancellationToken);
+
+            if (zipContents != null && zipContents.Length > 0)
+            {
+                _logger.LogInformation("Sending log archive '{FileName}' to admin chat {ChatId}.", fileName, chatId);
+
+                // ✅ CORRECTED: Call the new method on your sender interface with the serializable types.
+                // The sender will now handle enqueuing this to Hangfire correctly.
+                await _messageSender.SendDocumentAsync(
+                    chatId: chatId,
+                    documentContents: zipContents,
+                    fileName: fileName,
+                    caption: "Here are the server logs.",
+                    cancellationToken: cancellationToken
+                );
+
+                // Clean up the "zipping..." message by editing it back to the main panel
+                await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ Log archive sent successfully. The file will arrive shortly.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to send log archive to admin: {Error}", errorMessage);
+                var errorText = $"❌ Could not retrieve logs. Reason: `{errorMessage}`";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, errorText, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+            }
         }
 
         private async Task HandleServerStatsAsync(long chatId, int messageId, CancellationToken cancellationToken)

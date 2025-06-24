@@ -10,6 +10,9 @@ namespace Application.Interfaces
     /// </summary>
     public interface IAdminService
     {
+
+        Task<(byte[]? ZipContents, string FileName, string? ErrorMessage)> GetLogFilesAsZipAsync(CancellationToken cancellationToken = default);
+
         /// <summary>
         /// Gets dashboard statistics, including total user and news item counts.
         /// </summary>

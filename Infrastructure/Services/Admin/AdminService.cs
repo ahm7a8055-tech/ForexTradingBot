@@ -7,6 +7,7 @@ using Domain.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.IO.Compression;
 using System.Text;
 
 namespace Infrastructure.Services.Admin
@@ -52,7 +53,56 @@ namespace Infrastructure.Services.Admin
         }
 
 
+        public async Task<(byte[]? ZipContents, string FileName, string? ErrorMessage)> GetLogFilesAsZipAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                // Assuming logs are in a 'logs' folder at the application root.
+                string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
 
+                if (!Directory.Exists(logDirectory))
+                {
+                    _logger.LogWarning("Admin requested log download, but the 'logs' directory was not found at {LogPath}", logDirectory);
+                    return (null, "", "Log directory not found.");
+                }
+
+                var logFiles = Directory.GetFiles(logDirectory, "log-*.txt").OrderByDescending(f => f).ToList();
+
+                if (!logFiles.Any())
+                {
+                    return (null, "", "No log files found in the directory.");
+                }
+
+                // Create a zip file in memory
+                await using var memoryStream = new MemoryStream();
+                using (var archive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
+                {
+                    foreach (var logFile in logFiles)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        var entryName = Path.GetFileName(logFile);
+                        var zipEntry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+
+                        await using var entryStream = zipEntry.Open();
+                        // Use FileShare.ReadWrite to avoid locking issues with the logger
+                        await using var fileStream = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        await fileStream.CopyToAsync(entryStream, cancellationToken);
+                    }
+                }
+
+                // Reset stream position to be read from the beginning
+                memoryStream.Position = 0;
+                string fileName = $"logs_archive_{DateTime.UtcNow:yyyy-MM-dd_HH-mm-ss}.zip";
+
+                return (memoryStream.ToArray(), fileName, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to create log archive for admin download.");
+                return (null, "", $"An unexpected error occurred: {ex.Message}");
+            }
+        }
 
         // In AdminService.cs
         public async Task<string> ExecuteRawSqlQueryAsync(string sqlQuery, CancellationToken cancellationToken = default)

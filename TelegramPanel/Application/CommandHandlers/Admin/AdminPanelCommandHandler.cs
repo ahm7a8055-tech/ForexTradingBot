@@ -38,7 +38,6 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                    _settings.AdminUserIds.Contains(update.Message.From.Id) &&
                    update.Message.Text?.Trim().Equals("/admin", StringComparison.OrdinalIgnoreCase) == true;
         }
-
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
             var message = update.Message!;
@@ -54,7 +53,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 },
                 new[] { // Row 2: Maintenance Tasks
             InlineKeyboardButton.WithCallbackData("🔄 Fetch RSS Now", "admin_manual_rss"),
-            InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", "admin_purge_hangfire")
+            InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", "admin_purge_hangfire"),
+              InlineKeyboardButton.WithCallbackData("📂 Download Logs", "admin_download_logs") // NEW 
                 },
                 new[] { // Row 3: Advanced & Dangerous
             InlineKeyboardButton.WithCallbackData("📣 Broadcast Message", "admin_broadcast"),

@@ -21,6 +21,7 @@ namespace TelegramPanel.Infrastructure
     // =========================================================================
     public interface IActualTelegramMessageActions
     {
+        Task SendDocumentToTelegramAsync(long chatId, byte[] documentContents, string fileName, string? caption, CancellationToken cancellationToken);
         Task CopyMessageToTelegramAsync(long targetChatId, long sourceChatId, int messageId, CancellationToken cancellationToken);
         Task EditMessageTextDirectAsync(long chatId, int messageId, string text, ParseMode? parseMode, InlineKeyboardMarkup? replyMarkup, CancellationToken cancellationToken);
         Task SendTextMessageToTelegramAsync(long chatId, string text, ParseMode? parseMode, ReplyMarkup? replyMarkup, bool disableNotification, LinkPreviewOptions? linkPreviewOptions, CancellationToken cancellationToken);
@@ -143,7 +144,58 @@ namespace TelegramPanel.Infrastructure
                             operationName, chatId, apiErrorCode, timeSpan, retryAttempt, messagePreview, exception.Message);
                     });
         }
+        public async Task SendDocumentToTelegramAsync(
+           long chatId,
+           byte[] documentContents,
+           string fileName,
+           string? caption,
+           CancellationToken cancellationToken)
+        {
+            string sanitizedLogCaption = SanitizeSensitiveData(caption);
 
+            _logger.LogDebug("Hangfire Job (ActualSend): Sending document. ChatID: {ChatId}, FileName: {FileName}, Caption (Sanitized): '{SanitizedLogCaption}'", chatId, fileName, sanitizedLogCaption);
+
+            var pollyContext = new Polly.Context($"SendDocument_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
+            {
+                { "ChatId", chatId },
+                { "FileName", fileName },
+                { "CaptionPreview", sanitizedLogCaption }
+            });
+
+            try
+            {
+                // Create the necessary input file from the byte array inside the Hangfire job
+                await using var stream = new MemoryStream(documentContents);
+                InputFile documentInput = new InputFileStream(stream, fileName);
+
+                await _telegramApiRetryPolicy.ExecuteAsync(async (context, ct) =>
+                {
+                    await _botClient.SendDocument(
+                        chatId: new ChatId(chatId),
+                        document: documentInput,
+                        caption: caption,
+                        parseMode: ParseMode.Markdown, // Optional, can be null
+                        cancellationToken: ct);
+                }, pollyContext, cancellationToken);
+
+                _logger.LogInformation("Hangfire Job (ActualSend): Successfully sent document '{FileName}' to ChatID {ChatId}", fileName, chatId);
+            }
+            catch (ApiRequestException apiEx)
+                when ((apiEx.ErrorCode == 400 && apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase)) ||
+                      (apiEx.ErrorCode == 403 && apiEx.Message.Contains("bot was blocked by the user", StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user blocked (Code: {ApiErrorCode}) for ChatID {ChatId} while sending document. User removal could be triggered here.", apiEx.ErrorCode, chatId);
+                // Optionally, trigger user removal logic here
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Hangfire Job (ActualSend): Unexpected error sending document '{FileName}' to ChatID {ChatId} after retries. Caption (Sanitized): '{SanitizedLogCaption}'", fileName, chatId, sanitizedLogCaption);
+                throw;
+            }
+        }
+        
+        // ... (All your other existing methods)
+    
         /// <summary>
         /// A centralized factory method for creating robust Polly retry policies for the Telegram API.
         /// This promotes consistency and simplifies policy management.
@@ -670,6 +722,9 @@ namespace TelegramPanel.Infrastructure
               long chatId,
               int messageId,
               CancellationToken cancellationToken = default);
+
+
+            Task SendDocumentAsync(long chatId, byte[] documentContents, string fileName, string? caption = null, CancellationToken cancellationToken = default);
         }
 
         // =========================================================================
@@ -688,7 +743,14 @@ namespace TelegramPanel.Infrastructure
                 _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             }
 
-
+            public Task SendDocumentAsync(long chatId, byte[] documentContents, string fileName, string? caption = null, CancellationToken cancellationToken = default)
+            {
+                _logger.LogDebug("Enqueueing SendDocumentAsync for ChatID {ChatId}, FileName: {FileName}", chatId, fileName);
+                _ = _jobScheduler.Enqueue<IActualTelegramMessageActions>(
+                    sender => sender.SendDocumentToTelegramAsync(chatId, documentContents, fileName, caption, CancellationToken.None)
+                );
+                return Task.CompletedTask;
+            }
 
             public Task DeleteMessageAsync(long chatId, int messageId, CancellationToken cancellationToken = default)
             {

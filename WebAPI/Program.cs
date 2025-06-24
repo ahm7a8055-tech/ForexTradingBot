@@ -77,29 +77,48 @@ try
     // ------------------- ۱. پیکربندی Serilog با تنظیمات از appsettings.json -------------------
     // این بخش Serilog را به عنوان سیستم لاگینگ اصلی برنامه تنظیم می‌کند.
     _ = builder.Host.UseSerilog((context, services, loggerConfiguration) => loggerConfiguration
-        .ReadFrom.Configuration(context.Configuration)
+      .ReadFrom.Configuration(context.Configuration)
 
-        .Enrich.FromLogContext()
-        .Enrich.WithProperty("Application", context.HostingEnvironment.ApplicationName)
-        .Enrich.WithMachineName()
-        .Enrich.WithEnvironmentName()
+      .Enrich.FromLogContext()
+      .Enrich.WithProperty("Application", context.HostingEnvironment.ApplicationName)
+      .Enrich.WithMachineName()
+      .Enrich.WithEnvironmentName()
 
-        // --- THIS IS THE FINAL, DEFINITIVE CONFIGURATION ---
-        .Enrich.With(new CustomCallerEnricher(
-            "Serilog",
-            "Microsoft",
-            "System",
-            "Infrastructure.Logging" // <-- The critical addition
-        ))
-        // ----------------------------------------------------
+      // --- THIS IS THE FINAL, DEFINITIVE CONFIGURATION ---
+      .Enrich.With(new CustomCallerEnricher(
+          "Serilog",
+          "Microsoft",
+          "System",
+          "Infrastructure.Logging" // <-- The critical addition
+      ))
+      // ----------------------------------------------------
 
-        .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}")
+      .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}")
 
-        .WriteTo.Sink(
-            new Infrastructure.Logging.TelegramAdminSink(context.Configuration),
-            Serilog.Events.LogEventLevel.Error
-        )
-    );
+      // ==================== بخش جدید برای لاگ‌گیری در فایل ====================
+      .WriteTo.File(
+          path: "logs\\log-.txt", // مسیر و الگوی نام فایل. در پوشه logs ذخیره می‌شود و یک شماره یا تاریخ به نام فایل اضافه می‌کند
+          rollingInterval: RollingInterval.Hour, // فایل لاگ هر ساعت یک بار چرخشی می‌شود (یک فایل جدید ساخته می‌شود)
+                                                 // برای شبیه‌سازی ۱۲ ساعت، می‌توانیم هر ساعت فایل جدید بسازیم و قدیمی‌ها را پاک کنیم
+
+          retainedFileCountLimit: 24, // تعداد فایل‌هایی که نگهداری می‌شوند. مثلا: ۲۴ فایل آخر (معادل لاگ‌های ۲۴ ساعت گذشته)
+                                      // برای نگهداری لاگ‌های ۷ روز: 7 * 24 = 168
+                                      // اگر null باشد، فایل‌های قدیمی حذف نمی‌شوند
+
+          rollOnFileSizeLimit: true, // اگر حجم فایل از حد مشخصی بیشتر شد، یک فایل جدید بساز
+          fileSizeLimitBytes: 10 * 1024 * 1024, // حداکثر حجم هر فایل لاگ (اینجا ۱۰ مگابایت)
+
+          shared: true, // اجازه می‌دهد چند پروسس همزمان در این فایل لاگ بنویسند (برای محیط وب بسیار مهم است)
+
+          outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}" // قالب خروجی برای فایل
+      )
+      // =======================================================================
+
+      .WriteTo.Sink(
+          new Infrastructure.Logging.TelegramAdminSink(context.Configuration),
+          Serilog.Events.LogEventLevel.Error // فقط لاگ‌های سطح Error و بالاتر به تلگرام ارسال می‌شود
+      )
+  );
 
     builder.Services.AddAutoMapper(typeof(Program));
     builder.Services.AddSingleton<Application.Common.Interfaces.ILoggingSanitizer, Infrastructure.Security.PiiLoggingSanitizer>();
