@@ -1165,10 +1165,10 @@ namespace Infrastructure.Services
         /// </list>
         /// </returns>
         private async Task<RssFetchOutcome> SaveAndDispatchAsync(
-     RssSource rssSource,
-     List<NewsItem> newNewsEntitiesToSave,
-     HttpResponseMessage httpResponse,
-     CancellationToken cancellationToken)
+        RssSource rssSource,
+        List<NewsItem> newNewsEntitiesToSave,
+        HttpResponseMessage httpResponse,
+        CancellationToken cancellationToken)
         {
             const string methodName = nameof(SaveAndDispatchAsync);
             _logger.LogTrace("Entering {MethodName}", methodName);
@@ -1182,24 +1182,21 @@ namespace Infrastructure.Services
                 return RssFetchOutcome.Success(Enumerable.Empty<NewsItemDto>(), etagFromResponse, lastModifiedFromResponse);
             }
 
-            // =================================================================================
-            // == START OF THE DEFINITIVE FIX: ATOMIC DISPATCH GATE                           ==
-            // =================================================================================
-            _logger.LogInformation("Entering dispatch gate for {ItemCount} candidate items from '{SourceName}'.", newNewsEntitiesToSave.Count, rssSource.SourceName);
+            // --- V2: We will keep track of the keys we successfully lock ---
             var itemsThatWonTheRace = new List<NewsItem>();
+            var acquiredLockKeys = new List<string>(); // To store keys for potential rollback
+
             try
             {
+                _logger.LogInformation("Entering dispatch gate for {ItemCount} candidate items from '{SourceName}'.", newNewsEntitiesToSave.Count, rssSource.SourceName);
                 IDatabase redisDb = _redis.GetDatabase();
                 using var sha256 = SHA256.Create();
 
                 foreach (var candidateItem in newNewsEntitiesToSave)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    // Normalize title to create a consistent key for the same news story.
                     string normalizedTitle = new string(candidateItem.Title.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
-                    // We only apply this strict deduplication to titles with enough substance.
                     if (normalizedTitle.Length < 20)
                     {
                         _logger.LogDebug("Title '{Title}' is too short for global deduplication. Allowing it to pass the gate.", candidateItem.Title.Truncate(50));
@@ -1209,62 +1206,74 @@ namespace Infrastructure.Services
 
                     byte[] titleHashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(normalizedTitle));
                     string titleHashHex = Convert.ToHexString(titleHashBytes).ToLowerInvariant();
-
-                    // This key represents the "right to dispatch" for a given news story.
-                    // It's different from the image dedupe key.
                     string dispatchLockKey = $"dispatch_lock:v2:{titleHashHex}";
 
-                    // ATOMIC OPERATION: Try to set the key ONLY if it does not exist, with an expiration.
-                    // The expiration prevents a permanent lock if a process fails after acquiring it.
-                    // 3 hours is a safe window to prevent re-sending the same breaking news.
                     bool iAmTheFirst = await redisDb.StringSetAsync(dispatchLockKey, "1", TimeSpan.FromHours(3), When.NotExists);
 
                     if (iAmTheFirst)
                     {
-                        // SUCCESS: This thread is the first to process this story. It wins the race.
                         _logger.LogInformation("DISPATCH GATE PASSED: Item '{Title}' won the race and will be dispatched.", candidateItem.Title.Truncate(100));
                         itemsThatWonTheRace.Add(candidateItem);
+                        acquiredLockKeys.Add(dispatchLockKey); // ✅ Track the key we locked
                     }
                     else
                     {
-                        // FAILURE: Another thread has already acquired the dispatch lock for this story.
                         _logger.LogWarning("DISPATCH GATE BLOCKED: Item '{Title}' lost the race. It is a duplicate from another source and will NOT be dispatched.", candidateItem.Title.Truncate(100));
                     }
                 }
             }
             catch (Exception ex)
             {
-                // If Redis fails, we log critically but degrade gracefully. We allow all items through
-                // to avoid halting the entire pipeline. Duplicate notifications are better than no notifications.
                 _logger.LogCritical(ex, "Redis connection failed during dispatch gate. Degrading gracefully and allowing all items to proceed. Duplicates may occur.");
                 itemsThatWonTheRace = newNewsEntitiesToSave;
+                acquiredLockKeys.Clear(); // Can't trust the locks if Redis failed
             }
 
-            // If, after the race, no items are left to process, we can exit early.
             if (!itemsThatWonTheRace.Any())
             {
                 _logger.LogInformation("All candidate items were determined to be duplicates by the dispatch gate. Nothing to save or dispatch.");
                 return RssFetchOutcome.Success(Enumerable.Empty<NewsItemDto>(), etagFromResponse, lastModifiedFromResponse);
             }
-            // =================================================================================
-            // == END OF THE DEFINITIVE FIX                                                   ==
-            // =================================================================================
-
 
             // --- Stage 1: Persist ONLY the items that won the race ---
             try
             {
+                // Let's assume the timeout is happening here.
                 await SaveNewsItemsToDatabaseAsync(itemsThatWonTheRace, cancellationToken);
             }
-            catch (RepositoryException ex)
+            catch (Exception ex) // Catch a broader range of exceptions, including TaskCanceledException
             {
                 _logger.LogError(ex, "Database persistence failed for '{SourceName}'. Notifications will not be dispatched.", rssSource.SourceName);
-                // Important: We don't have a good way to "unlock" the dispatch keys here if the DB fails.
-                // However, the keys will expire, so the system will self-heal. This is an acceptable trade-off.
+
+                // =================================================================================
+                // == START OF THE DEFINITIVE FIX: ATOMIC DISPATCH ROLLBACK                       ==
+                // =================================================================================
+                if (acquiredLockKeys.Any())
+                {
+                    _logger.LogWarning("Rolling back {KeyCount} Redis dispatch locks due to database failure.", acquiredLockKeys.Count);
+                    try
+                    {
+                        IDatabase redisDb = _redis.GetDatabase();
+                        // Convert string list to RedisKey array for the DeleteAsync method
+                        var redisKeysToDelete = acquiredLockKeys.Select(k => (RedisKey)k).ToArray();
+                        long unlockedCount = await redisDb.KeyDeleteAsync(redisKeysToDelete);
+                        _logger.LogInformation("Successfully rolled back {UnlockedCount} of {TotalCount} dispatch locks.", unlockedCount, acquiredLockKeys.Count);
+                    }
+                    catch (Exception redisEx)
+                    {
+                        // If even the rollback fails, we log it critically. The keys will eventually expire.
+                        _logger.LogCritical(redisEx, "CRITICAL FAILURE: Could not roll back Redis dispatch locks after a database failure. News items may be black-holed for up to 3 hours.");
+                    }
+                }
+                // =================================================================================
+                // == END OF THE DEFINITIVE FIX                                                   ==
+                // =================================================================================
+
                 return RssFetchOutcome.Failure(RssFetchErrorType.Database, "Database save failed.", ex, etagFromResponse, lastModifiedFromResponse);
             }
 
             // --- Stage 2: Dispatch notifications ONLY for the items that won the race ---
+            // This part only runs if the database save was successful.
             var dispatchedDtos = await DispatchNotificationsForImageItemsAsync(itemsThatWonTheRace, cancellationToken);
 
             _logger.LogTrace("Exiting {MethodName}", methodName);

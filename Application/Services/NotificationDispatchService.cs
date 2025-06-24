@@ -299,17 +299,12 @@ namespace Application.Services
                 IEnumerable<User> targetUsers = await _userRepository.GetUsersForNewsNotificationAsync(
                     newsItem.AssociatedSignalCategoryId, newsItem.IsVipOnly, cancellationToken);
 
-                // =====================================================================================
-                // == THE DEFINITIVE FIX IS HERE                                                      ==
-                // == We must ensure the list of IDs is unique BEFORE we do anything else.            ==
-                // =====================================================================================
                 List<long> uniqueTelegramIds = targetUsers
                     .Select(u => long.TryParse(u.TelegramId, out long id) ? (long?)id : null)
                     .Where(id => id.HasValue)
                     .Select(id => id.Value)
-                    .Distinct() // <<< THIS IS THE FIX. THIS ONE WORD SOLVES THE ENTIRE PROBLEM.
+                    .Distinct()
                     .ToList();
-                // =====================================================================================
 
                 if (!uniqueTelegramIds.Any())
                 {
@@ -317,7 +312,6 @@ namespace Application.Services
                     return;
                 }
 
-                // Now we proceed with the unique list, eliminating all spam and stampedes.
                 string userListCacheKey = $"dispatch:users:{newsItemId}";
                 await _redisCircuitBreaker.ExecuteAsync(async () =>
                 {
@@ -326,7 +320,7 @@ namespace Application.Services
                 });
                 _logger.LogInformation("Cached {Count} UNIQUE user IDs to Redis for NewsItem {NewsItemId}.", uniqueTelegramIds.Count, newsItemId);
 
-                // The "Divide and Conquer" logic is now safe because it's operating on a unique set.
+                // --- THE "DIVIDE AND CONQUER" LOGIC ---
                 int totalUsers = uniqueTelegramIds.Count;
                 int chunks = (int)Math.Ceiling((double)totalUsers / chunkSize);
 
@@ -335,8 +329,15 @@ namespace Application.Services
                     cancellationToken.ThrowIfCancellationRequested();
                     int chunkStartIndex = i * chunkSize;
 
+                    // =============================================================================
+                    // == THE DEFINITIVE FIX: Calculate the PRECISE size for THIS SPECIFIC chunk. ==
+                    // =============================================================================
+                    int itemsInThisChunk = Math.Min(chunkSize, totalUsers - chunkStartIndex);
+                    // =============================================================================
+
+                    // Now, we pass the CORRECT size to the manager job.
                     _jobScheduler.Enqueue<INotificationDispatchService>(
-                        service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, chunkSize, CancellationToken.None));
+                        service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, itemsInThisChunk, CancellationToken.None));
                 }
 
                 _logger.LogInformation("Dispatch Coordination Complete for NewsItem {NewsItemId}. Enqueued {ChunkCount} manager jobs to process {TotalUserCount} unique users.", newsItemId, chunks, totalUsers);

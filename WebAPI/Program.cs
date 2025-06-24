@@ -557,7 +557,31 @@ try
 
     #region Map Controllers & Run Application
     _ = app.MapHealthChecks("/healthz");
+
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
+    app.MapGet("/maintenance/force-hangfire-purge-all", async (IConfiguration config, IHangfireCleaner cleaner, ILogger<Program> logger) => {
+        logger.LogWarning("MANUAL TRIGGER: Forcefully purging all Succeeded and Failed Hangfire jobs.");
+        string? connectionString = config.GetConnectionString("DefaultConnection");
+
+        if (string.IsNullOrEmpty(connectionString))
+        {
+            logger.LogError("Force Purge Failed: DefaultConnection string is missing.");
+            return Results.Problem("DefaultConnection string not found.");
+        }
+
+        try
+        {
+            // Use the cleaner service you already have!
+            cleaner.PurgeCompletedAndFailedJobs(connectionString);
+            logger.LogInformation("MANUAL TRIGGER: Hangfire job purge completed successfully.");
+            return Results.Ok("Hangfire Succeeded/Failed jobs have been purged. Check the Hangfire Dashboard to see the result.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "MANUAL TRIGGER: An error occurred during the Hangfire purge.");
+            return Results.Problem($"An error occurred: {ex.Message}");
+        }
+    });
     _ = app.MapControllers(); //  مسیردهی درخواست‌ها به Action های کنترلرها
     programLogger.LogInformation("Application setup complete. Starting web host now...");
 
