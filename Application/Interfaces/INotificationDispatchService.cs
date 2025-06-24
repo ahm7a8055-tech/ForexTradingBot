@@ -12,6 +12,10 @@ namespace Application.Interfaces
     public interface INotificationDispatchService
     {
 
+
+        Task ProcessNotificationChunkAsync(Guid newsItemId, string userListCacheKey, int chunkStartIndex, int chunkSize, CancellationToken cancellationToken);
+
+
         Task DispatchBatchNewsNotificationAsync(List<Guid> newsItemIds, CancellationToken cancellationToken = default);
         /// <summary>
         /// Identifies target users for a given news item based on their notification preferences

@@ -5,6 +5,7 @@ using Application.Common.Interfaces;
 using Application.DTOs.Notifications;
 using Application.Interfaces;
 using Domain.Entities;
+using Hangfire;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.CircuitBreaker;
@@ -273,94 +274,124 @@ namespace Application.Services
         /// </list>
         /// This method does *not* return the results of the actual notification sends, as those occur asynchronously in the enqueued Hangfire jobs. Any critical, unhandled errors that occur during the orchestration process will be logged and re-thrown.
         /// </returns>
-        public Task DispatchNewsNotificationAsync(Guid newsItemId, CancellationToken cancellationToken = default)
+        [JobDisplayName("Dispatch Coordinator for News: {0}")]
+        [AutomaticRetry(Attempts = 2)]
+        public async Task DispatchNewsNotificationAsync(Guid newsItemId, CancellationToken cancellationToken = default)
         {
-            TimeSpan delayBetweenJobs = TimeSpan.FromMilliseconds(40);
+            const int chunkSize = 500;
+            _logger.LogInformation("Starting Dispatch Coordination for NewsItem {NewsItemId}.", newsItemId);
 
-            return Task.Run(async () =>
+            if (_redisCircuitBreaker.CircuitState == CircuitState.Open)
             {
-                // ✅✅ NEW: Check the circuit state BEFORE doing any work ✅✅
-                if (_redisCircuitBreaker.CircuitState == CircuitState.Open)
+                _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: Redis circuit breaker is open.", newsItemId);
+                return;
+            }
+
+            try
+            {
+                NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
+                if (newsItem == null)
                 {
-                    _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped because the Redis circuit breaker is open.", newsItemId);
-                    return; // Fail fast without hitting the database
+                    _logger.LogWarning("NewsItem {Id} not found. Cannot dispatch.", newsItemId);
+                    return;
                 }
 
-                try
+                IEnumerable<User> targetUsers = await _userRepository.GetUsersForNewsNotificationAsync(
+                    newsItem.AssociatedSignalCategoryId, newsItem.IsVipOnly, cancellationToken);
+
+                // =====================================================================================
+                // == THE DEFINITIVE FIX IS HERE                                                      ==
+                // == We must ensure the list of IDs is unique BEFORE we do anything else.            ==
+                // =====================================================================================
+                List<long> uniqueTelegramIds = targetUsers
+                    .Select(u => long.TryParse(u.TelegramId, out long id) ? (long?)id : null)
+                    .Where(id => id.HasValue)
+                    .Select(id => id.Value)
+                    .Distinct() // <<< THIS IS THE FIX. THIS ONE WORD SOLVES THE ENTIRE PROBLEM.
+                    .ToList();
+                // =====================================================================================
+
+                if (!uniqueTelegramIds.Any())
                 {
-                    NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
-                    if (newsItem == null)
-                    {
-                        _logger.LogWarning("NewsItem {Id} not found. Cannot dispatch.", newsItemId);
-                        return;
-                    }
-                    _logger.LogInformation("Dispatching for NewsItem: {Title}", newsItem.Title);
-
-                    IEnumerable<User> targetUsers = await _userRepository.GetUsersForNewsNotificationAsync(
-                        newsItem.AssociatedSignalCategoryId, newsItem.IsVipOnly, cancellationToken);
-
-                    List<long> validTelegramIds = targetUsers
-                        .Select(u => long.TryParse(u.TelegramId, out long id) ? (long?)id : null)
-                        .Where(id => id.HasValue).Select(id => id.Value).ToList();
-
-                    if (!validTelegramIds.Any())
-                    {
-                        _logger.LogInformation("No eligible users found for this dispatch.");
-                        return;
-                    }
-
-                    // ✅✅ NEW: Execute the Redis operation within the Circuit Breaker policy ✅✅
-                    string userListCacheKey = $"dispatch:users:{newsItemId}";
-                    await _redisCircuitBreaker.ExecuteAsync(async () =>
-                    {
-                        string serializedUserIds = JsonSerializer.Serialize(validTelegramIds);
-                        _ = await _redisDb.StringSetAsync(userListCacheKey, serializedUserIds, TimeSpan.FromHours(24));
-                    });
-
-                    _logger.LogInformation("Cached {Count} user IDs to Redis key: {Key}", validTelegramIds.Count, userListCacheKey);
-
-                    // --- Job Enqueueing Loop (largely unchanged) ---
-                    int enqueuedCount = 0;
-                    for (int i = 0; i < validTelegramIds.Count; i++)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        long userId = validTelegramIds[i];
-
-                        if (await _rateLimiter.IsUserOverLimitAsync(userId, 15, TimeSpan.FromHours(1)))
-                        {
-                            _logger.LogTrace("User {UserId} is over rate limit. Skipping job enqueue.", userId);
-                            continue;
-                        }
-
-                        _ = _jobScheduler.Enqueue<INotificationSendingService>(
-                            service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, i));
-                        enqueuedCount++;
-
-                        if (i < validTelegramIds.Count - 1)
-                        {
-                            await Task.Delay(delayBetweenJobs, cancellationToken);
-                        }
-                    }
-                    _logger.LogInformation("Dispatch orchestration complete. {Count} jobs enqueued.", enqueuedCount);
+                    _logger.LogInformation("No unique, eligible users found for NewsItem {NewsItemId}.", newsItemId);
+                    return;
                 }
-                catch (BrokenCircuitException) // ✅ NEW: Specific catch
+
+                // Now we proceed with the unique list, eliminating all spam and stampedes.
+                string userListCacheKey = $"dispatch:users:{newsItemId}";
+                await _redisCircuitBreaker.ExecuteAsync(async () =>
                 {
-                    _logger.LogWarning("Dispatch for NewsItem {NewsItemId} failed because the Redis circuit is open.", newsItemId);
-                }
-                catch (RedisException redisEx) // ✅ NEW: Specific catch
+                    string serializedUserIds = JsonSerializer.Serialize(uniqueTelegramIds);
+                    await _redisDb.StringSetAsync(userListCacheKey, serializedUserIds, TimeSpan.FromHours(24));
+                });
+                _logger.LogInformation("Cached {Count} UNIQUE user IDs to Redis for NewsItem {NewsItemId}.", uniqueTelegramIds.Count, newsItemId);
+
+                // The "Divide and Conquer" logic is now safe because it's operating on a unique set.
+                int totalUsers = uniqueTelegramIds.Count;
+                int chunks = (int)Math.Ceiling((double)totalUsers / chunkSize);
+
+                for (int i = 0; i < chunks; i++)
                 {
-                    _logger.LogError(redisEx, "A Redis error occurred during dispatch orchestration for NewsItem {NewsItemId}. The circuit breaker may have tripped.", newsItemId);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int chunkStartIndex = i * chunkSize;
+
+                    _jobScheduler.Enqueue<INotificationDispatchService>(
+                        service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, chunkSize, CancellationToken.None));
                 }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogWarning("Dispatch orchestration was cancelled.");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogCritical(ex, "A critical, unhandled error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
-                }
-            }, cancellationToken);
+
+                _logger.LogInformation("Dispatch Coordination Complete for NewsItem {NewsItemId}. Enqueued {ChunkCount} manager jobs to process {TotalUserCount} unique users.", newsItemId, chunks, totalUsers);
+            }
+            catch (BrokenCircuitException)
+            {
+                _logger.LogWarning("Dispatch for NewsItem {NewsItemId} failed: Redis circuit is open.", newsItemId);
+            }
+            catch (RedisException redisEx)
+            {
+                _logger.LogError(redisEx, "A Redis error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("Dispatch orchestration for NewsItem {NewsItemId} was cancelled.", newsItemId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "A critical error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
+                throw;
+            }
         }
+
+
+        [JobDisplayName("Process Dispatch Chunk: News {0}, StartIndex {2}")]
+        [AutomaticRetry(Attempts = 1)]
+        public async Task ProcessNotificationChunkAsync(Guid newsItemId, string userListCacheKey, int chunkStartIndex, int chunkSize, CancellationToken cancellationToken)
+        {
+            // This small delay spreads out the load from different chunk managers.
+            await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(50, 500)), cancellationToken);
+
+            _logger.LogInformation("Processing dispatch chunk for News {NewsItemId} starting at index {StartIndex} for {ChunkSize} users.", newsItemId, chunkStartIndex, chunkSize);
+
+            // This loop now only runs for a small `chunkSize` (e.g., 500 times), not 25,000 times.
+            for (int i = 0; i < chunkSize; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int currentUserIndex = chunkStartIndex + i;
+
+                // Enqueue the final, lightweight worker job.
+                // We removed the incorrect rate-limit check from the orchestrator. The check
+                // is correctly performed inside ProcessNotificationFromCacheAsync.
+                _jobScheduler.Enqueue<INotificationSendingService>(
+                    service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex));
+
+                // Optional: A tiny delay to be even gentler on the Hangfire enqueue command.
+                await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
+            }
+
+            _logger.LogInformation("Chunk processing complete for News {NewsItemId} starting at index {StartIndex}.", newsItemId, chunkStartIndex);
+        }
+
+
+
 
         #endregion
     }
