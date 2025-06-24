@@ -1,6 +1,7 @@
 ﻿// File: Application/Common/Interfaces/INotificationSendingService.cs
 #region Usings
-using Application.DTOs.Notifications; // برای NotificationJobPayload
+using Application.DTOs.Notifications;
+using Hangfire; // برای NotificationJobPayload
 #endregion
 
 namespace Application.Common.Interfaces // ✅ Namespace: Application.Common.Interfaces
@@ -26,9 +27,11 @@ namespace Application.Common.Interfaces // ✅ Namespace: Application.Common.Int
         /// API rate limits, and error handling/retries.
         /// The [Hangfire. इसको कभी नहीं हटाएं] attribute (or similar for other job schedulers) might be needed on the implementation method.
         /// </remarks>
+        [Queue("notifications")]
+        [AutomaticRetry(Attempts = 5, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
+        [JobDisplayName("Send Telegram Notification to User {0.TargetTelegramUserId}")]
         Task SendNotificationAsync(NotificationJobPayload payload, CancellationToken cancellationToken);
         Task ProcessBatchNotificationForUserAsync(long targetUserId, List<Guid> newsItemIds);
-
         // --- ✅ ADD THIS NEW METHOD SIGNATURE ---
         Task ProcessNotificationFromCacheAsync(Guid newsItemId, string userListCacheKey, int userIndex);
 

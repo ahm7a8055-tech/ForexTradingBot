@@ -460,7 +460,7 @@ namespace BackgroundTasks.Services
 
                 // 4a. Delegate the "last mile" sending to our dedicated, robust sender method.
                 // This method contains all the API-specific error handling and retry logic.
-                await SendToTelegramAsync(payload, CancellationToken.None);
+                await SendNotificationAsync(payload, CancellationToken.None);
 
                 // 4b. This line is ONLY reached if SendToTelegramAsync did not throw an exception.
                 // This correctly ensures we only count *successful* sends against the user's quota.
@@ -703,7 +703,7 @@ namespace BackgroundTasks.Services
             return null;
         }
 
-        private async Task SendToTelegramAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
+        public async Task SendNotificationAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {
             try
             {
@@ -714,7 +714,6 @@ namespace BackgroundTasks.Services
                 // This work is expensive (string manipulation, object creation) and its result
                 // is the same for every retry attempt. By doing it once, we save significant
                 // CPU cycles on every subsequent retry.
-                var sanitizedMessageForSending = EscapeTelegramMarkdownV2(payload.MessageText);
                 InlineKeyboardMarkup? finalKeyboard = BuildTelegramKeyboard(payload.Buttons);
 
                 // Execute the core logic within the Polly policy for retries.
@@ -748,7 +747,7 @@ namespace BackgroundTasks.Services
                         // send a plain text message. This is a fallback in case the default image URL was also invalid.
                         await _botClient.SendMessage(
                             chatId: payload.TargetTelegramUserId,
-                            text: payload.MessageText,
+                            text:payload.MessageText,
                             parseMode: ParseMode.MarkdownV2,
                             replyMarkup: finalKeyboard,
                             linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
@@ -958,37 +957,6 @@ namespace BackgroundTasks.Services
                 buttons.Add(new NotificationButton { Text = "Read More", CallbackDataOrUrl = newsItem.Link, IsUrl = true });
             }
             return buttons;
-        }
-
-        /// <summary>
-        /// This method is intended to asynchronously send a notification based on the provided payload.
-        /// It serves as a placeholder for future implementation within the notification dispatch process
-        /// and is currently not functional. Its purpose would be to encapsulate the final sending logic
-        /// for AI-generated alerts or news to a specific user.
-        /// </summary>
-        /// <remarks>
-        /// As of the current implementation, this method is explicitly not implemented and will throw a
-        /// <see cref="NotImplementedException"/> if invoked. This signifies that the functionality
-        /// for directly sending a notification using this signature is pending development.
-        /// </remarks>
-        /// <param name="payload">The <see cref="NotificationJobPayload"/> containing all necessary details for the notification (e.g., target user, message content from AI analysis).</param>
-        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe for cancellation requests during the asynchronous operation.</param>
-        /// <returns>
-        /// A <see cref="Task"/> that represents the asynchronous operation of sending the notification.
-        /// <para>
-        /// **Note:** This method is currently not implemented and will throw a <see cref="NotImplementedException"/> when called.
-        /// It is a placeholder for future AI analysis communication capabilities.
-        /// </para>
-        /// </returns>
-        /// <exception cref="NotImplementedException">
-        /// This exception is explicitly thrown every time this method is called, as its implementation is pending.
-        /// </exception>
-        public Task SendNotificationAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
-        {
-            // Log a warning or error if this method is called, as it's not meant to be active yet.
-            // For AI analysis, calling this would indicate a potential issue in the dispatch flow.
-            // _logger.LogError("SendNotificationAsync is called but not implemented."); // Example logging, but current code throws immediately.
-            throw new NotImplementedException();
         }
         #endregion
     }
