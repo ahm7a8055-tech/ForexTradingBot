@@ -95,22 +95,16 @@ try
 
       .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}")
 
-      // ==================== بخش جدید برای لاگ‌گیری در فایل ====================
-      .WriteTo.File(
-          path: "logs\\log-.txt", // مسیر و الگوی نام فایل. در پوشه logs ذخیره می‌شود و یک شماره یا تاریخ به نام فایل اضافه می‌کند
-          rollingInterval: RollingInterval.Hour, // فایل لاگ هر ساعت یک بار چرخشی می‌شود (یک فایل جدید ساخته می‌شود)
-                                                 // برای شبیه‌سازی ۱۲ ساعت، می‌توانیم هر ساعت فایل جدید بسازیم و قدیمی‌ها را پاک کنیم
-
-          retainedFileCountLimit: 24, // تعداد فایل‌هایی که نگهداری می‌شوند. مثلا: ۲۴ فایل آخر (معادل لاگ‌های ۲۴ ساعت گذشته)
-                                      // برای نگهداری لاگ‌های ۷ روز: 7 * 24 = 168
-                                      // اگر null باشد، فایل‌های قدیمی حذف نمی‌شوند
-
-          rollOnFileSizeLimit: true, // اگر حجم فایل از حد مشخصی بیشتر شد، یک فایل جدید بساز
-          fileSizeLimitBytes: 10 * 1024 * 1024, // حداکثر حجم هر فایل لاگ (اینجا ۱۰ مگابایت)
-
-          shared: true, // اجازه می‌دهد چند پروسس همزمان در این فایل لاگ بنویسند (برای محیط وب بسیار مهم است)
-
-          outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}" // قالب خروجی برای فایل
+       // ==================== بخش جدید برای لاگ‌گیری در فایل ====================
+       .WriteTo.File(
+          path: "logs/log-.txt",
+          rollingInterval: RollingInterval.Hour,
+          retainedFileCountLimit: 24,
+          rollOnFileSizeLimit: true,
+          fileSizeLimitBytes: 10 * 1024 * 1024,
+          shared: true,
+          outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}"
+      // --------------------
       )
       // =======================================================================
 
@@ -209,6 +203,9 @@ try
     #endregion
 
     #region Configure Application Options/Settings
+
+
+
     // ------------------- ۳. پیکربندی Options (خواندن تنظیمات از appsettings.json) -------------------
     // مپ کردن بخش "TelegramSettings" از appsettings.json به کلاس Domain.Settings.TelegramSettings
     // این کلاس می‌تواند شامل تنظیمات عمومی تلگرام مانند AdminUserId باشد.

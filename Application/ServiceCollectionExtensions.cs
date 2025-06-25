@@ -119,7 +119,7 @@ namespace Application // ✅ Namespace ریشه پروژه Application
             // services.AddScoped<IRssSourceService, RssSourceService>();
             // Comment: Example: Registers RssSourceService for RSS feed processing logic.
 
-
+         
             // ------------------- پیاده‌سازی پیش‌فرض/Dummy برای اینترفیس‌های عمومی -------------------
             // این پیاده‌سازی‌ها به لایه Application اجازه می‌دهند بدون وابستگی به پیاده‌سازی‌های لایه‌های دیگر (مانند TelegramPanel)
             // کامپایل و تست شوند. پیاده‌سازی واقعی در لایه مربوطه (مثلاً TelegramPanel) این رجیستری را override خواهد کرد.

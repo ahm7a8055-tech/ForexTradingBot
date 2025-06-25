@@ -374,7 +374,7 @@ namespace Application.Services
                 cancellationToken.ThrowIfCancellationRequested();
 
                 int currentUserIndex = chunkStartIndex + i;
-
+                await Task.Delay(TimeSpan.FromMilliseconds(9000), cancellationToken);
                 // =====================================================================================
                 // == THE DEFINITIVE FIX PART 3: This call now perfectly matches the new interface.  ==
                 // =====================================================================================
@@ -382,7 +382,7 @@ namespace Application.Services
                     service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex, JobCancellationToken.Null)
                 );
 
-                await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
+    
             }
 
             _logger.LogInformation("Chunk processing complete for News {NewsItemId} starting at index {StartIndex}.", newsItemId, chunkStartIndex);

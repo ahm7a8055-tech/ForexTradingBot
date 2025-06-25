@@ -14,6 +14,7 @@ using Polly;
 using Polly.Retry;
 using Shared.Extensions;
 using StackExchange.Redis;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -369,33 +370,37 @@ namespace BackgroundTasks.Services
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-                Guid newsItemId,
-                string userListCacheKey,
-                int userIndex,
-                IJobCancellationToken jobCancellationToken)
+            Guid newsItemId,
+            string userListCacheKey,
+            int userIndex,
+            IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
 
-            // =========================================================================
-            // == THE DEFINITIVE FIX: Remove the call to GetJobId() from the logger.  ==
-            // =========================================================================
-            // The JobId is useful for tracing but not essential for functionality.
-            // Removing it will solve the compiler error without affecting the program's logic.
+            // Logging scope for better traceability within this job execution.
             using var logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex });
-            // =========================================================================
 
             try
             {
+                // 1. Fetch user details
                 (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
-                if (userDto == null) return;
-
-                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 20, TimeSpan.FromMinutes(15)))
+                if (userDto == null)
                 {
-                    _logger.LogInformation("SKIP: User {TargetUserId} met rate limit.", targetUserId);
+                    _logger.LogInformation("Skipping job: Target user not found for UserIndex {UserIndex}.", userIndex);
                     return;
                 }
 
+                // 2. PRIMARY RATE LIMIT CHECK:
+                //    Check if the user has exceeded a general notification limit (e.g., 20 messages in 15 minutes).
+                //    If they have, we skip processing this Hangfire job entirely for them.
+                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 20, TimeSpan.FromMinutes(15)))
+                {
+                    _logger.LogInformation("SKIP: User {TargetUserId} met the pre-processing rate limit (20/15min).", targetUserId);
+                    return;
+                }
+
+                // 3. Fetch news item
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
@@ -403,54 +408,79 @@ namespace BackgroundTasks.Services
                     throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
-                // This logic is now correct.
+                // 4. Prepare notification payload
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
-                _logger.LogInformation("Introducing a 5s delay for User {TargetUserId}.", targetUserId);
+
+                // 5. Introduce a fixed delay *within* this job's execution.
+                //    This delays the sending operation by 5 seconds for each job.
+                _logger.LogInformation("Executing job for User {TargetUserId}. Introducing a 5s delay before sending.", targetUserId);
                 await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+
+                // 6. Send the notification (calls your other method)
                 await SendNotificationViaSenderAsync(payload, cancellationToken);
 
+                // 7. POST-SEND RATE LIMIT INCREMENT:
+                //    Record that a notification was successfully sent to this user.
+                //    This contributes to their hourly usage count.
                 await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromHours(1));
 
-                _logger.LogInformation("✅ Successfully processed and enqueued final send for User {UserId}.", targetUserId);
+                _logger.LogInformation("✅ Successfully processed and sent notification for User {UserId}.", targetUserId);
             }
             catch (OperationCanceledException)
             {
-                _logger.LogWarning("Job for UserIndex {UserIndex} was cancelled. It will be re-queued.", userIndex);
-                throw;
+                _logger.LogWarning("Job for UserIndex {UserIndex} was cancelled. It will be re-queued by Hangfire.", userIndex);
+                throw; // Re-throw to allow Hangfire to handle retries/re-queuing
             }
             catch (Exception ex)
             {
+                // Log any other exceptions as critical, allowing Hangfire retries.
                 _logger.LogCritical(ex, "A critical, unhandled exception occurred for UserIndex {UserIndex}. Job will be retried.", userIndex);
-                throw;
+                throw; // Re-throw to allow Hangfire to handle retries
             }
         }
 
-        private Task SendNotificationViaSenderAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
+
+        private async Task SendNotificationViaSenderAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {
-            var keyboard = BuildTelegramKeyboard(payload.Buttons);
+            var keyboard = BuildTelegramKeyboard(payload.Buttons); // Assuming BuildTelegramKeyboard exists
             _logger.LogDebug("Handing off payload to ITelegramMessageSender for User {UserId}", payload.TargetTelegramUserId);
 
-            if (!string.IsNullOrWhiteSpace(payload.ImageUrl))
+            try
             {
-                return _telegramMessageSender.SendPhotoAsync(
-                    chatId: payload.TargetTelegramUserId,
-                    photoUrlOrFileId: payload.ImageUrl,
-                    caption: payload.MessageText,
-                    parseMode: ParseMode.MarkdownV2,
-                    replyMarkup: keyboard,
-                    cancellationToken: cancellationToken);
+                Task sendTask;
+                if (!string.IsNullOrWhiteSpace(payload.ImageUrlOrDefault))
+                {
+                    sendTask = _telegramMessageSender.SendPhotoAsync(
+                        chatId: payload.TargetTelegramUserId,
+                        photoUrlOrFileId: payload.ImageUrlOrDefault ?? "https://i.postimg.cc/3RmJjBjY/Breaking-News.jpg",
+                        caption: payload.MessageText,
+                        parseMode: ParseMode.MarkdownV2,
+                        replyMarkup: keyboard,
+                        cancellationToken: cancellationToken);
+                }
+                else
+                {
+                    sendTask = _telegramMessageSender.SendTextMessageAsync(
+                        chatId: payload.TargetTelegramUserId,
+                        text: payload.MessageText,
+                        parseMode: ParseMode.MarkdownV2,
+                        replyMarkup: keyboard,
+                        cancellationToken: cancellationToken,
+                        linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true });
+                }
+
+                await sendTask; // Await the task to get its result/exceptions
+
+                _logger.LogInformation("Successfully sent notification to User {UserId}", payload.TargetTelegramUserId);
             }
-            else
+            catch (Exception ex)
             {
-                return _telegramMessageSender.SendTextMessageAsync(
-                    chatId: payload.TargetTelegramUserId,
-                    text: payload.MessageText,
-                    parseMode: ParseMode.MarkdownV2,
-                    replyMarkup: keyboard,
-                    cancellationToken: cancellationToken,
-                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true });
+                _logger.LogError(ex, "Failed to send notification to User {UserId}", payload.TargetTelegramUserId);
+                throw; // Re-throw for the caller (ProcessNotificationFromCacheAsync) to catch.
             }
         }
+
+        // Placeholder
         /// <summary>
         /// Retrieves and validates a user for processing.
         /// </summary>
@@ -610,7 +640,6 @@ namespace BackgroundTasks.Services
             // data errors like malformed input, permissions errors other than 403, etc.)
             return false;
         }
-
         /// <summary>
         /// Converts a list of custom <see cref="NotificationButton"/> objects (which define generic button properties)
         /// into a Telegram-specific <see cref="InlineKeyboardMarkup"/>. This keyboard is used to add interactive buttons
@@ -648,39 +677,27 @@ namespace BackgroundTasks.Services
 
             foreach (var button in buttons)
             {
-                // V2 UPGRADE: Validate button text. Skip if empty.
-                if (string.IsNullOrWhiteSpace(button.Text))
+                if (string.IsNullOrWhiteSpace(button.Text) || string.IsNullOrWhiteSpace(button.CallbackDataOrUrl))
                 {
-                    _logger.LogWarning("Skipping button with empty text.");
-                    continue;
-                }
-
-                // V2 UPGRADE: Validate URL/Callback data. Skip if empty.
-                if (string.IsNullOrWhiteSpace(button.CallbackDataOrUrl))
-                {
-                    _logger.LogWarning("Skipping button '{ButtonText}' due to empty URL or CallbackData.", button.Text);
-                    continue;
+                    continue; // Skip invalid buttons
                 }
 
                 if (button.IsUrl)
                 {
-                    // V2 UPGRADE: Validate the URL.
                     if (Uri.TryCreate(button.CallbackDataOrUrl, UriKind.Absolute, out var validUri))
                     {
                         validButtons.Add(InlineKeyboardButton.WithUrl(button.Text, validUri.ToString()));
                     }
                     else
                     {
-                        _logger.LogWarning("Skipping URL button '{ButtonText}' due to invalid URL format: '{InvalidUrl}'",
-                            button.Text, button.CallbackDataOrUrl);
+                        _logger.LogWarning("Skipping URL button '{ButtonText}' due to invalid URL format.", button.Text);
                     }
                 }
                 else // It's a callback button
                 {
-                    // V2 UPGRADE: Validate callback data length (Telegram limit is 1-64 bytes).
                     if (System.Text.Encoding.UTF8.GetByteCount(button.CallbackDataOrUrl) > 64)
                     {
-                        _logger.LogWarning("Skipping Callback button '{ButtonText}' because its data is longer than the 64-byte Telegram limit.", button.Text);
+                        _logger.LogWarning("Skipping Callback button '{ButtonText}' because data exceeds 64 bytes.", button.Text);
                     }
                     else
                     {
@@ -689,19 +706,24 @@ namespace BackgroundTasks.Services
                 }
             }
 
-            // Only return a keyboard if we have at least one valid button after filtering.
-            if (validButtons.Any())
+            if (!validButtons.Any())
             {
-                _logger.LogDebug("Successfully built keyboard with {ValidButtonCount} valid buttons.", validButtons.Count);
-                // Telegram keyboards are a list of lists (rows of buttons).
-                // For simplicity, we'll put each button on its own row.
-                return new InlineKeyboardMarkup(validButtons.Select(b => new[] { b }));
+                _logger.LogWarning("No valid buttons were found after filtering. Returning null keyboard.");
+                return null;
             }
 
-            _logger.LogWarning("No valid buttons were found after filtering. Returning null keyboard.");
-            return null;
-        }
+            _logger.LogDebug("Successfully built keyboard with {ValidButtonCount} valid buttons.", validButtons.Count);
 
+            // =========================================================================================
+            // == THE FIX: Create a List<List<InlineKeyboardButton>> instead of a List<InlineKeyboardButton[]>.
+            // This is a more standard structure that prevents deserialization errors in Hangfire.
+            // =========================================================================================
+            var keyboardRows = validButtons
+                .Select(b => new List<InlineKeyboardButton> { b }) // <-- THE CHANGE IS HERE
+                .ToList();
+
+            return new InlineKeyboardMarkup(keyboardRows);
+        }
         public async Task SendNotificationAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {
             try
