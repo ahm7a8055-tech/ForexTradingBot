@@ -10,4 +10,7 @@ public interface INotificationRateLimiter
 
     // You might keep the old method for other uses or mark it as obsolete.
     Task<bool> IsUserOverLimitAsync(long userId, int limit, TimeSpan period);
+
+    Task DecrementUsageAsync(long telegramUserId);
+
 }

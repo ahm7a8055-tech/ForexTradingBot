@@ -13,7 +13,12 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
     private readonly AsyncRetryPolicy _redisRetryPolicy;
 
     #region Lua Scripts
-
+    private const string DecrementRateLimitLuaScript =
+     @"-- KEYS[1]: The unique key for the user's rate limit sorted set
+          -- Removes the member with the highest score (the most recent timestamp).
+          -- ZREMRANGEBYRANK removes a range of members by their 0-based rank (ordered from lowest to highest score).
+          -- A rank of -1 refers to the member with the highest score.
+          return redis.call('ZREMRANGEBYRANK', KEYS[1], -1, -1)";
     /// <summary>
     /// Lua script that checks the current count and increments it if below the limit.
     /// This is the original, combined-action script.
@@ -223,6 +228,28 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
         {
             _logger.LogError(ex, "Could not contact Redis for rate limiting after all retries for User {UserId}. Allowing notification to pass as a failsafe.", telegramUserId);
             return false;
+        }
+    }
+
+    public async Task DecrementUsageAsync(long telegramUserId)
+    {
+        IDatabase db = _redis.GetDatabase();
+        string key = $"notif_limit:v2:{telegramUserId}";
+
+        try
+        {
+            await _redisRetryPolicy.ExecuteAsync(async () =>
+            {
+                await db.ScriptEvaluateAsync(
+                    DecrementRateLimitLuaScript,
+                    new RedisKey[] { key }
+                );
+            });
+            _logger.LogWarning("Successfully rolled back rate limit usage for User {UserId} after a failed send.", telegramUserId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to DECREMENT rate limit usage for User {UserId}. Their quota may be temporarily inaccurate.", telegramUserId);
         }
     }
 }

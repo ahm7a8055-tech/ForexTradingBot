@@ -371,10 +371,10 @@ namespace BackgroundTasks.Services
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-              Guid newsItemId,
-              string userListCacheKey,
-              int userIndex,
-              IJobCancellationToken jobCancellationToken)
+             Guid newsItemId,
+             string userListCacheKey,
+             int userIndex,
+             IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
@@ -391,58 +391,69 @@ namespace BackgroundTasks.Services
                     return;
                 }
 
-                // =============================================================================
-                // == THE FIX: Activate and configure the rate limit check as requested.      ==
-                // =============================================================================
-                // 2. Pre-processing Rate Limit Check: 5 notifications per 15 minutes.
-                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
+                // =================================================================================
+                // == THE ATOMIC FIX: Atomically check AND increment the rate limit.              ==
+                // == This RESERVES a slot for our notification.                                  ==
+                // =================================================================================
+                // 2. Atomically reserve a notification slot.
+                if (await _rateLimiter.IsUserOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
                 {
-                    // If the user has received 5 or more notifications in the last 15 minutes,
-                    // we skip this job. This is not an error; it's the system working as designed.
+                    // This method atomically checks and increments. If it returns true, it means
+                    // the user was ALREADY at the limit, and no increment was performed.
                     _logger.LogInformation(
                         "SKIP: User {TargetUserId} has reached their rate limit (5 notifications per 15 minutes).",
                         targetUserId);
                     return; // Exit gracefully.
                 }
-                // =============================================================================
 
-                // 3. Fetch news item
+                _logger.LogInformation("Rate limit slot successfully reserved for User {TargetUserId}.", targetUserId);
+
+                // 3. Fetch news item (only if slot was reserved)
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
                     _logger.LogError("Job failed critically: NewsItem {NewsItemId} not found.", newsItemId);
+                    // We must roll back the rate limit increment since we are failing before sending.
+                    await _rateLimiter.DecrementUsageAsync(targetUserId);
                     throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
                 // 4. Prepare notification payload
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
 
-                _logger.LogDebug("Executing job immediately for User {TargetUserId}.", targetUserId);
+                // 5. Send the notification, and handle potential failures to roll back our reservation.
+                try
+                {
+                    await SendNotificationViaSenderAsync(payload, cancellationToken);
+                    _logger.LogInformation("✅ Successfully sent notification and consumed rate limit slot for User {UserId}.", targetUserId);
+                }
+                catch (Exception sendException)
+                {
+                    _logger.LogError(sendException, "Failed to send notification to User {UserId}. ROLLING BACK rate limit reservation.", targetUserId);
 
-                // 6. Send the notification
-                await SendNotificationViaSenderAsync(payload, cancellationToken);
+                    // =================================================================================
+                    // == THE ROLLBACK: The send failed, so we give the user's slot back.           ==
+                    // =================================================================================
+                    await _rateLimiter.DecrementUsageAsync(targetUserId);
 
-                // =============================================================================
-                // == This part is already correct and just needs to be confirmed.          ==
-                // =============================================================================
-                // 7. Post-send rate limit increment
-                // This call now correctly corresponds to the 15-minute window we checked earlier.
-                await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromMinutes(15));
-                // =============================================================================
-
-                _logger.LogInformation("✅ Successfully processed and sent notification for User {UserId}.", targetUserId);
+                    // Re-throw the original send exception so Hangfire can handle retries appropriately.
+                    throw;
+                }
             }
             catch (OperationCanceledException)
             {
+                // If the job is cancelled after the slot was reserved, we should roll back.
+                if (targetUserId != -1)
+                {
+                    await _rateLimiter.DecrementUsageAsync(targetUserId);
+                }
                 _logger.LogWarning("Job for UserIndex {UserIndex} was cancelled. It will be re-queued by Hangfire.", userIndex);
                 throw;
             }
             catch (Exception ex)
             {
-                // If SendNotificationViaSenderAsync fails, an exception is thrown.
-                // This catch block will be hit, and the IncrementUsageAsync line will NOT be executed.
-                // This is the correct behavior, as we don't want to count a failed attempt against the user's quota.
                 _logger.LogCritical(ex, "A critical, unhandled exception occurred for UserIndex {UserIndex}. Job will be retried.", userIndex);
+                // The reservation might have already been rolled back, but it's safe to let Hangfire retry.
                 throw;
             }
         }
