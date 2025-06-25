@@ -275,36 +275,25 @@ namespace Application.Services
         /// This method does *not* return the results of the actual notification sends, as those occur asynchronously in the enqueued Hangfire jobs. Any critical, unhandled errors that occur during the orchestration process will be logged and re-thrown.
         /// </returns>
         [JobDisplayName("Dispatch Coordinator for News: {0}")]
-        [AutomaticRetry(Attempts = 0)]
+        [AutomaticRetry(Attempts = 0)] // Orchestrator failure shouldn't trigger automatic retries for the whole batch.
         public async Task DispatchNewsNotificationAsync(Guid newsItemId, CancellationToken cancellationToken = default)
         {
             // ========================== IDEMPOTENCY FIX START ==========================
-            // 1. Define a unique lock key for this specific news item dispatch.
             string lockKey = $"dispatch-lock:{newsItemId}";
-            // 2. Set a reasonable expiry for the lock to prevent it from getting stuck
-            //    if the worker process dies unexpectedly. E.g., 1 hour.
             TimeSpan lockExpiry = TimeSpan.FromHours(1);
             // =========================================================================
 
             try
             {
                 // ========================== IDEMPOTENCY FIX START ==========================
-                // 3. Try to acquire the lock atomically in Redis.
-                //    The 'When.NotExists' flag means this command only succeeds if the key
-                //    does not already exist. This is the core of the lock.
                 bool lockAcquired = await _redisDb.StringSetAsync(lockKey, "locked", lockExpiry, When.NotExists);
-
                 if (!lockAcquired)
                 {
-                    // Another job is already processing this news item. This is not an error.
-                    // We log it and exit gracefully.
                     _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: another dispatch is already in progress or has recently completed.", newsItemId);
-                    return; // EXIT a
+                    return; // EXIT
                 }
                 // =========================================================================
 
-
-                // --- Your Original Logic (Now protected by the lock) ---
                 const int chunkSize = 500;
                 _logger.LogInformation("Starting Dispatch Coordination for NewsItem {NewsItemId}.", newsItemId);
 
@@ -314,16 +303,14 @@ namespace Application.Services
                     return;
                 }
 
-                // The rest of your try block remains the same...
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
                     _logger.LogWarning("NewsItem {Id} not found. Cannot dispatch.", newsItemId);
                     return;
                 }
-                // ... and so on ...
-                // ... (your existing code for fetching users, caching, and enqueuing jobs) ...
 
+                // Fetch all potentially eligible users
                 IEnumerable<User> targetUsers = await _userRepository.GetUsersForNewsNotificationAsync(
                     newsItem.AssociatedSignalCategoryId, newsItem.IsVipOnly, cancellationToken);
 
@@ -340,28 +327,61 @@ namespace Application.Services
                     return;
                 }
 
+                // --- NEW FIX: FILTER USERS BASED ON GLOBAL RATE LIMIT BEFORE ENQUEUING ---
+                List<long> eligibleUsersForThisDispatch = new List<long>();
+                foreach (long userId in uniqueTelegramIds)
+                {
+                    // Check if the user has already reached their *global* limit for notifications (5 per 15 min)
+                    // This check is crucial to prevent overwhelming the user even with different news items.
+                    if (await _rateLimiter.IsUserOverLimitAsync(userId, 5, TimeSpan.FromMinutes(15)))
+                    {
+                        _logger.LogInformation("SKIP enqueueing for NewsItem {NewsItemId}: User {UserId} has reached their global notification limit (5/15min).", newsItemId, userId);
+                        // This user is over their limit, so we skip enqueuing any notification for them for *this* news item.
+                    }
+                    else
+                    {
+                        // This user is under their global limit, so they are eligible to receive *this* notification.
+                        // The subsequent ProcessNotificationFromCacheAsync will handle its own atomic reservation and increment.
+                        eligibleUsersForThisDispatch.Add(userId);
+                    }
+                }
+
+                if (!eligibleUsersForThisDispatch.Any()) // <<< TYPO FIXED: Use the correct variable name
+                {
+                    _logger.LogInformation("No eligible users remaining for NewsItem {NewsItemId} after rate limit filtering.", newsItemId);
+                    return;
+                }
+                // --- END NEW FIX ---
+
+                // Cache the FILTERED list of eligible user IDs for this specific news item dispatch.
                 string userListCacheKey = $"dispatch:users:{newsItemId}";
                 await _redisCircuitBreaker.ExecuteAsync(async () =>
                 {
-                    string serializedUserIds = JsonSerializer.Serialize(uniqueTelegramIds);
+                    string serializedUserIds = JsonSerializer.Serialize(eligibleUsersForThisDispatch); // Cache the FILTERED list
                     await _redisDb.StringSetAsync(userListCacheKey, serializedUserIds, TimeSpan.FromHours(24));
                 });
-                _logger.LogInformation("Cached {Count} UNIQUE user IDs to Redis for NewsItem {NewsItemId}.", uniqueTelegramIds.Count, newsItemId);
+                _logger.LogInformation("Cached {Count} UNIQUE eligible user IDs to Redis for NewsItem {NewsItemId} after rate limit filtering.", eligibleUsersForThisDispatch.Count, newsItemId);
 
-                int totalUsers = uniqueTelegramIds.Count;
+                // Now, proceed with chunking and enqueuing based on the FILTERED list.
+                int totalUsers = eligibleUsersForThisDispatch.Count;
                 int chunks = (int)Math.Ceiling((double)totalUsers / chunkSize);
 
                 for (int i = 0; i < chunks; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     int chunkStartIndex = i * chunkSize;
+
+                    // Calculate items in this chunk based on the filtered list size.
                     int itemsInThisChunk = Math.Min(chunkSize, totalUsers - chunkStartIndex);
 
+                    // Enqueue the chunk processing job. This job will then enqueue the final sending jobs.
+                    // The final sending job (ProcessNotificationFromCacheAsync) still has its rate limit check,
+                    // but this higher-level check prevents unnecessary enqueuing if the user is already at their global limit.
                     _jobScheduler.Enqueue<INotificationDispatchService>(
                         service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, itemsInThisChunk, CancellationToken.None));
                 }
 
-                _logger.LogInformation("Dispatch Coordination Complete for NewsItem {NewsItemId}. Enqueued {ChunkCount} manager jobs to process {TotalUserCount} unique users.", newsItemId, chunks, totalUsers);
+                _logger.LogInformation("Dispatch Coordination Complete for NewsItem {NewsItemId}. Enqueued {ChunkCount} manager jobs to process {TotalUserCount} eligible unique users (after rate limit filtering).", newsItemId, chunks, totalUsers);
             }
             catch (BrokenCircuitException)
             {
@@ -383,13 +403,12 @@ namespace Application.Services
             finally
             {
                 // ========================== IDEMPOTENCY FIX START ==========================
-                // 4. IMPORTANT: Release the lock when the job is finished (either successfully
-                //    or with an error) so that it can be run again in the future if needed.
-                //    This 'finally' block ensures the lock is always released.
+                // Release the lock to allow future dispatches for this news item.
                 await _redisDb.KeyDeleteAsync(lockKey);
                 // =========================================================================
             }
         }
+
 
 
 
