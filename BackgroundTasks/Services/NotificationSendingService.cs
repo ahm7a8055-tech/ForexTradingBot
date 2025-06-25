@@ -371,10 +371,10 @@ namespace BackgroundTasks.Services
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-          Guid newsItemId,
-          string userListCacheKey,
-          int userIndex,
-          IJobCancellationToken jobCancellationToken)
+              Guid newsItemId,
+              string userListCacheKey,
+              int userIndex,
+              IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
@@ -387,18 +387,24 @@ namespace BackgroundTasks.Services
                 (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
                 if (userDto == null)
                 {
-                    // This job is now extremely fast, it will just log and complete.
                     _logger.LogInformation("Skipping job: Target user not found for UserIndex {UserIndex}.", userIndex);
                     return;
                 }
 
-                // 2. Pre-processing Rate Limit Check
-                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 20, TimeSpan.FromMinutes(15)))
+                // =============================================================================
+                // == THE FIX: Activate and configure the rate limit check as requested.      ==
+                // =============================================================================
+                // 2. Pre-processing Rate Limit Check: 5 notifications per 15 minutes.
+                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
                 {
-                    // This job is now extremely fast, it will just log and complete.
-                    _logger.LogInformation("SKIP: User {TargetUserId} met the pre-processing rate limit (20/15min).", targetUserId);
-                    return;
+                    // If the user has received 5 or more notifications in the last 15 minutes,
+                    // we skip this job. This is not an error; it's the system working as designed.
+                    _logger.LogInformation(
+                        "SKIP: User {TargetUserId} has reached their rate limit (5 notifications per 15 minutes).",
+                        targetUserId);
+                    return; // Exit gracefully.
                 }
+                // =============================================================================
 
                 // 3. Fetch news item
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
@@ -411,17 +417,18 @@ namespace BackgroundTasks.Services
                 // 4. Prepare notification payload
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
 
-                // 5. !!! THE FIX: REMOVE THE DELAY !!!
-                //    The worker is no longer held captive. It sends the request and is immediately freed.
-                //    await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken); // <-- REMOVED
-
                 _logger.LogDebug("Executing job immediately for User {TargetUserId}.", targetUserId);
 
                 // 6. Send the notification
                 await SendNotificationViaSenderAsync(payload, cancellationToken);
 
+                // =============================================================================
+                // == This part is already correct and just needs to be confirmed.          ==
+                // =============================================================================
                 // 7. Post-send rate limit increment
+                // This call now correctly corresponds to the 15-minute window we checked earlier.
                 await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromMinutes(15));
+                // =============================================================================
 
                 _logger.LogInformation("✅ Successfully processed and sent notification for User {UserId}.", targetUserId);
             }
@@ -432,6 +439,9 @@ namespace BackgroundTasks.Services
             }
             catch (Exception ex)
             {
+                // If SendNotificationViaSenderAsync fails, an exception is thrown.
+                // This catch block will be hit, and the IncrementUsageAsync line will NOT be executed.
+                // This is the correct behavior, as we don't want to count a failed attempt against the user's quota.
                 _logger.LogCritical(ex, "A critical, unhandled exception occurred for UserIndex {UserIndex}. Job will be retried.", userIndex);
                 throw;
             }
