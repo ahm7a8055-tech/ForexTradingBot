@@ -244,7 +244,7 @@ namespace Infrastructure.Data
             _ = services.AddHttpClient<IFredApiClient, FredApiClient>();
             _ = services.AddScoped<INewsItemRepository, NewsItemRepository>(); // رجیستر NewsItemRepository
             _ = services.AddScoped<IRssReaderService, RssReaderService>(); // رجیستر RssReaderService
-            _ = services.AddSingleton<INotificationJobScheduler, HangfireNotificationJobScheduler>(); // رجیستر NotificationJobScheduler (Singleton برای زمان‌بندی)
+            _ = services.AddTransient<INotificationJobScheduler, HangfireJobScheduler>(); // رجیستر NotificationJobScheduler (Singleton برای زمان‌بندی)
             _ = services.AddScoped<INotificationDispatchService, NotificationDispatchService>(); // رجیستر NotificationDispatchService (برای ارسال اعلان‌ها)
             _ = services.AddScoped<IUserRepository, UserRepository>(); // رجیستر UserRepository
             _ = services.AddScoped<ITokenWalletRepository, TokenWalletRepository>(); // رجیستر TokenWalletRepository

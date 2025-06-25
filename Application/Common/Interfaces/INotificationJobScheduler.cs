@@ -1,34 +1,47 @@
 ﻿// File: Application/Common/Interfaces/INotificationJobScheduler.cs
-#region Usings
+using System;
 using System.Linq.Expressions;
-#endregion
+using System.Threading.Tasks;
 
-namespace Application.Common.Interfaces // ✅ Namespace: Application.Common.Interfaces
+namespace Application.Common.Interfaces
 {
     /// <summary>
-    /// Defines a contract for a service that schedules background jobs for notifications.
-    /// This abstracts the underlying job scheduling mechanism (e.g., Hangfire, RabbitMQ).
+    /// Defines the contract for scheduling and enqueuing background jobs.
     /// </summary>
     public interface INotificationJobScheduler
     {
         /// <summary>
-        /// Enqueues a fire-and-forget job that calls a method on the specified service type.
+        /// Enqueues a synchronous job to be executed by Hangfire.
         /// </summary>
-        /// <typeparam name="TService">The type of the service containing the method to execute.</typeparam>
-        /// <param name="methodCall">An expression representing the method call to be executed.</param>
-        /// <returns>A string identifier for the enqueued job (e.g., Hangfire Job ID).</returns>
-        string Enqueue<TService>(Expression<Action<TService>> methodCall);
+        /// <typeparam name="T">The type of the service that the job will call.</typeparam>
+        /// <param name="methodCall">The expression representing the method call.</param>
+        /// <returns>The ID of the created Hangfire job.</returns>
+        string Enqueue<T>(Expression<Action<T>> methodCall) where T : class;
 
         /// <summary>
-        /// Enqueues a fire-and-forget job that calls an asynchronous method on the specified service type.
+        /// Enqueues an asynchronous job to be executed by Hangfire.
         /// </summary>
-        /// <typeparam name="TService">The type of the service containing the asynchronous method to execute.</typeparam>
-        /// <param name="methodCall">An expression representing the asynchronous method call to be executed.</param>
-        /// <returns>A string identifier for the enqueued job.</returns>
-        string Enqueue<TService>(Expression<Func<TService, Task>> methodCall);
+        /// <typeparam name="T">The type of the service that the job will call.</typeparam>
+        /// <param name="methodCall">The expression representing the method call.</param>
+        /// <returns>The ID of the created Hangfire job.</returns>
+        string Enqueue<T>(Expression<Func<T, Task>> methodCall) where T : class;
 
-        //  می‌توانید متدهای دیگری برای زمان‌بندی با تأخیر (Schedule) یا تکرارشونده (Recurring) اضافه کنید
-        // string Schedule<TService>(Expression<Action<TService>> methodCall, TimeSpan delay);
-        // void AddOrUpdateRecurringJob<TService>(string recurringJobId, Expression<Action<TService>> methodCall, string cronExpression);
+        /// <summary>
+        /// Schedules a synchronous job to be executed after a specified delay.
+        /// </summary>
+        /// <typeparam name="T">The type of the service that the job will call.</typeparam>
+        /// <param name="methodCall">The expression representing the method call.</param>
+        /// <param name="delay">The delay before the job is to be executed.</param>
+        /// <returns>The ID of the scheduled Hangfire job.</returns>
+        string Schedule<T>(Expression<Action<T>> methodCall, TimeSpan delay) where T : class;
+
+        /// <summary>
+        /// Schedules an asynchronous job to be executed after a specified delay.
+        /// </summary>
+        /// <typeparam name="T">The type of the service that the job will call.</typeparam>
+        /// <param name="methodCall">The expression representing the method call.</param>
+        /// <param name="delay">The delay before the job is to be executed.</param>
+        /// <returns>The ID of the scheduled Hangfire job.</returns>
+        string Schedule<T>(Expression<Func<T, Task>> methodCall, TimeSpan delay) where T : class;
     }
 }

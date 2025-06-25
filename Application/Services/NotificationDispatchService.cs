@@ -395,27 +395,42 @@ namespace Application.Services
 
         [JobDisplayName("Process Dispatch Chunk: News {0}, StartIndex {1}")]
         [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
-        public async Task ProcessNotificationChunkAsync(Guid newsItemId, string userListCacheKey, int chunkStartIndex, int chunkSize, CancellationToken cancellationToken)
+        public Task ProcessNotificationChunkAsync(Guid newsItemId, string userListCacheKey, int chunkStartIndex, int chunkSize, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Processing dispatch chunk for News {NewsItemId} starting at index {StartIndex} for {ChunkSize} users.", newsItemId, chunkStartIndex, chunkSize);
 
-            // The loop should be very fast, just enqueueing jobs.
+            // ==========================================================================================
+            // == THE FIX: Introduce a small delay between each job's scheduled start time.            ==
+            // == This rate is ~25 jobs/sec, safely under the typical Telegram API limit of 30/sec.     ==
+            // ==========================================================================================
+            const int delayBetweenJobsMs = 40; // 1000ms / 25 jobs = 40ms per job.
+
+            // The loop will still be very fast, it just *schedules* jobs for the near future.
             for (int i = 0; i < chunkSize; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // !!! REMOVED THE Task.Delay(25000) !!!
-                // Any delay/rate-limiting should happen inside ProcessNotificationFromCacheAsync
+                // Calculate the delay for THIS specific job.
+                // The first job (i=0) has 0 delay.
+                // The second job (i=1) is scheduled for 40ms in the future.
+                // The third job (i=2) is scheduled for 80ms in the future, and so on.
+                var scheduledDelay = TimeSpan.FromMilliseconds(i * delayBetweenJobsMs);
 
                 int currentUserIndex = chunkStartIndex + i;
-                _jobScheduler.Enqueue<INotificationSendingService>(
-                    service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex, JobCancellationToken.Null)
+
+                // --- Use Schedule instead of Enqueue ---
+                _jobScheduler.Schedule<INotificationSendingService>(
+                    service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex, JobCancellationToken.Null),
+                    scheduledDelay
                 );
             }
 
-            // This method now completes in milliseconds instead of hours.
-            _logger.LogInformation("Chunk processing complete for News {NewsItemId} starting at index {StartIndex}.", newsItemId, chunkStartIndex);
-            await Task.CompletedTask; // Add this if your method becomes fully synchronous after removing the delay
+            // This manager job still completes in milliseconds.
+            _logger.LogInformation(
+                "Chunk processing complete for News {NewsItemId} starting at {StartIndex}. Scheduled {ChunkSize} worker jobs with a staggered start.",
+                newsItemId, chunkStartIndex, chunkSize);
+
+            return Task.CompletedTask;
         }
 
         #endregion
