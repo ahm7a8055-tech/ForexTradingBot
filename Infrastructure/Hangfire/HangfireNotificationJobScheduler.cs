@@ -28,6 +28,7 @@ namespace Infrastructure.Hangfire // CORRECT: This is where your implementation 
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
+
         // --- Implementations for Synchronous Jobs ---
 
 
