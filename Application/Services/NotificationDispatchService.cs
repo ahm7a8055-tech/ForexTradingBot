@@ -374,7 +374,7 @@ namespace Application.Services
                 cancellationToken.ThrowIfCancellationRequested();
 
                 int currentUserIndex = chunkStartIndex + i;
-                await Task.Delay(TimeSpan.FromMilliseconds(9000), cancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(25000), cancellationToken);
                 // =====================================================================================
                 // == THE DEFINITIVE FIX PART 3: This call now perfectly matches the new interface.  ==
                 // =====================================================================================
