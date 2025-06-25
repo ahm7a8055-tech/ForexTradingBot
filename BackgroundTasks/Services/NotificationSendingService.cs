@@ -371,16 +371,15 @@ namespace BackgroundTasks.Services
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-                Guid newsItemId,
-                string userListCacheKey,
-                int userIndex,
-                IJobCancellationToken jobCancellationToken)
+                       Guid newsItemId,
+                       string userListCacheKey,
+                       int userIndex,
+                       IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
-            bool slotSuccessfullyReserved = false; // Track if the atomic reservation was successful
 
-            using var logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex, ["NewsItemId"] = newsItemId });
+            using var logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex });
 
             try
             {
@@ -393,64 +392,52 @@ namespace BackgroundTasks.Services
                 }
 
                 // =========================================================================
-                // == THE VERY, VERY STRONG SHIELD: Use Atomic Check-and-Increment.       ==
+                // == THE DEFINITIVE FIX: Implement the "Check, then Act & Update" flow.  ==
                 // =========================================================================
 
-                // STEP 1: ATTEMPT ATOMIC RESERVATION
-                // IsUserOverLimitAsync will:
-                // 1. Clean expired entries.
-                // 2. Check current count.
-                // 3. If count < limit, increment and return false (not over limit).
-                // 4. If count >= limit, return true (over limit) AND if it had tried to increment, it rolls back immediately.
-                if (await _rateLimiter.IsUserOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
+                // STEP 1: CHECK (Read-Only)
+                // This method ONLY checks the current count without incrementing it.
+                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
                 {
-                    // If IsUserOverLimitAsync returns true, it means:
-                    // a) The user was already at or over the limit before this call.
-                    // b) Or, this call tried to increment, went over, and rolled itself back.
-                    // In either case, we should not proceed. The rate limiter handles its own logging for this.
-                    return; // Exit gracefully. No further action needed here.
+                    _logger.LogInformation(
+                        "SKIP: User {TargetUserId} is already at or over their rate limit (5 notifications per 15 minutes).",
+                        targetUserId);
+                    return; // Exit gracefully. No state was changed.
                 }
 
-                // If we reach here, IsUserOverLimitAsync returned false, meaning:
-                // a slot was successfully reserved (incremented) and the user is NOT over the limit.
-                slotSuccessfullyReserved = true;
-                _logger.LogInformation("Rate limit slot ATOMICALLY RESERVED for User {TargetUserId}. Proceeding to send.", targetUserId);
+                _logger.LogInformation("Rate limit check PASSED for User {TargetUserId}. Proceeding to send.", targetUserId);
 
-
-                // STEP 2: ACT (Fetch news, prepare, and send the message)
+                // STEP 2: ACT (Send the message)
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
-                    // This is a critical failure AFTER reserving a slot.
-                    throw new InvalidOperationException($"NewsItem {newsItemId} not found after reserving rate limit slot.");
+                    // This is a critical failure, but we haven't changed the rate limit, so no rollback is needed.
+                    throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
                 await SendNotificationViaSenderAsync(payload, cancellationToken);
+                _logger.LogInformation("✅ Successfully SENT notification to User {UserId}.", targetUserId);
 
-                // STEP 3: SUCCESSFUL SEND
-                // The slot was reserved, and the send was successful. The rate limit is now correctly consumed.
-                _logger.LogInformation("✅ Successfully SENT notification for User {TargetUserId}. Rate limit slot consumed.", targetUserId);
+
+                // STEP 3: UPDATE (Write to Redis)
+                // This is called ONLY AFTER the send operation has succeeded without throwing an exception.
+                await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromMinutes(15));
+                _logger.LogInformation("✅ Successfully INCREMENTED rate limit for User {UserId}.", targetUserId);
 
             }
             catch (Exception ex)
             {
-                // This single catch block handles any failure AFTER a slot might have been reserved.
-                _logger.LogCritical(ex, "A critical exception occurred for User {TargetUserId} (Index {UserIndex}) while processing notification.", targetUserId, userIndex);
-
-                // THE CRITICAL ROLLBACK:
-                // If a slot was successfully reserved, but any subsequent operation failed (DB, send, etc.),
-                // we MUST give the slot back.
-                if (slotSuccessfullyReserved)
-                {
-                    _logger.LogWarning("Rolling back rate limit reservation for User {TargetUserId} due to job failure.", targetUserId);
-                    await _rateLimiter.DecrementUsageAsync(targetUserId);
-                }
+                // This single catch block now handles any failure during the process (e.g., SendNotificationViaSenderAsync failed).
+                // Because we only increment the counter *after* a successful send, there is NO NEED TO ROLL BACK the rate limit.
+                // The user's counter remains unchanged, and they can receive another notification later.
+                _logger.LogCritical(ex, "A critical exception occurred for User {TargetUserId} (Index {UserIndex}). The job will be retried by Hangfire.", targetUserId, userIndex);
 
                 // Re-throw to let Hangfire mark the job as failed and handle retries.
                 throw;
             }
         }
+
         private async Task SendNotificationViaSenderAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {
             // =================================================================================
