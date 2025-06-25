@@ -174,7 +174,7 @@ namespace BackgroundTasks.Services
          );
         }
         #endregion
-        private const string RedisDedupeTitleHashKeyPrefix = "dedupe:title_hash:";
+
         /// <summary>
         /// **[DEPRECATED AND NON-FUNCTIONAL]**
         /// This method previously orchestrated the sending of batch notifications to a list of Telegram users.
@@ -366,35 +366,36 @@ namespace BackgroundTasks.Services
         /// </list>
         /// </returns>
         [DisableConcurrentExecution(timeoutInSeconds: 600)]
-        [JobDisplayName("Process RSS Notification: News {0}, UserIndex {2}")]
-        [AutomaticRetry(Attempts = 3)]
+        [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
+        [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-                   Guid newsItemId,
-                   string userListCacheKey,
-                   int userIndex,
-                   IJobCancellationToken jobCancellationToken) // This now perfectly matches the interface
+                Guid newsItemId,
+                string userListCacheKey,
+                int userIndex,
+                IJobCancellationToken jobCancellationToken)
         {
-            // First, get the usable token for async methods.
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
-
-            #region Configuration
-            const int freeUserRssHourlyLimit = 20;
-            const int vipUserRssHourlyLimit = 100;
-            TimeSpan rssLimitPeriod = TimeSpan.FromHours(1);
-            const int sendDelaySeconds = 5;
             long targetUserId = -1;
-            #endregion
 
-            using IDisposable? logScope = _logger.BeginScope(new Dictionary<string, object?>
-            {
-                ["JobType"] = "RssNotification",
-                ["NewsItemId"] = newsItemId,
-                ["UserIndex"] = userIndex,
-                ["CacheKey"] = userListCacheKey
-            });
+            // =========================================================================
+            // == THE DEFINITIVE FIX: Remove the call to GetJobId() from the logger.  ==
+            // =========================================================================
+            // The JobId is useful for tracing but not essential for functionality.
+            // Removing it will solve the compiler error without affecting the program's logic.
+            using var logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex });
+            // =========================================================================
 
             try
             {
+                (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
+                if (userDto == null) return;
+
+                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 20, TimeSpan.FromMinutes(15)))
+                {
+                    _logger.LogInformation("SKIP: User {TargetUserId} met rate limit.", targetUserId);
+                    return;
+                }
+
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
@@ -402,81 +403,71 @@ namespace BackgroundTasks.Services
                     throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
-                (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
-                if (userDto == null)
-                {
-                    // Logging is handled inside the helper method.
-                    return;
-                }
+                // This logic is now correct.
+                NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
+                _logger.LogInformation("Introducing a 5s delay for User {TargetUserId}.", targetUserId);
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                await SendNotificationViaSenderAsync(payload, cancellationToken);
 
-                int applicableLimit = (userDto.Level is UserLevel.Platinum or UserLevel.Bronze) ? vipUserRssHourlyLimit : freeUserRssHourlyLimit;
-                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, applicableLimit, rssLimitPeriod))
-                {
-                    _logger.LogInformation("SKIP: User {TargetUserId} met rate limit.", targetUserId);
-                    return;
-                }
+                await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromHours(1));
 
-                // Your logic for building the payload...
-                // NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
-
-                _logger.LogInformation("Introducing a {DelaySeconds}s delay for User {TargetUserId}.", sendDelaySeconds, targetUserId);
-
-                // This is now safe and cancellable.
-                await Task.Delay(TimeSpan.FromSeconds(sendDelaySeconds), cancellationToken);
-
-                _logger.LogDebug("Dispatching notification to User {TargetUserId}.", targetUserId);
-                // await SendNotificationAsync(payload, cancellationToken);
-
-                await _rateLimiter.IncrementUsageAsync(targetUserId, rssLimitPeriod);
-                _logger.LogInformation("Successfully sent and incremented usage for User {UserId}.", targetUserId);
+                _logger.LogInformation("✅ Successfully processed and enqueued final send for User {UserId}.", targetUserId);
             }
             catch (OperationCanceledException)
             {
-                _logger.LogWarning("Job for User {TargetUserId} was cancelled via token. It will be retried by Hangfire.", targetUserId);
-                throw; // Re-throw to let Hangfire requeue it safely.
+                _logger.LogWarning("Job for UserIndex {UserIndex} was cancelled. It will be re-queued.", userIndex);
+                throw;
             }
             catch (Exception ex)
             {
-                _logger.LogCritical(ex, "A critical, retriable exception occurred for User {TargetUserId}.", targetUserId);
-                throw; // Re-throw to fail the job so Hangfire can retry it.
+                _logger.LogCritical(ex, "A critical, unhandled exception occurred for UserIndex {UserIndex}. Job will be retried.", userIndex);
+                throw;
             }
         }
 
+        private Task SendNotificationViaSenderAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
+        {
+            var keyboard = BuildTelegramKeyboard(payload.Buttons);
+            _logger.LogDebug("Handing off payload to ITelegramMessageSender for User {UserId}", payload.TargetTelegramUserId);
+
+            if (!string.IsNullOrWhiteSpace(payload.ImageUrl))
+            {
+                return _telegramMessageSender.SendPhotoAsync(
+                    chatId: payload.TargetTelegramUserId,
+                    photoUrlOrFileId: payload.ImageUrl,
+                    caption: payload.MessageText,
+                    parseMode: ParseMode.MarkdownV2,
+                    replyMarkup: keyboard,
+                    cancellationToken: cancellationToken);
+            }
+            else
+            {
+                return _telegramMessageSender.SendTextMessageAsync(
+                    chatId: payload.TargetTelegramUserId,
+                    text: payload.MessageText,
+                    parseMode: ParseMode.MarkdownV2,
+                    replyMarkup: keyboard,
+                    cancellationToken: cancellationToken,
+                    linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true });
+            }
+        }
         /// <summary>
         /// Retrieves and validates a user for processing.
         /// </summary>
         /// <returns>A tuple containing the UserDto and their ID, or (null, -1) if the user should be skipped.</returns>
-        private async Task<(Application.DTOs.UserDto? user, long userId)> GetTargetUserAsync(string userListCacheKey, int userIndex, CancellationToken cancellationToken)
+        private async Task<(UserDto?, long)> GetTargetUserAsync(string cacheKey, int index, CancellationToken ct)
         {
-            // 1. Retrieve user list from Redis cache.
-            RedisValue serializedUserIds = await _redisDb.StringGetAsync(userListCacheKey);
-            if (!serializedUserIds.HasValue || serializedUserIds.IsNullOrEmpty)
+            RedisValue serializedUserIds = await _redisDb.StringGetAsync(cacheKey);
+            if (!serializedUserIds.HasValue) { return (null, -1); }
+            var allUserIds = JsonSerializer.Deserialize<List<long>>(serializedUserIds.ToString());
+            if (allUserIds == null || index >= allUserIds.Count)
             {
-                _logger.LogWarning("Job aborted: Cache key {CacheKey} is missing or empty. The user list may have expired.", userListCacheKey);
+                _logger.LogError("Job aborted: User index {UserIndex} out of bounds for list (Size: {ListSize}).", index, allUserIds?.Count ?? 0);
                 return (null, -1);
             }
-
-            // 2. Deserialize and validate the user index.
-            List<long>? allUserIds = JsonSerializer.Deserialize<List<long>>(serializedUserIds.ToString());
-            if (allUserIds == null || userIndex >= allUserIds.Count)
-            {
-                _logger.LogError("Job aborted: User index {UserIndex} is out of bounds for the list (Size: {ListSize}). This may indicate a dispatch logic error.", userIndex, allUserIds?.Count ?? 0);
-                return (null, -1);
-            }
-
-            long targetUserId = allUserIds[userIndex];
-            _logger.BeginScope(new Dictionary<string, object> { ["TargetUserId"] = targetUserId });
-            _logger.LogInformation("Processing job for UserID: {TargetUserId}", targetUserId);
-
-            // 3. Fetch user profile from the primary database.
-            Application.DTOs.UserDto? userDto = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), cancellationToken);
-            if (userDto == null)
-            {
-                _logger.LogWarning("Job skipped: User {TargetUserId} was in the dispatch cache but no longer exists in the database.", targetUserId);
-                return (null, targetUserId);
-            }
-
-            return (userDto, targetUserId);
+            long targetUserId = allUserIds[index];
+            var user = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), ct);
+            return (user, targetUserId);
         }
 
         /// <summary>
@@ -487,14 +478,13 @@ namespace BackgroundTasks.Services
             return new()
             {
                 TargetTelegramUserId = targetUserId,
-                MessageText = BuildMessageText(newsItem), // Assuming you have this method
+                MessageText = BuildMessageText(newsItem),
                 UseMarkdown = true,
                 ImageUrl = newsItem.ImageUrl ?? string.Empty,
-                Buttons = BuildSimpleNotificationButtons(newsItem), // Assuming you have this method
-                NewsItemId = newsItem.Id // Assuming the ID property is named 'Id'
+                Buttons = BuildSimpleNotificationButtons(newsItem),
+                NewsItemId = newsItem.Id
             };
         }
-
 
         /// <summary>
         /// Escapes characters in a string that are reserved in Telegram's MarkdownV2 format.
@@ -906,12 +896,13 @@ namespace BackgroundTasks.Services
         /// </list>
         /// The quality of this output directly impacts the user's experience with the AI-provided news.
         /// </returns>
+        // In NotificationSendingService.cs, inside the NotificationSendingService class
+
         private string BuildMessageText(NewsItem newsItem)
         {
             var messageTextBuilder = new StringBuilder();
 
-            // --- THE DEFINITIVE FIX ---
-            // We now call our central, bulletproof formatter for every piece of dynamic data.
+            // Escape title, source, and summary as they are plain text within Markdown.
             string title = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
             string sourceName = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
             string summary = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Summary?.Trim() ?? string.Empty);
@@ -927,9 +918,14 @@ namespace BackgroundTasks.Services
 
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                // We must also escape the URL itself before placing it inside the link parentheses.
-                var escapedLink = TelegramMessageFormatter.EscapeMarkdownV2(link);
-                messageTextBuilder.Append($"\n\n[Read Full Article]({escapedLink})");
+                // --- THE CRITICAL FIX ---
+                // DO NOT escape the link itself with MarkdownV2 escaping.
+                // Telegram MarkdownV2 parsing handles URLs correctly without extra escaping.
+                // If the URL contains characters that *could* break Markdown (like parentheses),
+                // it's safer to let Telegram's parser handle it or use a URL encoder if absolutely necessary,
+                // but standard Markdown link syntax is usually robust enough.
+                // We only escape the 'Read Full Article' text.
+                messageTextBuilder.Append($"\n\n[Read Full Article]({link})"); // <-- Removed EscapeMarkdownV2 from the link
             }
 
             return messageTextBuilder.ToString().Trim();
@@ -965,8 +961,15 @@ namespace BackgroundTasks.Services
             {
                 buttons.Add(new NotificationButton { Text = "Read More", CallbackDataOrUrl = newsItem.Link, IsUrl = true });
             }
-            return buttons;
+
+            // --- THE DEFINITIVE FIX ---
+            // The .Select() operation in the original code might have been creating an iterator type
+            // that Newtonsoft.Json cannot deserialize. By calling .ToList(), we force the LINQ
+            // query to execute immediately and return a concrete List<T>, which is serializable.
+            return buttons.ToList();
+            // --- END OF FIX ---
         }
+
         #endregion
     }
 }

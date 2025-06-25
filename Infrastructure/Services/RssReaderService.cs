@@ -150,7 +150,7 @@ namespace Infrastructure.Services
         /// </summary>
         public const string HttpClientNamedClient = "RssFeedClient";
         private const string RedisProcessedImageUrlsSetKey = "dedupe:image_urls";
-        private const string DEFAULT_NEWS_IMAGE_URL = "https://i.postimg.cc/3RmJjBjY/Breaking-News.jpg"; // Example default image URL
+        private const string DEFAULT_NEWS_IMAGE_URL = "https://your-cdn.com/images/default-news-image.jpg"; // Example default image URL
         /// <summary>
         /// Factory for creating configured <see cref="HttpClient"/> instances, ensuring proper pooling and lifetime management.
         /// </summary>
@@ -1021,78 +1021,42 @@ namespace Infrastructure.Services
         /// </list>
         /// </returns>
         // In RssReaderService.cs
-        private const string RedisDedupeTitleHashKeyPrefix = "dedupe:title_hash:";
+
         private NewsItem? TryCreateNewsItemEntity(NewsItemCreationContext context)
         {
-            // 1. Unpack context and derive key variables.
+            // 1. Unpack the context object to define local variables. This resolves all scope errors.
             var syndicationItem = context.SyndicationItem;
             var rssSource = context.RssSource;
+
+            // 2. Derive key variables needed for processing and validation.
             string? originalLink = syndicationItem.Links.FirstOrDefault(l => l.Uri != null)?.Uri?.ToString();
             string title = syndicationItem.Title?.Text?.Trim() ?? "Untitled News Item";
 
-            // --- START OF THE FIX: GLOBAL CONTENT DEDUPLICATION ---
-
-            // 2. Create a normalized, hashable representation of the title.
-            // This makes "BTC Hits $70k!" and "btc hits 70k" identical for deduplication.
-            string normalizedTitle = new string(title.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-
-            // 3. If the title is too short or generic, we can't reliably deduplicate it globally.
-            // In this case, we'll skip the global check and rely on the source-specific deduplication later.
-            if (normalizedTitle.Length >= 20) // Use a reasonable length threshold
-            {
-                try
-                {
-                    IDatabase redisDb = _redis.GetDatabase();
-                    using var sha256 = SHA256.Create();
-                    byte[] titleHashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(normalizedTitle));
-                    string titleHashHex = Convert.ToHexString(titleHashBytes).ToLowerInvariant();
-
-                    string redisKey = $"{RedisDedupeTitleHashKeyPrefix}{titleHashHex}";
-
-                    // Use Redis SET with NX (Not Exists) and EX (Expiration). This is an atomic operation.
-                    // It will only set the key (and return true) if it doesn't already exist.
-                    // We'll give it a short expiration (e.g., 15 minutes) to catch news bursts.
-                    bool wasSet = redisDb.StringSet(redisKey, "1", TimeSpan.FromMinutes(15), When.NotExists);
-
-                    if (!wasSet)
-                    {
-                        // The key already existed, meaning we've processed this title recently from another source.
-                        _logger.LogInformation("GLOBAL DUPLICATE SKIPPED: A news item with a similar title was recently processed. Title: '{Title}'", title.Truncate(100));
-                        return null; // This is the crucial exit point.
-                    }
-                    _logger.LogDebug("Global deduplication check passed for title: '{Title}'. Key set: {RedisKey}", title.Truncate(100), redisKey);
-                }
-                catch (RedisException redisEx)
-                {
-                    // If Redis fails, we log a critical error but proceed.
-                    // The system degrades gracefully to source-specific deduplication.
-                    _logger.LogCritical(redisEx, "CRITICAL: Redis connection failed during global deduplication. Proceeding without it. Duplicate notifications may be sent.");
-                }
-            }
-            // --- END OF THE FIX ---
-
-            // 4. Proceed with existing source-specific deduplication and entity creation logic.
+            // Use the corrected, globally unique DetermineSourceItemId method
             string itemSourceId = DetermineSourceItemId(syndicationItem, originalLink, title, rssSource.Id);
 
+            // 3. Perform all validation and deduplication checks upfront.
             if (string.IsNullOrWhiteSpace(itemSourceId))
             {
                 _logger.LogWarning("Skipping item because a stable SourceItemId could not be determined. Title: '{Title}'", title.Truncate(50));
                 return null;
             }
 
+            // Check for duplicates within this specific feed's current processing batch.
             if (!context.ProcessedInThisBatch.Add(itemSourceId))
             {
                 _logger.LogTrace("Skipping duplicate item within this fetch batch. SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
                 return null;
             }
 
+            // Check for duplicates against items already in the database from this source.
             if (context.ExistingSourceItemIds.Contains(itemSourceId))
             {
                 _logger.LogTrace("Skipping existing item already found in database. SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
                 return null;
             }
 
-            // 5. Extract image and perform image-specific deduplication (this logic remains).
+            // 4. Extract and perform GLOBAL deduplication for the image URL using Redis.
             string? imageUrl = ExtractImageUrlWithHtmlAgility(syndicationItem, syndicationItem.Summary?.Text, syndicationItem.Content?.ToString());
 
             if (!string.IsNullOrWhiteSpace(imageUrl))
@@ -1102,27 +1066,27 @@ namespace Infrastructure.Services
                     IDatabase redisDb = _redis.GetDatabase();
                     if (redisDb.SetContains(RedisProcessedImageUrlsSetKey, imageUrl))
                     {
-                        _logger.LogInformation("Global Image Dedupe Hit: Image URL '{ImageUrl}' has already been processed. It will not be assigned to this new item.", imageUrl.Truncate(100));
-                        imageUrl = null;
+                        _logger.LogInformation("Global Dedupe Hit: Image URL '{ImageUrl}' has already been processed (found in Redis). It will not be assigned to this new item.", imageUrl.Truncate(100));
+                        imageUrl = null; // Nullify the URL to prevent redundant storage.
                     }
                 }
                 catch (RedisException redisEx)
                 {
-                    _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis for image deduplication check. Processing will continue without deduplication for this item.");
+                    _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis for image deduplication check. Processing will continue without deduplication for this item. Please check Redis server health.");
                 }
             }
 
-            // 6. If all checks pass, construct and return the new NewsItem entity.
+            // 5. If all checks pass, construct and return the new NewsItem entity.
             _logger.LogDebug("Validation passed. Creating new NewsItem entity for SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
             return new NewsItem
             {
                 Id = Guid.NewGuid(),
                 CreatedAt = DateTime.UtcNow,
                 Title = title.Truncate(NewsTitleMaxLenDb),
-                Link = (originalLink ?? itemSourceId).Truncate(NewsLinkMaxLenDb),
+                Link = (originalLink ?? itemSourceId).Truncate(NewsLinkMaxLenDb), // Corrected constant name
                 Summary = CleanHtmlWithHtmlAgility(syndicationItem.Summary?.Text),
                 FullContent = CleanHtmlWithHtmlAgility(syndicationItem.Content is TextSyndicationContent tc ? tc.Text : syndicationItem.Summary?.Text),
-                ImageUrl = imageUrl,
+                ImageUrl = imageUrl, // Use the final, potentially nullified image URL
                 PublishedDate = syndicationItem.PublishDate.UtcDateTime,
                 RssSourceId = rssSource.Id,
                 SourceName = rssSource.SourceName.Truncate(NewsSourceNameMaxLenDb),
@@ -1131,9 +1095,6 @@ namespace Infrastructure.Services
                 AssociatedSignalCategoryId = rssSource.DefaultSignalCategoryId
             };
         }
-
-
-
         #endregion
 
         #region Database Interaction and Notification Dispatch (REWRITTEN)
@@ -1165,10 +1126,10 @@ namespace Infrastructure.Services
         /// </list>
         /// </returns>
         private async Task<RssFetchOutcome> SaveAndDispatchAsync(
-        RssSource rssSource,
-        List<NewsItem> newNewsEntitiesToSave,
-        HttpResponseMessage httpResponse,
-        CancellationToken cancellationToken)
+            RssSource rssSource,
+            List<NewsItem> newNewsEntitiesToSave,
+            HttpResponseMessage httpResponse,
+            CancellationToken cancellationToken)
         {
             const string methodName = nameof(SaveAndDispatchAsync);
             _logger.LogTrace("Entering {MethodName}", methodName);
@@ -1182,103 +1143,24 @@ namespace Infrastructure.Services
                 return RssFetchOutcome.Success(Enumerable.Empty<NewsItemDto>(), etagFromResponse, lastModifiedFromResponse);
             }
 
-            // --- V2: We will keep track of the keys we successfully lock ---
-            var itemsThatWonTheRace = new List<NewsItem>();
-            var acquiredLockKeys = new List<string>(); // To store keys for potential rollback
-
+            // --- Stage 1: Persist all new items to the database in a single transaction ---
             try
             {
-                _logger.LogInformation("Entering dispatch gate for {ItemCount} candidate items from '{SourceName}'.", newNewsEntitiesToSave.Count, rssSource.SourceName);
-                IDatabase redisDb = _redis.GetDatabase();
-                using var sha256 = SHA256.Create();
-
-                foreach (var candidateItem in newNewsEntitiesToSave)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    string normalizedTitle = new string(candidateItem.Title.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-
-                    if (normalizedTitle.Length < 20)
-                    {
-                        _logger.LogDebug("Title '{Title}' is too short for global deduplication. Allowing it to pass the gate.", candidateItem.Title.Truncate(50));
-                        itemsThatWonTheRace.Add(candidateItem);
-                        continue;
-                    }
-
-                    byte[] titleHashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(normalizedTitle));
-                    string titleHashHex = Convert.ToHexString(titleHashBytes).ToLowerInvariant();
-                    string dispatchLockKey = $"dispatch_lock:v2:{titleHashHex}";
-
-                    bool iAmTheFirst = await redisDb.StringSetAsync(dispatchLockKey, "1", TimeSpan.FromHours(3), When.NotExists);
-
-                    if (iAmTheFirst)
-                    {
-                        _logger.LogInformation("DISPATCH GATE PASSED: Item '{Title}' won the race and will be dispatched.", candidateItem.Title.Truncate(100));
-                        itemsThatWonTheRace.Add(candidateItem);
-                        acquiredLockKeys.Add(dispatchLockKey); // ✅ Track the key we locked
-                    }
-                    else
-                    {
-                        _logger.LogWarning("DISPATCH GATE BLOCKED: Item '{Title}' lost the race. It is a duplicate from another source and will NOT be dispatched.", candidateItem.Title.Truncate(100));
-                    }
-                }
+                await SaveNewsItemsToDatabaseAsync(newNewsEntitiesToSave, cancellationToken);
             }
-            catch (Exception ex)
-            {
-                _logger.LogCritical(ex, "Redis connection failed during dispatch gate. Degrading gracefully and allowing all items to proceed. Duplicates may occur.");
-                itemsThatWonTheRace = newNewsEntitiesToSave;
-                acquiredLockKeys.Clear(); // Can't trust the locks if Redis failed
-            }
-
-            if (!itemsThatWonTheRace.Any())
-            {
-                _logger.LogInformation("All candidate items were determined to be duplicates by the dispatch gate. Nothing to save or dispatch.");
-                return RssFetchOutcome.Success(Enumerable.Empty<NewsItemDto>(), etagFromResponse, lastModifiedFromResponse);
-            }
-
-            // --- Stage 1: Persist ONLY the items that won the race ---
-            try
-            {
-                // Let's assume the timeout is happening here.
-                await SaveNewsItemsToDatabaseAsync(itemsThatWonTheRace, cancellationToken);
-            }
-            catch (Exception ex) // Catch a broader range of exceptions, including TaskCanceledException
+            catch (RepositoryException ex)
             {
                 _logger.LogError(ex, "Database persistence failed for '{SourceName}'. Notifications will not be dispatched.", rssSource.SourceName);
-
-                // =================================================================================
-                // == START OF THE DEFINITIVE FIX: ATOMIC DISPATCH ROLLBACK                       ==
-                // =================================================================================
-                if (acquiredLockKeys.Any())
-                {
-                    _logger.LogWarning("Rolling back {KeyCount} Redis dispatch locks due to database failure.", acquiredLockKeys.Count);
-                    try
-                    {
-                        IDatabase redisDb = _redis.GetDatabase();
-                        // Convert string list to RedisKey array for the DeleteAsync method
-                        var redisKeysToDelete = acquiredLockKeys.Select(k => (RedisKey)k).ToArray();
-                        long unlockedCount = await redisDb.KeyDeleteAsync(redisKeysToDelete);
-                        _logger.LogInformation("Successfully rolled back {UnlockedCount} of {TotalCount} dispatch locks.", unlockedCount, acquiredLockKeys.Count);
-                    }
-                    catch (Exception redisEx)
-                    {
-                        // If even the rollback fails, we log it critically. The keys will eventually expire.
-                        _logger.LogCritical(redisEx, "CRITICAL FAILURE: Could not roll back Redis dispatch locks after a database failure. News items may be black-holed for up to 3 hours.");
-                    }
-                }
-                // =================================================================================
-                // == END OF THE DEFINITIVE FIX                                                   ==
-                // =================================================================================
-
                 return RssFetchOutcome.Failure(RssFetchErrorType.Database, "Database save failed.", ex, etagFromResponse, lastModifiedFromResponse);
             }
 
-            // --- Stage 2: Dispatch notifications ONLY for the items that won the race ---
-            // This part only runs if the database save was successful.
-            var dispatchedDtos = await DispatchNotificationsForImageItemsAsync(itemsThatWonTheRace, cancellationToken);
+            // --- Stage 2: Dispatch notifications based on the image-only prioritization logic ---
+            var dispatchedDtos = await DispatchNotificationsForImageItemsAsync(newNewsEntitiesToSave, cancellationToken);
 
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return RssFetchOutcome.Success(dispatchedDtos, etagFromResponse, lastModifiedFromResponse);
         }
+
 
         /// <summary>
         /// Saves a list of <see cref="NewsItem"/> entities to the database using Dapper within a single, resilient transaction.
@@ -1335,7 +1217,7 @@ namespace Infrastructure.Services
               VALUES (@Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt, @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets, @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId);";
 
                     // Dapper's ExecuteAsync on a list of objects will efficiently execute the command for each item.
-                    var rowsAffected = await connection.ExecuteAsync(sql, itemsToSave, transaction, commandTimeout: 300); // Added a command timeout
+                    var rowsAffected = await connection.ExecuteAsync(sql, itemsToSave, transaction, commandTimeout: 30); // Added a command timeout
 
                     await transaction.CommitAsync(ct);
 
@@ -1390,18 +1272,18 @@ namespace Infrastructure.Services
             _logger.LogTrace("Entering {MethodName}", methodName);
 
             // --- Business Logic: Dispatch ALL saved items. ---
+            // No longer filtering for items with images. All items are considered.
             // The logic for using a default image will be handled when creating the NotificationJobPayload
             // within the EnqueueDispatchTasks method.
 
             var itemsToDispatch = savedItems
-                .OrderByDescending(item => item.PublishedDate) // Order items by publication date for sequential processing if needed, though EnqueueDispatchTasks handles parallelism.
+                .OrderByDescending(item => item.PublishedDate) // Order items by publication date
                 .ToList();
 
             int totalSavedCount = savedItems.Count;
-            // Log includes the default image URL for clarity on how items without images will be handled.
             _logger.LogInformation(
-                "Dispatching notifications for all {TotalSaved} saved items. Items without images will use the default image URL '{DefaultImageUrl}'.",
-                totalSavedCount, DEFAULT_NEWS_IMAGE_URL);
+                "Dispatching notifications for all {TotalSaved} saved items. Items without images will use the default image.",
+                totalSavedCount);
 
             if (!itemsToDispatch.Any())
             {
@@ -1410,22 +1292,18 @@ namespace Infrastructure.Services
                 return Enumerable.Empty<NewsItemDto>();
             }
 
-            // This set will store the IDs of items for which a notification task was successfully enqueued.
-            // It's used later to ensure we only map items that were actually processed for dispatch.
             var dispatchedItemIds = new HashSet<Guid>();
 
             _logger.LogInformation("Dispatching Batch: Enqueuing notification tasks for all {Count} items.", itemsToDispatch.Count);
-            // Call EnqueueDispatchTasks for all items. It is assumed this method handles the payload creation
-            // (including using the default image if necessary) and the actual queuing of jobs.
-            // We ensure ConfigureAwait(false) is used for the async call to EnqueueDispatchTasks.
-            await EnqueueDispatchTasks(itemsToDispatch, "AllItemsBatch", dispatchedItemIds, cancellationToken).ConfigureAwait(false);
+            // Call EnqueueDispatchTasks for all items. It must now handle the default image logic internally.
+            await EnqueueDispatchTasks(itemsToDispatch, "AllItemsBatch", dispatchedItemIds, cancellationToken);
 
-            // --- Redis Deduplication: Add relevant image URLs to Redis ---
-            // This section processes URLs that *will actually be sent as part of a photo notification*.
+            // --- START of CHANGE: Add relevant image URLs to Redis for global deduplication ---
+            // This section processes URLs that *will actually be sent as an image*.
             // This includes items with original images AND items that used the default image.
             if (itemsToDispatch.Any())
             {
-                _logger.LogInformation("Registering image URLs in Redis for global deduplication against key '{RedisKey}'.", RedisProcessedImageUrlsSetKey);
+                _logger.LogInformation("Registering image URLs in Redis for global deduplication.");
                 try
                 {
                     IDatabase redisDb = _redis.GetDatabase();
@@ -1438,11 +1316,11 @@ namespace Infrastructure.Services
                             // If the item has an image, use it. Otherwise, fall back to the default image URL.
                             string imageUrlForNotification = !string.IsNullOrWhiteSpace(item.ImageUrl) ? item.ImageUrl : DEFAULT_NEWS_IMAGE_URL;
 
-                            // Return the URL if it's valid and not null/whitespace, otherwise return null (which will be filtered out).
+                            // Return the URL if it's valid, otherwise return null (which will be filtered out).
                             // This ensures we don't add null/empty values to Redis.
                             return !string.IsNullOrWhiteSpace(imageUrlForNotification) ? imageUrlForNotification : null;
                         })
-                        .Where(url => url != null) // Filter out any nulls (e.g., if DEFAULT_NEWS_IMAGE_URL was also empty or null)
+                        .Where(url => url != null) // Filter out any nulls (e.g., if DEFAULT_NEWS_IMAGE_URL was also empty)
                         .Select(url => new RedisValue(url)) // Convert to RedisValue for StackExchange.Redis
                         .ToArray();
 
@@ -1450,23 +1328,19 @@ namespace Infrastructure.Services
                     {
                         // SADD is an atomic, idempotent operation.
                         // It returns the number of elements that were actually added (i.e., didn't already exist).
-                        long addedCount = await redisDb.SetAddAsync(RedisProcessedImageUrlsSetKey, imageUrlsToAdd).ConfigureAwait(false);
-                        _logger.LogInformation("Successfully registered image URLs in Redis. New URLs added: {AddedCount} of {TotalCount}.", addedCount, imageUrlsToAdd.Length);
+                        long addedCount = await redisDb.SetAddAsync(RedisProcessedImageUrlsSetKey, imageUrlsToAdd);
+                        _logger.LogInformation("Successfully registered images in Redis. New URLs added: {AddedCount} of {TotalCount}.", addedCount, imageUrlsToAdd.Length);
                     }
                     else
                     {
-                        _logger.LogInformation("No valid image URLs (original or default) were found to register in Redis for deduplication.");
+                        _logger.LogInformation("No image URLs (original or default) were eligible for registration in Redis.");
                     }
                 }
                 catch (RedisException redisEx)
                 {
-                    // Log critical failure but do not throw. The main operation (dispatch enqueueing) succeeded.
-                    // The consequence is that deduplication might be incomplete until Redis is restored.
+                    // Log critical failure but do not throw. The main operation (dispatch) succeeded.
+                    // The only consequence is these images might be re-processed if Redis is down, which is acceptable degradation.
                     _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis to register new image URLs. Future deduplication may be incomplete until Redis is restored.");
-                }
-                catch (Exception ex) // Catch other potential exceptions during Redis operation.
-                {
-                    _logger.LogCritical(ex, "CRITICAL: An unexpected error occurred during Redis image URL registration. Future deduplication may be incomplete.");
                 }
             }
 
@@ -1474,7 +1348,6 @@ namespace Infrastructure.Services
 
             // Map the processed items back to DTOs for the return value.
             // We need to ensure that only items whose notifications were *enqueued* (tracked by dispatchedItemIds) are mapped.
-            // This ensures the DTOs reflect what was actually processed and queued.
             var dispatchedDtos = _mapper.Map<IEnumerable<NewsItemDto>>(savedItems.Where(ni => dispatchedItemIds.Contains(ni.Id)));
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return dispatchedDtos;
