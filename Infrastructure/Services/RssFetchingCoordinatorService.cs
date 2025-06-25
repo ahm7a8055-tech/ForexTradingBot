@@ -203,32 +203,48 @@ namespace Infrastructure.Services
         ///     </description></item>
         /// </list>
         /// </remarks>
-        [JobDisplayName("Fetch All Active RSS Feeds - Coordinator")] // Display name for Hangfire dashboard
-        [AutomaticRetry(Attempts = 2)] // It's quick, a simple retry is fine.
+        [JobDisplayName("Fetch All Active RSS Feeds - Coordinator (SEQUENTIAL)")] // Updated name for clarity
+        [AutomaticRetry(Attempts = 2)]
         public async Task FetchAllActiveFeedsAsync(CancellationToken cancellationToken = default)
         {
-            _logger.LogInformation("[HANGFIRE JOB] Starting: FetchAllActiveFeedsAsync at {UtcNow}", DateTime.UtcNow);
+            _logger.LogInformation("[HANGFIRE JOB] Starting SEQUENTIAL fetch: FetchAllActiveFeedsAsync at {UtcNow}", DateTime.UtcNow);
 
-            var activeSources = (await _rssSourceRepository.GetActiveSourcesAsync(cancellationToken).ConfigureAwait(false)).ToList(); // Level 1: ConfigureAwait(false)
+            var activeSources = (await _rssSourceRepository.GetActiveSourcesAsync(cancellationToken).ConfigureAwait(false)).ToList();
 
             if (!activeSources.Any())
             {
                 _logger.LogInformation("[HANGFIRE JOB] No active RSS sources found to fetch.");
                 return;
             }
-            _logger.LogInformation("[HANGFIRE JOB] Found {Count} active RSS sources to process. Processing with {Concurrency} concurrent fetches.", activeSources.Count(), MaxConcurrentFeedFetches);
 
-            // Level 5: Using Parallel.ForEachAsync for cleaner and more robust structured parallelism.
-            // This implicitly manages concurrency using MaxConcurrentFeedFetches.
-            await Parallel.ForEachAsync(activeSources,
-                new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentFeedFetches, CancellationToken = cancellationToken }, // Level 5: Link ParallelOptions CancellationToken
-                async (source, ct) =>
+            // Updated log message to reflect the change from parallel to sequential processing.
+            _logger.LogInformation("[HANGFIRE JOB] Found {Count} active RSS sources. Processing them SEQUENTIALLY (one by one).", activeSources.Count);
+
+            // --- PARALLELISM REMOVED ---
+            // We now use a standard foreach loop. This ensures that we wait for the processing
+            // of one feed to complete entirely before starting the next one.
+            int processedCount = 0;
+            foreach (var source in activeSources)
+            {
+                // Check for cancellation before starting each new feed. This allows the job
+                // to be stopped gracefully between feeds.
+                if (cancellationToken.IsCancellationRequested)
                 {
-                    // Level 2: Each feed's processing is now self-contained, logging its own context.
-                    await ProcessSingleFeedWithLoggingAndRetriesAsync(source, ct).ConfigureAwait(false); // Level 1: ConfigureAwait(false)
-                }).ConfigureAwait(false); // Level 1: ConfigureAwait(false)
+                    _logger.LogWarning("[HANGFIRE JOB] Cancellation requested. Stopping sequential fetch after processing {ProcessedCount} of {TotalCount} sources.", processedCount, activeSources.Count);
+                    break; // Exit the loop
+                }
 
-            _logger.LogInformation("[HANGFIRE JOB] Finished: FetchAllActiveFeedsAsync at {UtcNow}", DateTime.UtcNow);
+                _logger.LogInformation("[SEQUENTIAL LOOP] Processing source {Index}/{Total}: {SourceName}", processedCount + 1, activeSources.Count, source.SourceName);
+
+                // Each feed's processing is now self-contained and runs one after another.
+                // We pass the main cancellationToken `cancellationToken` directly, as we are no longer in a parallel context.
+                await ProcessSingleFeedWithLoggingAndRetriesAsync(source, cancellationToken).ConfigureAwait(false);
+
+                processedCount++;
+            }
+            // --- END OF CHANGE ---
+
+            _logger.LogInformation("[HANGFIRE JOB] Finished SEQUENTIAL fetch: FetchAllActiveFeedsAsync at {UtcNow}. Processed {ProcessedCount} sources.", DateTime.UtcNow, processedCount);
         }
         #endregion
 

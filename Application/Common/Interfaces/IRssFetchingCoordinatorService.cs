@@ -10,5 +10,7 @@
         /// Fetches and processes all active RSS feeds.
         /// </summary>
         Task FetchAllActiveFeedsAsync(CancellationToken cancellationToken = default);
+
+
     }
 }
