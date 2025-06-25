@@ -371,10 +371,10 @@ namespace BackgroundTasks.Services
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-             Guid newsItemId,
-             string userListCacheKey,
-             int userIndex,
-             IJobCancellationToken jobCancellationToken)
+                       Guid newsItemId,
+                       string userListCacheKey,
+                       int userIndex,
+                       IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
@@ -383,84 +383,77 @@ namespace BackgroundTasks.Services
 
             try
             {
-                // 1. Fetch user details
+                // 1. Fetch user details from the cache.
                 (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
                 if (userDto == null)
                 {
-                    _logger.LogInformation("Skipping job: Target user not found for UserIndex {UserIndex}.", userIndex);
+                    _logger.LogWarning("Skipping job: Target user not found in cache for UserIndex {UserIndex}.", userIndex);
                     return;
                 }
 
-                // =================================================================================
-                // == THE ATOMIC FIX: Atomically check AND increment the rate limit.              ==
-                // == This RESERVES a slot for our notification.                                  ==
-                // =================================================================================
-                // 2. Atomically reserve a notification slot.
-                if (await _rateLimiter.IsUserOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
+                // =========================================================================
+                // == THE DEFINITIVE FIX: Implement the "Check, then Act & Update" flow.  ==
+                // =========================================================================
+
+                // STEP 1: CHECK (Read-Only)
+                // This method ONLY checks the current count without incrementing it.
+                if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
                 {
-                    // This method atomically checks and increments. If it returns true, it means
-                    // the user was ALREADY at the limit, and no increment was performed.
                     _logger.LogInformation(
-                        "SKIP: User {TargetUserId} has reached their rate limit (5 notifications per 15 minutes).",
+                        "SKIP: User {TargetUserId} is already at or over their rate limit (5 notifications per 15 minutes).",
                         targetUserId);
-                    return; // Exit gracefully.
+                    return; // Exit gracefully. No state was changed.
                 }
 
-                _logger.LogInformation("Rate limit slot successfully reserved for User {TargetUserId}.", targetUserId);
+                _logger.LogInformation("Rate limit check PASSED for User {TargetUserId}. Proceeding to send.", targetUserId);
 
-                // 3. Fetch news item (only if slot was reserved)
+                // STEP 2: ACT (Send the message)
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
-                    _logger.LogError("Job failed critically: NewsItem {NewsItemId} not found.", newsItemId);
-                    // We must roll back the rate limit increment since we are failing before sending.
-                    await _rateLimiter.DecrementUsageAsync(targetUserId);
+                    // This is a critical failure, but we haven't changed the rate limit, so no rollback is needed.
                     throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
-                // 4. Prepare notification payload
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
+                await SendNotificationViaSenderAsync(payload, cancellationToken);
+                _logger.LogInformation("✅ Successfully SENT notification to User {UserId}.", targetUserId);
 
-                // 5. Send the notification, and handle potential failures to roll back our reservation.
-                try
-                {
-                    await SendNotificationViaSenderAsync(payload, cancellationToken);
-                    _logger.LogInformation("✅ Successfully sent notification and consumed rate limit slot for User {UserId}.", targetUserId);
-                }
-                catch (Exception sendException)
-                {
-                    _logger.LogError(sendException, "Failed to send notification to User {UserId}. ROLLING BACK rate limit reservation.", targetUserId);
 
-                    // =================================================================================
-                    // == THE ROLLBACK: The send failed, so we give the user's slot back.           ==
-                    // =================================================================================
-                    await _rateLimiter.DecrementUsageAsync(targetUserId);
+                // STEP 3: UPDATE (Write to Redis)
+                // This is called ONLY AFTER the send operation has succeeded without throwing an exception.
+                await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromMinutes(15));
+                _logger.LogInformation("✅ Successfully INCREMENTED rate limit for User {UserId}.", targetUserId);
 
-                    // Re-throw the original send exception so Hangfire can handle retries appropriately.
-                    throw;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // If the job is cancelled after the slot was reserved, we should roll back.
-                if (targetUserId != -1)
-                {
-                    await _rateLimiter.DecrementUsageAsync(targetUserId);
-                }
-                _logger.LogWarning("Job for UserIndex {UserIndex} was cancelled. It will be re-queued by Hangfire.", userIndex);
-                throw;
             }
             catch (Exception ex)
             {
-                _logger.LogCritical(ex, "A critical, unhandled exception occurred for UserIndex {UserIndex}. Job will be retried.", userIndex);
-                // The reservation might have already been rolled back, but it's safe to let Hangfire retry.
+                // This single catch block now handles any failure during the process (e.g., SendNotificationViaSenderAsync failed).
+                // Because we only increment the counter *after* a successful send, there is NO NEED TO ROLL BACK the rate limit.
+                // The user's counter remains unchanged, and they can receive another notification later.
+                _logger.LogCritical(ex, "A critical exception occurred for User {TargetUserId} (Index {UserIndex}). The job will be retried by Hangfire.", targetUserId, userIndex);
+
+                // Re-throw to let Hangfire mark the job as failed and handle retries.
                 throw;
             }
         }
 
         private async Task SendNotificationViaSenderAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {
-            var keyboard = BuildTelegramKeyboard(payload.Buttons); // Assuming BuildTelegramKeyboard exists
+            // =================================================================================
+            // == DEFINITIVE DIAGNOSTIC LOG: Find the source of the duplicate flow.           ==
+            // =================================================================================
+            // Get the current stack trace to see what called this method.
+            string stackTrace = Environment.StackTrace;
+
+            // Log the trigger path. This will be verbose but will immediately show the culprit.
+            _logger.LogWarning(
+                "FINAL SEND TRIGGERED for User {UserId}. Call Stack:\n{StackTrace}",
+                payload.TargetTelegramUserId,
+                stackTrace);
+            // =================================================================================
+
+            var keyboard = BuildTelegramKeyboard(payload.Buttons);
             _logger.LogDebug("Handing off payload to ITelegramMessageSender for User {UserId}", payload.TargetTelegramUserId);
 
             try
@@ -487,14 +480,14 @@ namespace BackgroundTasks.Services
                         linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true });
                 }
 
-                await sendTask; // Await the task to get its result/exceptions
+                await sendTask;
 
-                _logger.LogInformation("Successfully sent notification to User {UserId}", payload.TargetTelegramUserId);
+                _logger.LogInformation("✅ Successfully sent notification to User {UserId}", payload.TargetTelegramUserId);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send notification to User {UserId}", payload.TargetTelegramUserId);
-                throw; // Re-throw for the caller (ProcessNotificationFromCacheAsync) to catch.
+                throw;
             }
         }
 
