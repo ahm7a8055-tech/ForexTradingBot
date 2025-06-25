@@ -30,6 +30,7 @@ using Shared.Maintenance;
 using Shared.Settings;                    // برای CryptoPaySettings (از پروژه Shared)
 using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Services;
+using TL;
 using WebAPI.Extensions;
 
 #endregion
@@ -404,6 +405,12 @@ try
         options.Queues = new[] { "notifications" }; // It ONLY processes this queue.
     });
 
+    builder.Services.AddHangfireServer(options =>
+    {
+        options.ServerName = $"{Environment.MachineName}:Default";
+        options.WorkerCount = Environment.ProcessorCount * 5; // Or your preferred default count
+        options.Queues = new[] { "critical", "default" }; // Explicitly list the queues it WILL process
+    });
 
     Log.Information("Hangfire cleaner service added.");
 
