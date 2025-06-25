@@ -4,6 +4,7 @@
 using Application.Common.Interfaces; // CORRECT: References the interface from the Application layer
 using Hangfire;
 using Microsoft.Extensions.Logging;
+using StackExchange.Redis;
 using System;
 using System.Linq.Expressions;
 using System.Threading.Tasks;
@@ -18,15 +19,49 @@ namespace Infrastructure.Hangfire // CORRECT: This is where your implementation 
     {
         private readonly IBackgroundJobClient _backgroundJobClient;
         private readonly ILogger<HangfireNotificationJobScheduler> _logger;
-
+        private readonly IDatabase _redisDb;
         // Constructor to inject dependencies
-        public HangfireNotificationJobScheduler(IBackgroundJobClient backgroundJobClient, ILogger<HangfireNotificationJobScheduler> logger)
+        public HangfireNotificationJobScheduler(IConnectionMultiplexer redisConnection , IBackgroundJobClient backgroundJobClient, ILogger<HangfireNotificationJobScheduler> logger)
         {
+            _redisDb = redisConnection.GetDatabase();
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         // --- Implementations for Synchronous Jobs ---
+
+
+        public async Task<bool> TryAcquireLockAsync(string lockKey, TimeSpan expiry)
+        {
+            try
+            {
+                return await _redisDb.StringSetAsync(lockKey, "locked", expiry, When.NotExists);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to acquire lock '{LockKey}'.", lockKey);
+                // Fail open or fail closed depends on your strategy.
+                // Failing open means a new dispatch might start concurrently if lock fails.
+                // Failing closed would mean no new dispatches start if lock fails.
+                // For now, let's assume a lock failure is a reason to skip if critical, but we'll rely on other handlers for DispatchNewsNotificationAsync.
+                // A safer default is to return false, so Orchestrator skips.
+                return false;
+            }
+        }
+
+        public async Task ReleaseLockAsync(string lockKey)
+        {
+            try
+            {
+                await _redisDb.KeyDeleteAsync(lockKey);
+                _logger.LogDebug("Released lock '{LockKey}'.", lockKey);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to release lock '{LockKey}'.", lockKey);
+            }
+        }
+
 
         /// <summary>
         /// Enqueues a synchronous job to Hangfire.

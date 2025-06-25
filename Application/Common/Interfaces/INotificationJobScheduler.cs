@@ -10,6 +10,13 @@ namespace Application.Common.Interfaces
     /// </summary>
     public interface INotificationJobScheduler
     {
+        Task<bool> TryAcquireLockAsync(string lockKey, TimeSpan expiry);
+
+        /// <summary>
+        /// Releases a distributed lock asynchronously.
+        /// </summary>
+        /// <param name="lockKey">The key of the lock to release.</param>
+        Task ReleaseLockAsync(string lockKey);
         /// <summary>
         /// Enqueues a synchronous job to be executed by Hangfire.
         /// </summary>

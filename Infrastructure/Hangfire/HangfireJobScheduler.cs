@@ -4,6 +4,7 @@
 using Application.Common.Interfaces; // For INotificationJobScheduler
 using Hangfire; // For IBackgroundJobClient and BackgroundJob
 using Microsoft.Extensions.Logging; // For ILogger
+using StackExchange.Redis;
 using System;
 using System.Linq.Expressions;
 using System.Threading.Tasks; // Required for Task
@@ -18,12 +19,43 @@ namespace Infrastructure.Hangfire // Use the correct namespace for your Infrastr
     {
         private readonly IBackgroundJobClient _backgroundJobClient;
         private readonly ILogger<HangfireJobScheduler> _logger;
-
+        private readonly IDatabase _redisDb;
         // Constructor to inject dependencies
-        public HangfireJobScheduler(IBackgroundJobClient backgroundJobClient, ILogger<HangfireJobScheduler> logger)
+        public HangfireJobScheduler(IConnectionMultiplexer redisConnection,IBackgroundJobClient backgroundJobClient, ILogger<HangfireJobScheduler> logger)
         {
+            _redisDb = redisConnection.GetDatabase();
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+        public async Task<bool> TryAcquireLockAsync(string lockKey, TimeSpan expiry)
+        {
+            try
+            {
+                return await _redisDb.StringSetAsync(lockKey, "locked", expiry, When.NotExists);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to acquire lock '{LockKey}'.", lockKey);
+                // Fail open or fail closed depends on your strategy.
+                // Failing open means a new dispatch might start concurrently if lock fails.
+                // Failing closed would mean no new dispatches start if lock fails.
+                // For now, let's assume a lock failure is a reason to skip if critical, but we'll rely on other handlers for DispatchNewsNotificationAsync.
+                // A safer default is to return false, so Orchestrator skips.
+                return false;
+            }
+        }
+
+        public async Task ReleaseLockAsync(string lockKey)
+        {
+            try
+            {
+                await _redisDb.KeyDeleteAsync(lockKey);
+                _logger.LogDebug("Released lock '{LockKey}'.", lockKey);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to release lock '{LockKey}'.", lockKey);
+            }
         }
 
         /// <summary>

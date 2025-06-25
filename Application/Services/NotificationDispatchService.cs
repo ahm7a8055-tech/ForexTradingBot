@@ -278,21 +278,44 @@ namespace Application.Services
         [AutomaticRetry(Attempts = 0)] // Orchestrator failure shouldn't trigger automatic retries for the whole batch.
         public async Task DispatchNewsNotificationAsync(Guid newsItemId, CancellationToken cancellationToken = default)
         {
-            // ========================== IDEMPOTENCY FIX START ==========================
-            string lockKey = $"dispatch-lock:{newsItemId}";
-            TimeSpan lockExpiry = TimeSpan.FromHours(1);
-            // =========================================================================
+            // --- GLOBAL ORCHESTRATOR LOCK ---
+            const string globalOrchestrationLockKey = "global-dispatch-orchestration-lock";
+            TimeSpan globalOrchestrationLockExpiry = TimeSpan.FromMinutes(15);
+            bool globalLockAcquired = false; // Declared here to be accessible by catch/finally
+                                             // --- END GLOBAL ORCHESTRATOR LOCK ---
+
+            // --- ITEM-SPECIFIC LOCK VARIABLES ---
+            string? itemLockKey = null; // Declare as nullable and outside the try for safe access
+            bool itemLockAcquired = false;
+            // --- END ITEM-SPECIFIC LOCK VARIABLES ---
 
             try
             {
-                // ========================== IDEMPOTENCY FIX START ==========================
-                bool lockAcquired = await _redisDb.StringSetAsync(lockKey, "locked", lockExpiry, When.NotExists);
-                if (!lockAcquired)
+                // Acquire the GLOBAL lock first.
+                globalLockAcquired = await _jobScheduler.TryAcquireLockAsync(globalOrchestrationLockKey, globalOrchestrationLockExpiry);
+
+                if (!globalLockAcquired)
                 {
-                    _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: another dispatch is already in progress or has recently completed.", newsItemId);
+                    _logger.LogWarning("Dispatch Coordination for NewsItem {NewsItemId} skipped: Global dispatch lock is held by another process. This might indicate a long-running dispatch or a lock not being released.", newsItemId);
+                    return;
+                }
+
+                _logger.LogInformation("Global dispatch lock acquired for NewsItem {NewsItemId}. Proceeding with orchestration.", newsItemId);
+
+
+                // --- ORIGINAL IDEMPOTENCY FIX FOR THIS SPECIFIC NEWS ITEM ---
+                itemLockKey = $"dispatch-lock:{newsItemId}"; // Assign the value
+                TimeSpan itemLockExpiry = TimeSpan.FromHours(1);
+                itemLockAcquired = await _redisDb.StringSetAsync(itemLockKey, "locked", itemLockExpiry, When.NotExists); // Attempt to acquire lock
+
+                if (!itemLockAcquired)
+                {
+                    _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: another dispatch for THIS news item is already in progress.", newsItemId);
+                    // If the item lock is already acquired, release the global lock before returning.
+                    await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey); // Safe because globalLockAcquired is true here
                     return; // EXIT
                 }
-                // =========================================================================
+                // --- END ORIGINAL IDEMPOTENCY FIX ---
 
                 const int chunkSize = 500;
                 _logger.LogInformation("Starting Dispatch Coordination for NewsItem {NewsItemId}.", newsItemId);
@@ -300,6 +323,11 @@ namespace Application.Services
                 if (_redisCircuitBreaker.CircuitState == CircuitState.Open)
                 {
                     _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: Redis circuit breaker is open.", newsItemId);
+                    // If a critical failure occurs (like circuit breaker open), ensure locks are released
+                    // The finally block will handle this, but explicitly releasing here on early exit is safer.
+                    // NOTE: 'itemLockKey' is assigned by now if we reached here.
+                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
                     return;
                 }
 
@@ -307,6 +335,9 @@ namespace Application.Services
                 if (newsItem == null)
                 {
                     _logger.LogWarning("NewsItem {Id} not found. Cannot dispatch.", newsItemId);
+                    // Ensure locks are released on early exit due to null newsItem
+                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
                     return;
                 }
 
@@ -324,40 +355,50 @@ namespace Application.Services
                 if (!uniqueTelegramIds.Any())
                 {
                     _logger.LogInformation("No unique, eligible users found for NewsItem {NewsItemId}.", newsItemId);
+                    // Ensure locks are released on early exit
+                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
                     return;
                 }
 
-                // --- NEW FIX: FILTER USERS BASED ON GLOBAL RATE LIMIT BEFORE ENQUEUING ---
+                // --- REVISED FIX: MORE ROBUST USER FILTERING ---
                 List<long> eligibleUsersForThisDispatch = new List<long>();
+                const int globalNotificationLimit = 5;
+                TimeSpan globalNotificationPeriod = TimeSpan.FromMinutes(15);
+
+                _logger.LogInformation("Starting EXPLICIT rate limit check in orchestrator for {UserCount} unique users for NewsItem {NewsItemId}.", uniqueTelegramIds.Count, newsItemId);
+
                 foreach (long userId in uniqueTelegramIds)
                 {
-                    // Check if the user has already reached their *global* limit for notifications (5 per 15 min)
-                    // This check is crucial to prevent overwhelming the user even with different news items.
-                    if (await _rateLimiter.IsUserOverLimitAsync(userId, 5, TimeSpan.FromMinutes(15)))
+                    bool isAlreadyOverLimit = await _rateLimiter.IsUserOverLimitAsync(userId, globalNotificationLimit, globalNotificationPeriod);
+
+                    if (isAlreadyOverLimit)
                     {
-                        _logger.LogInformation("SKIP enqueueing for NewsItem {NewsItemId}: User {UserId} has reached their global notification limit (5/15min).", newsItemId, userId);
-                        // This user is over their limit, so we skip enqueuing any notification for them for *this* news item.
+                        _logger.LogInformation("DISPATCH FILTER SKIP: User {UserId} has reached their global notification limit ({Limit}/{Period}). Not enqueueing job for NewsItem {NewsItemId}.",
+                             userId, globalNotificationLimit, globalNotificationPeriod, newsItemId);
                     }
                     else
                     {
-                        // This user is under their global limit, so they are eligible to receive *this* notification.
-                        // The subsequent ProcessNotificationFromCacheAsync will handle its own atomic reservation and increment.
                         eligibleUsersForThisDispatch.Add(userId);
+                        _logger.LogInformation("DISPATCH FILTER PASS: User {UserId} is eligible to receive notification for NewsItem {NewsItemId}.", newsItemId, userId);
                     }
                 }
 
-                if (!eligibleUsersForThisDispatch.Any()) // <<< TYPO FIXED: Use the correct variable name
+                if (!eligibleUsersForThisDispatch.Any())
                 {
                     _logger.LogInformation("No eligible users remaining for NewsItem {NewsItemId} after rate limit filtering.", newsItemId);
+                    // Ensure locks are released on early exit
+                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
                     return;
                 }
-                // --- END NEW FIX ---
+                // --- END REVISED FIX ---
 
                 // Cache the FILTERED list of eligible user IDs for this specific news item dispatch.
                 string userListCacheKey = $"dispatch:users:{newsItemId}";
                 await _redisCircuitBreaker.ExecuteAsync(async () =>
                 {
-                    string serializedUserIds = JsonSerializer.Serialize(eligibleUsersForThisDispatch); // Cache the FILTERED list
+                    string serializedUserIds = JsonSerializer.Serialize(eligibleUsersForThisDispatch);
                     await _redisDb.StringSetAsync(userListCacheKey, serializedUserIds, TimeSpan.FromHours(24));
                 });
                 _logger.LogInformation("Cached {Count} UNIQUE eligible user IDs to Redis for NewsItem {NewsItemId} after rate limit filtering.", eligibleUsersForThisDispatch.Count, newsItemId);
@@ -371,12 +412,8 @@ namespace Application.Services
                     cancellationToken.ThrowIfCancellationRequested();
                     int chunkStartIndex = i * chunkSize;
 
-                    // Calculate items in this chunk based on the filtered list size.
                     int itemsInThisChunk = Math.Min(chunkSize, totalUsers - chunkStartIndex);
 
-                    // Enqueue the chunk processing job. This job will then enqueue the final sending jobs.
-                    // The final sending job (ProcessNotificationFromCacheAsync) still has its rate limit check,
-                    // but this higher-level check prevents unnecessary enqueuing if the user is already at their global limit.
                     _jobScheduler.Enqueue<INotificationDispatchService>(
                         service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, itemsInThisChunk, CancellationToken.None));
                 }
@@ -386,30 +423,51 @@ namespace Application.Services
             catch (BrokenCircuitException)
             {
                 _logger.LogWarning("Dispatch for NewsItem {NewsItemId} failed: Redis circuit is open.", newsItemId);
+                // Release locks on error
+                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey); // itemLockKey IS defined by now
+                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
             }
             catch (RedisException redisEx)
             {
                 _logger.LogError(redisEx, "A Redis error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
+                // Release locks on Redis errors
+                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
             }
             catch (OperationCanceledException)
             {
+                // If cancelled, ensure locks are released if acquired.
+                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
                 _logger.LogWarning("Dispatch orchestration for NewsItem {NewsItemId} was cancelled.", newsItemId);
+                throw; // Re-throw to signal cancellation
             }
             catch (Exception ex)
             {
                 _logger.LogCritical(ex, "A critical error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
-                throw;
+                // Release locks on other critical errors
+                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                throw; // Re-throw the exception
             }
             finally
             {
-                // ========================== IDEMPOTENCY FIX START ==========================
-                // Release the lock to allow future dispatches for this news item.
-                await _redisDb.KeyDeleteAsync(lockKey);
+                // ========================== FINALLY BLOCK FOR LOCK RELEASE =========================
+                // This is the primary safety net. Ensure locks are released if acquired.
+                if (globalLockAcquired)
+                {
+                    await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    _logger.LogInformation("Global dispatch lock released for NewsItem {NewsItemId}.", newsItemId);
+                }
+                // Ensure the item-specific lock is also released if it was acquired.
+                // ReleaseLockAsync should handle cases where itemLockKey is null or the key doesn't exist.
+                if (itemLockKey != null)
+                {
+                    await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                }
                 // =========================================================================
             }
         }
-
-
 
 
         [JobDisplayName("Process Dispatch Chunk: News {0}, StartIndex {1}")]
