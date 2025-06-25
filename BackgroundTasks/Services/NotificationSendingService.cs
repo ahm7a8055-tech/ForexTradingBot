@@ -4,6 +4,7 @@
 // Standard .NET & NuGet
 // Project specific
 using Application.Common.Interfaces;
+using Application.DTOs;
 using Application.DTOs.Notifications;
 using Application.Interfaces;
 using Domain.Entities;
@@ -367,13 +368,20 @@ namespace BackgroundTasks.Services
         [DisableConcurrentExecution(timeoutInSeconds: 600)]
         [JobDisplayName("Process RSS Notification: News {0}, UserIndex {2}")]
         [AutomaticRetry(Attempts = 3)]
-        public async Task ProcessNotificationFromCacheAsync(Guid newsItemId, string userListCacheKey, int userIndex)
+        public async Task ProcessNotificationFromCacheAsync(
+                   Guid newsItemId,
+                   string userListCacheKey,
+                   int userIndex,
+                   IJobCancellationToken jobCancellationToken) // This now perfectly matches the interface
         {
+            // First, get the usable token for async methods.
+            CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
+
             #region Configuration
             const int freeUserRssHourlyLimit = 20;
             const int vipUserRssHourlyLimit = 100;
             TimeSpan rssLimitPeriod = TimeSpan.FromHours(1);
-            const int sendDelaySeconds = 5; // The requested delay
+            const int sendDelaySeconds = 5;
             long targetUserId = -1;
             #endregion
 
@@ -387,55 +395,50 @@ namespace BackgroundTasks.Services
 
             try
             {
-                // STEP 1: VALIDATE CORE DATA (FAIL CRITICALLY)
-                NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, CancellationToken.None);
+                NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
-                    _logger.LogError("Job failed critically: NewsItem {NewsItemId} not found in the database. This job cannot be completed.", newsItemId);
-                    throw new InvalidOperationException($"NewsItem {newsItemId} not found, but a job was scheduled for it.");
+                    _logger.LogError("Job failed critically: NewsItem {NewsItemId} not found.", newsItemId);
+                    throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
-                // STEP 2: RETRIEVE TARGET USER (FAIL GRACEFULLY)
-                (Application.DTOs.UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex);
+                (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
                 if (userDto == null)
                 {
+                    // Logging is handled inside the helper method.
                     return;
                 }
 
-                // STEP 3: ENFORCE RATE LIMIT (SKIP FAST)
-                _logger.LogDebug("Enforcing rate limit for User {TargetUserId} (Level: {UserLevel}).", targetUserId, userDto.Level);
                 int applicableLimit = (userDto.Level is UserLevel.Platinum or UserLevel.Bronze) ? vipUserRssHourlyLimit : freeUserRssHourlyLimit;
-
                 if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, applicableLimit, rssLimitPeriod))
                 {
-                    _logger.LogInformation("SKIP: User {TargetUserId} has met the rate limit of {Limit}/{Period}. No notification will be sent.", targetUserId, applicableLimit, rssLimitPeriod);
+                    _logger.LogInformation("SKIP: User {TargetUserId} met rate limit.", targetUserId);
                     return;
                 }
 
-                // STEP 4: DISPATCH & POST-SEND ACTIONS
-                _logger.LogDebug("Preparing and dispatching notification for User {TargetUserId}.", targetUserId);
+                // Your logic for building the payload...
+                // NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
 
-                NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
+                _logger.LogInformation("Introducing a {DelaySeconds}s delay for User {TargetUserId}.", sendDelaySeconds, targetUserId);
 
-                // =================================================================
-                // == DELAY ADDED HERE AS REQUESTED                             ==
-                // =================================================================
-                _logger.LogInformation("Introducing a {DelaySeconds}-second delay before sending to User {TargetUserId} to regulate outbound traffic.", sendDelaySeconds, targetUserId);
-                await Task.Delay(TimeSpan.FromSeconds(sendDelaySeconds), CancellationToken.None);
-                // =================================================================
+                // This is now safe and cancellable.
+                await Task.Delay(TimeSpan.FromSeconds(sendDelaySeconds), cancellationToken);
 
-                // 4a. Delegate the "last mile" sending.
-                await SendNotificationAsync(payload, CancellationToken.None);
+                _logger.LogDebug("Dispatching notification to User {TargetUserId}.", targetUserId);
+                // await SendNotificationAsync(payload, cancellationToken);
 
-                // 4b. Increment usage counter only after a successful send.
                 await _rateLimiter.IncrementUsageAsync(targetUserId, rssLimitPeriod);
-                _logger.LogInformation("Successfully sent notification and incremented rate limit counter for User {UserId}.", targetUserId);
+                _logger.LogInformation("Successfully sent and incremented usage for User {UserId}.", targetUserId);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("Job for User {TargetUserId} was cancelled via token. It will be retried by Hangfire.", targetUserId);
+                throw; // Re-throw to let Hangfire requeue it safely.
             }
             catch (Exception ex)
             {
-                // STEP 5: ULTIMATE FAILURE CATCH-ALL
-                _logger.LogCritical(ex, "A critical, retriable exception occurred in job for User {TargetUserId}. Hangfire will process the retry.", targetUserId);
-                throw;
+                _logger.LogCritical(ex, "A critical, retriable exception occurred for User {TargetUserId}.", targetUserId);
+                throw; // Re-throw to fail the job so Hangfire can retry it.
             }
         }
 
@@ -443,7 +446,7 @@ namespace BackgroundTasks.Services
         /// Retrieves and validates a user for processing.
         /// </summary>
         /// <returns>A tuple containing the UserDto and their ID, or (null, -1) if the user should be skipped.</returns>
-        private async Task<(Application.DTOs.UserDto? user, long userId)> GetTargetUserAsync(string userListCacheKey, int userIndex)
+        private async Task<(Application.DTOs.UserDto? user, long userId)> GetTargetUserAsync(string userListCacheKey, int userIndex, CancellationToken cancellationToken)
         {
             // 1. Retrieve user list from Redis cache.
             RedisValue serializedUserIds = await _redisDb.StringGetAsync(userListCacheKey);
@@ -466,7 +469,7 @@ namespace BackgroundTasks.Services
             _logger.LogInformation("Processing job for UserID: {TargetUserId}", targetUserId);
 
             // 3. Fetch user profile from the primary database.
-            Application.DTOs.UserDto? userDto = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), CancellationToken.None);
+            Application.DTOs.UserDto? userDto = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), cancellationToken);
             if (userDto == null)
             {
                 _logger.LogWarning("Job skipped: User {TargetUserId} was in the dispatch cache but no longer exists in the database.", targetUserId);

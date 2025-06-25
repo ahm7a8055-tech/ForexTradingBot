@@ -32,8 +32,11 @@ namespace Application.Common.Interfaces // ✅ Namespace: Application.Common.Int
         [JobDisplayName("Send Telegram Notification to User {0.TargetTelegramUserId}")]
         Task SendNotificationAsync(NotificationJobPayload payload, CancellationToken cancellationToken);
         Task ProcessBatchNotificationForUserAsync(long targetUserId, List<Guid> newsItemIds);
-        // --- ✅ ADD THIS NEW METHOD SIGNATURE ---
-        Task ProcessNotificationFromCacheAsync(Guid newsItemId, string userListCacheKey, int userIndex);
 
+        Task ProcessNotificationFromCacheAsync(
+            Guid newsItemId,
+            string userListCacheKey,
+            int userIndex,
+            IJobCancellationToken cancellationToken); // <-- Change the parameter type here
     }
 }

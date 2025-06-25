@@ -362,36 +362,31 @@ namespace Application.Services
         }
 
 
-        [JobDisplayName("Process Dispatch Chunk: News {0}, StartIndex {2}")]
-        [AutomaticRetry(Attempts = 1)]
+
+        [JobDisplayName("Process Dispatch Chunk: News {0}, StartIndex {1}")]
+        [AutomaticRetry(Attempts = 1, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationChunkAsync(Guid newsItemId, string userListCacheKey, int chunkStartIndex, int chunkSize, CancellationToken cancellationToken)
         {
-            // This small delay spreads out the load from different chunk managers.
-            await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(50, 500)), cancellationToken);
-
             _logger.LogInformation("Processing dispatch chunk for News {NewsItemId} starting at index {StartIndex} for {ChunkSize} users.", newsItemId, chunkStartIndex, chunkSize);
 
-            // This loop now only runs for a small `chunkSize` (e.g., 500 times), not 25,000 times.
             for (int i = 0; i < chunkSize; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 int currentUserIndex = chunkStartIndex + i;
 
-                // Enqueue the final, lightweight worker job.
-                // We removed the incorrect rate-limit check from the orchestrator. The check
-                // is correctly performed inside ProcessNotificationFromCacheAsync.
+                // =====================================================================================
+                // == THE DEFINITIVE FIX PART 3: This call now perfectly matches the new interface.  ==
+                // =====================================================================================
                 _jobScheduler.Enqueue<INotificationSendingService>(
-                    service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex));
+                    service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex, JobCancellationToken.Null)
+                );
 
-                // Optional: A tiny delay to be even gentler on the Hangfire enqueue command.
                 await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken);
             }
 
             _logger.LogInformation("Chunk processing complete for News {NewsItemId} starting at index {StartIndex}.", newsItemId, chunkStartIndex);
         }
-
-
 
 
         #endregion
