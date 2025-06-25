@@ -366,19 +366,19 @@ namespace BackgroundTasks.Services
         ///     <item><description>The task re-throws an <see cref="Exception"/> (causing the Hangfire job to be marked 'Failed') if a critical, unhandled error occurs (e.g., database issues fetching the news item, Redis connectivity problems, or other unexpected internal exceptions that prevent completion and are not part of a graceful exit or self-healing process).</description></item>
         /// </list>
         /// </returns>
+        [Queue("notifications")]
         [DisableConcurrentExecution(timeoutInSeconds: 600)]
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
-        [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
+        [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationFromCacheAsync(
-            Guid newsItemId,
-            string userListCacheKey,
-            int userIndex,
-            IJobCancellationToken jobCancellationToken)
+          Guid newsItemId,
+          string userListCacheKey,
+          int userIndex,
+          IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
 
-            // Logging scope for better traceability within this job execution.
             using var logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex });
 
             try
@@ -387,15 +387,15 @@ namespace BackgroundTasks.Services
                 (UserDto? userDto, targetUserId) = await GetTargetUserAsync(userListCacheKey, userIndex, cancellationToken);
                 if (userDto == null)
                 {
+                    // This job is now extremely fast, it will just log and complete.
                     _logger.LogInformation("Skipping job: Target user not found for UserIndex {UserIndex}.", userIndex);
                     return;
                 }
 
-                // 2. PRIMARY RATE LIMIT CHECK:
-                //    Check if the user has exceeded a general notification limit (e.g., 20 messages in 15 minutes).
-                //    If they have, we skip processing this Hangfire job entirely for them.
+                // 2. Pre-processing Rate Limit Check
                 if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 20, TimeSpan.FromMinutes(15)))
                 {
+                    // This job is now extremely fast, it will just log and complete.
                     _logger.LogInformation("SKIP: User {TargetUserId} met the pre-processing rate limit (20/15min).", targetUserId);
                     return;
                 }
@@ -411,34 +411,31 @@ namespace BackgroundTasks.Services
                 // 4. Prepare notification payload
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
 
-                // 5. Introduce a fixed delay *within* this job's execution.
-                //    This delays the sending operation by 5 seconds for each job.
-                _logger.LogInformation("Executing job for User {TargetUserId}. Introducing a 5s delay before sending.", targetUserId);
-                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                // 5. !!! THE FIX: REMOVE THE DELAY !!!
+                //    The worker is no longer held captive. It sends the request and is immediately freed.
+                //    await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken); // <-- REMOVED
 
-                // 6. Send the notification (calls your other method)
+                _logger.LogDebug("Executing job immediately for User {TargetUserId}.", targetUserId);
+
+                // 6. Send the notification
                 await SendNotificationViaSenderAsync(payload, cancellationToken);
 
-                // 7. POST-SEND RATE LIMIT INCREMENT:
-                //    Record that a notification was successfully sent to this user.
-                //    This contributes to their hourly usage count.
-                await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromHours(1));
+                // 7. Post-send rate limit increment
+                await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromMinutes(15));
 
                 _logger.LogInformation("✅ Successfully processed and sent notification for User {UserId}.", targetUserId);
             }
             catch (OperationCanceledException)
             {
                 _logger.LogWarning("Job for UserIndex {UserIndex} was cancelled. It will be re-queued by Hangfire.", userIndex);
-                throw; // Re-throw to allow Hangfire to handle retries/re-queuing
+                throw;
             }
             catch (Exception ex)
             {
-                // Log any other exceptions as critical, allowing Hangfire retries.
                 _logger.LogCritical(ex, "A critical, unhandled exception occurred for UserIndex {UserIndex}. Job will be retried.", userIndex);
-                throw; // Re-throw to allow Hangfire to handle retries
+                throw;
             }
         }
-
 
         private async Task SendNotificationViaSenderAsync(NotificationJobPayload payload, CancellationToken cancellationToken)
         {

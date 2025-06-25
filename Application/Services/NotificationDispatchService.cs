@@ -275,26 +275,54 @@ namespace Application.Services
         /// This method does *not* return the results of the actual notification sends, as those occur asynchronously in the enqueued Hangfire jobs. Any critical, unhandled errors that occur during the orchestration process will be logged and re-thrown.
         /// </returns>
         [JobDisplayName("Dispatch Coordinator for News: {0}")]
-        [AutomaticRetry(Attempts = 2)]
+        [AutomaticRetry(Attempts = 0)]
         public async Task DispatchNewsNotificationAsync(Guid newsItemId, CancellationToken cancellationToken = default)
         {
-            const int chunkSize = 500;
-            _logger.LogInformation("Starting Dispatch Coordination for NewsItem {NewsItemId}.", newsItemId);
-
-            if (_redisCircuitBreaker.CircuitState == CircuitState.Open)
-            {
-                _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: Redis circuit breaker is open.", newsItemId);
-                return;
-            }
+            // ========================== IDEMPOTENCY FIX START ==========================
+            // 1. Define a unique lock key for this specific news item dispatch.
+            string lockKey = $"dispatch-lock:{newsItemId}";
+            // 2. Set a reasonable expiry for the lock to prevent it from getting stuck
+            //    if the worker process dies unexpectedly. E.g., 1 hour.
+            TimeSpan lockExpiry = TimeSpan.FromHours(1);
+            // =========================================================================
 
             try
             {
+                // ========================== IDEMPOTENCY FIX START ==========================
+                // 3. Try to acquire the lock atomically in Redis.
+                //    The 'When.NotExists' flag means this command only succeeds if the key
+                //    does not already exist. This is the core of the lock.
+                bool lockAcquired = await _redisDb.StringSetAsync(lockKey, "locked", lockExpiry, When.NotExists);
+
+                if (!lockAcquired)
+                {
+                    // Another job is already processing this news item. This is not an error.
+                    // We log it and exit gracefully.
+                    _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: another dispatch is already in progress or has recently completed.", newsItemId);
+                    return; // EXIT a
+                }
+                // =========================================================================
+
+
+                // --- Your Original Logic (Now protected by the lock) ---
+                const int chunkSize = 500;
+                _logger.LogInformation("Starting Dispatch Coordination for NewsItem {NewsItemId}.", newsItemId);
+
+                if (_redisCircuitBreaker.CircuitState == CircuitState.Open)
+                {
+                    _logger.LogWarning("Dispatch for NewsItem {NewsItemId} skipped: Redis circuit breaker is open.", newsItemId);
+                    return;
+                }
+
+                // The rest of your try block remains the same...
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
                     _logger.LogWarning("NewsItem {Id} not found. Cannot dispatch.", newsItemId);
                     return;
                 }
+                // ... and so on ...
+                // ... (your existing code for fetching users, caching, and enqueuing jobs) ...
 
                 IEnumerable<User> targetUsers = await _userRepository.GetUsersForNewsNotificationAsync(
                     newsItem.AssociatedSignalCategoryId, newsItem.IsVipOnly, cancellationToken);
@@ -320,7 +348,6 @@ namespace Application.Services
                 });
                 _logger.LogInformation("Cached {Count} UNIQUE user IDs to Redis for NewsItem {NewsItemId}.", uniqueTelegramIds.Count, newsItemId);
 
-                // --- THE "DIVIDE AND CONQUER" LOGIC ---
                 int totalUsers = uniqueTelegramIds.Count;
                 int chunks = (int)Math.Ceiling((double)totalUsers / chunkSize);
 
@@ -328,14 +355,8 @@ namespace Application.Services
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     int chunkStartIndex = i * chunkSize;
-
-                    // =============================================================================
-                    // == THE DEFINITIVE FIX: Calculate the PRECISE size for THIS SPECIFIC chunk. ==
-                    // =============================================================================
                     int itemsInThisChunk = Math.Min(chunkSize, totalUsers - chunkStartIndex);
-                    // =============================================================================
 
-                    // Now, we pass the CORRECT size to the manager job.
                     _jobScheduler.Enqueue<INotificationDispatchService>(
                         service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, itemsInThisChunk, CancellationToken.None));
                 }
@@ -359,35 +380,43 @@ namespace Application.Services
                 _logger.LogCritical(ex, "A critical error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
                 throw;
             }
+            finally
+            {
+                // ========================== IDEMPOTENCY FIX START ==========================
+                // 4. IMPORTANT: Release the lock when the job is finished (either successfully
+                //    or with an error) so that it can be run again in the future if needed.
+                //    This 'finally' block ensures the lock is always released.
+                await _redisDb.KeyDeleteAsync(lockKey);
+                // =========================================================================
+            }
         }
 
 
 
         [JobDisplayName("Process Dispatch Chunk: News {0}, StartIndex {1}")]
-        [AutomaticRetry(Attempts = 1, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
+        [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         public async Task ProcessNotificationChunkAsync(Guid newsItemId, string userListCacheKey, int chunkStartIndex, int chunkSize, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Processing dispatch chunk for News {NewsItemId} starting at index {StartIndex} for {ChunkSize} users.", newsItemId, chunkStartIndex, chunkSize);
 
+            // The loop should be very fast, just enqueueing jobs.
             for (int i = 0; i < chunkSize; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // !!! REMOVED THE Task.Delay(25000) !!!
+                // Any delay/rate-limiting should happen inside ProcessNotificationFromCacheAsync
+
                 int currentUserIndex = chunkStartIndex + i;
-                await Task.Delay(TimeSpan.FromMilliseconds(25000), cancellationToken);
-                // =====================================================================================
-                // == THE DEFINITIVE FIX PART 3: This call now perfectly matches the new interface.  ==
-                // =====================================================================================
                 _jobScheduler.Enqueue<INotificationSendingService>(
                     service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex, JobCancellationToken.Null)
                 );
-
-    
             }
 
+            // This method now completes in milliseconds instead of hours.
             _logger.LogInformation("Chunk processing complete for News {NewsItemId} starting at index {StartIndex}.", newsItemId, chunkStartIndex);
+            await Task.CompletedTask; // Add this if your method becomes fully synchronous after removing the delay
         }
-
 
         #endregion
     }

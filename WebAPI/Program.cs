@@ -397,7 +397,12 @@ try
     }
 
     _ = builder.Services.AddHangfireCleaner();
-    _ = builder.Services.AddHangfireServer();
+    _ = builder.Services.AddHangfireServer(options =>
+    {
+        options.ServerName = $"{Environment.MachineName}:Notifications";
+        options.WorkerCount = 25; // <--- THE THROTTLE! Adjust this based on Telegram API limits.
+        options.Queues = new[] { "notifications" }; // It ONLY processes this queue.
+    });
 
 
     Log.Information("Hangfire cleaner service added.");
