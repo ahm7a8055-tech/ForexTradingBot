@@ -16,17 +16,17 @@ namespace Infrastructure.Persistence.Configurations
             // We just need to ensure it's required if not handled by User's config.
             // builder.Property(tw => tw.UserId).IsRequired(); // This is implicitly handled by the User-TokenWallet relationship
 
+            // ...
             _ = builder.Property(tw => tw.Balance)
                 .IsRequired()
-                .HasColumnType("decimal(18, 8)") // High precision for token balance
-                .HasDefaultValue(0m);
+                .HasColumnType("decimal(18, 8)");
+            //.HasDefaultValue(0m);
 
             // builder.Property(tw => tw.CurrencyCode).HasMaxLength(10); // If using CurrencyCode
 
             _ = builder.Property(tw => tw.IsActive)
-                .IsRequired()
-                .HasDefaultValue(true);
-
+      .IsRequired();
+            //.HasDefaultValue(true);
             _ = builder.Property(tw => tw.CreatedAt)
                 .IsRequired();
             _ = builder.Property(tw => tw.UpdatedAt)

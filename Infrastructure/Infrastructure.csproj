@@ -8,12 +8,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Data\Configurations\**" />
+    <Compile Remove="Data\Extensions\**" />
+    <Compile Remove="Data\Migrations\**" />
     <Compile Remove="Data\NewFolder\**" />
     <Compile Remove="ExternalServices\NewFolder\**" />
     <Compile Remove="Services\NewFolder\**" />
+    <EmbeddedResource Remove="Data\Configurations\**" />
+    <EmbeddedResource Remove="Data\Extensions\**" />
+    <EmbeddedResource Remove="Data\Migrations\**" />
     <EmbeddedResource Remove="Data\NewFolder\**" />
     <EmbeddedResource Remove="ExternalServices\NewFolder\**" />
     <EmbeddedResource Remove="Services\NewFolder\**" />
+    <None Remove="Data\Configurations\**" />
+    <None Remove="Data\Extensions\**" />
+    <None Remove="Data\Migrations\**" />
     <None Remove="Data\NewFolder\**" />
     <None Remove="ExternalServices\NewFolder\**" />
     <None Remove="Services\NewFolder\**" />
@@ -21,6 +30,7 @@
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="EntityFramework" Version="6.5.1" />
     <PackageReference Include="Hangfire" Version="1.8.20" />
     <PackageReference Include="Hangfire.Core" Version="1.8.20" />
     <PackageReference Include="Hangfire.NetCore" Version="1.8.20" />
@@ -53,9 +63,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Data\Configurations\" />
-    <Folder Include="Data\Extensions\" />
-    <Folder Include="Data\Migrations\" />
     <Folder Include="Migrations\" />
     <Folder Include="Services\MarketData\" />
   </ItemGroup>

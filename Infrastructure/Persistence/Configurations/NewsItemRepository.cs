@@ -8,6 +8,7 @@ using Domain.Entities;               // For NewsItem, RssSource, SignalCategory
 using Microsoft.Data.SqlClient; // SQL Server specific connection
 using Microsoft.Extensions.Configuration; // To access connection strings
 using Microsoft.Extensions.Logging; // For logging
+using Npgsql;
 using Polly; // For resilience policies
 using Polly.Retry; // For retry policies
 using Shared.Extensions; // For Truncate extension method
@@ -608,9 +609,18 @@ namespace Infrastructure.Persistence.Configurations
         /// using, and disposing of the returned <see cref="SqlConnection"/> instance (typically via `using` statements)
         /// to ensure connections are returned to the pool efficiently.
         /// </remarks>
-        private SqlConnection CreateConnection()
+        private NpgsqlConnection CreateConnection()
         {
-            return new SqlConnection(_connectionString);
+            try
+            {
+                // --- CHANGE: Returning NpgsqlConnection ---
+                return new NpgsqlConnection(_connectionString);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UserRepository: Error creating PostgreSQL database connection. ConnectionString: {ConnectionString}", _connectionString);
+                throw;
+            }
         }
 
         #region SearchNewsAsync Implementation
@@ -666,30 +676,22 @@ namespace Infrastructure.Persistence.Configurations
         /// and dedicated full-text search solutions (e.g., SQL Server Full-Text Search, Elasticsearch) might be considered for future AI-driven applications that require high-performance content retrieval.
         /// </remarks>
         public async Task<(List<NewsItem> Items, int TotalCount)> SearchNewsAsync(
-            IEnumerable<string> keywords,
-            DateTime sinceDate,
-            DateTime untilDate,
-            int pageNumber,
-            int pageSize,
-            bool matchAllKeywords = false,
-            bool isUserVip = false,
-            CancellationToken cancellationToken = default)
+                IEnumerable<string> keywords,
+                DateTime sinceDate,
+                DateTime untilDate,
+                int pageNumber,
+                int pageSize,
+                bool matchAllKeywords = false,
+                bool isUserVip = false,
+                CancellationToken cancellationToken = default)
         {
-            _logger.LogDebug("SearchNewsAsync (Fallback LIKE method) called...");
+            _logger.LogDebug("SearchNewsAsync called...");
 
-            if (pageNumber <= 0)
-            {
-                pageNumber = 1;
-            }
-
-            if (pageSize <= 0)
-            {
-                pageSize = 10;
-            }
+            pageNumber = pageNumber <= 0 ? 1 : pageNumber;
+            pageSize = pageSize <= 0 ? 10 : pageSize;
 
             try
             {
-                // Using Polly as before
                 return await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
                     using var connection = CreateConnection();
@@ -698,17 +700,16 @@ namespace Infrastructure.Persistence.Configurations
                     var whereClauses = new List<string>();
                     var parameters = new DynamicParameters();
 
-                    // --- Date and VIP Filtering ---
-                    whereClauses.Add("n.PublishedDate >= @SinceDate AND n.PublishedDate <= @UntilDate");
+                    // --- CORRECTED: Date, VIP, and Identifier Quoting ---
+                    whereClauses.Add(@"n.""PublishedDate"" >= @SinceDate AND n.""PublishedDate"" <= @UntilDate");
                     parameters.Add("SinceDate", sinceDate);
                     parameters.Add("UntilDate", untilDate);
                     if (!isUserVip)
                     {
-                        whereClauses.Add("n.IsVipOnly = 0");
+                        whereClauses.Add(@"n.""IsVipOnly"" = false"); // Use 'false' for PostgreSQL boolean
                     }
 
-                    // ✅✅ --- REVERTING TO THE ORIGINAL, WORKING `LIKE` LOGIC --- ✅✅
-                    // This is not the fastest, but it works without any special DB setup.
+                    // --- CORRECTED: PostgreSQL LIKE syntax ---
                     var keywordList = keywords?.Select(k => k.Trim()).Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
                     if (keywordList != null && keywordList.Any())
                     {
@@ -717,57 +718,49 @@ namespace Infrastructure.Persistence.Configurations
                         {
                             var keyword = keywordList[i];
                             var paramName = $"keyword{i}";
-                            // We search in Title and Summary. Searching in FullContent can be very slow.
-                            keywordConditions.Add($"(LOWER(n.Title) LIKE '%' + LOWER(@{paramName}) + '%' OR LOWER(n.Summary) LIKE '%' + LOWER(@{paramName}) + '%')");
+                            // Use CONCAT for standard SQL string concatenation
+                            keywordConditions.Add($@"(LOWER(n.""Title"") LIKE CONCAT('%', LOWER(@{paramName}), '%') OR LOWER(n.""Summary"") LIKE CONCAT('%', LOWER(@{paramName}), '%'))");
                             parameters.Add(paramName, keyword);
                         }
-
                         string keywordOperator = matchAllKeywords ? " AND " : " OR ";
                         whereClauses.Add($"({string.Join(keywordOperator, keywordConditions)})");
                     }
 
                     var fullWhereClause = whereClauses.Any() ? "WHERE " + string.Join(" AND ", whereClauses) : "";
 
-                    // --- Back to Two Separate Queries ---
-                    // This is necessary because QueryMultiple + Multi-mapping is problematic in Dapper.
-
-                    // Query 1: Get the total count
-                    var countSql = $"SELECT COUNT(n.Id) FROM NewsItems n {fullWhereClause};";
+                    // --- CORRECTED: Count query with quoted identifiers ---
+                    var countSql = $@"SELECT COUNT(n.""Id"") FROM public.""NewsItems"" n {fullWhereClause};";
                     var totalCount = await connection.ExecuteScalarAsync<int>(
                         new CommandDefinition(countSql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)
                     );
 
-                    if (totalCount == 0)
-                    {
-                        return (new List<NewsItem>(), 0);
-                    }
+                    if (totalCount == 0) return (new List<NewsItem>(), 0);
 
-                    // Query 2: Get the paged data
+                    // --- CORRECTED: Paged data query with quoted identifiers ---
                     var sql = $@"
-                SELECT
-                    n.Id, n.Title, n.Link, n.Summary, n.FullContent, n.ImageUrl, n.PublishedDate, n.CreatedAt, 
-                    n.SourceName, n.IsVipOnly, n.AssociatedSignalCategoryId,
-                    rs.Id AS RssSource_Id, rs.SourceName AS RssSource_SourceName,
-                    sc.Id AS AssociatedSignalCategory_Id, sc.Name AS AssociatedSignalCategory_Name
-                FROM NewsItems n
-                LEFT JOIN RssSources rs ON n.RssSourceId = rs.Id
-                LEFT JOIN SignalCategories sc ON n.AssociatedSignalCategoryId = sc.Id
-                {fullWhereClause}
-                ORDER BY n.PublishedDate DESC
-                OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;";
+                        SELECT
+                            n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", 
+                            n.""SourceName"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
+                            rs.""Id"" AS ""RssSource_Id"", rs.""SourceName"" AS ""RssSource_SourceName"",
+                            sc.""Id"" AS ""AssociatedSignalCategory_Id"", sc.""Name"" AS ""AssociatedSignalCategory_Name""
+                        FROM public.""NewsItems"" n
+                        LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
+                        LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""
+                        {fullWhereClause}
+                        ORDER BY n.""PublishedDate"" DESC
+                        OFFSET @Offset FETCH NEXT @PageSize ROWS ONLY;"; // This syntax is valid in PostgreSQL
 
                     parameters.Add("Offset", (pageNumber - 1) * pageSize);
                     parameters.Add("PageSize", pageSize);
 
-                    // This multi-mapping call is correct and works with a separate query.
                     var newsItemsMap = new Dictionary<Guid, NewsItem>();
-                    var items = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                    await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct),
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
                         {
                             if (!newsItemsMap.TryGetValue(newsItemDto.Id, out var newsItem))
                             {
-                                newsItem = newsItemDto.ToDomainEntity();
+                                newsItem = newsItemDto.ToDomainEntity(); // Your DTO already handles mapping
                                 newsItemsMap.Add(newsItem.Id, newsItem);
                             }
                             return newsItem;
@@ -781,11 +774,20 @@ namespace Infrastructure.Persistence.Configurations
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in SearchNewsAsync operation (using LIKE fallback).");
+                _logger.LogError(ex, "Error in SearchNewsAsync operation.");
                 throw new RepositoryException("Failed to search news items.", ex);
             }
         }
-
+        private const string FullNewsItemSelectSql = @"
+            SELECT
+                n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", n.""LastProcessedAt"",
+                n.""SourceName"", n.""SourceItemId"", n.""SentimentScore"", n.""SentimentLabel"", n.""DetectedLanguage"", n.""AffectedAssets"",
+                n.""RssSourceId"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
+                rs.""Id"" AS ""RssSource_Id"", rs.""Url"" AS ""RssSource_Url"", rs.""SourceName"" AS ""RssSource_SourceName"", rs.""IsActive"" AS ""RssSource_IsActive"", rs.""CreatedAt"" AS ""RssSource_CreatedAt"", rs.""UpdatedAt"" AS ""RssSource_UpdatedAt"", rs.""LastModifiedHeader"" AS ""RssSource_LastModifiedHeader"", rs.""ETag"" AS ""RssSource_ETag"", rs.""LastFetchAttemptAt"" AS ""RssSource_LastFetchAttemptAt"", rs.""LastSuccessfulFetchAt"" AS ""RssSource_LastSuccessfulFetchAt"", rs.""FetchIntervalMinutes"" AS ""RssSource_FetchIntervalMinutes"", rs.""FetchErrorCount"" AS ""RssSource_FetchErrorCount"", rs.""Description"" AS ""RssSource_Description"", rs.""DefaultSignalCategoryId"" AS ""RssSource_DefaultSignalCategoryId"",
+                sc.""Id"" AS ""AssociatedSignalCategory_Id"", sc.""Name"" AS ""AssociatedSignalCategory_Name"", sc.""Description"" AS ""AssociatedSignalCategory_Description"", sc.""IsActive"" AS ""AssociatedSignalCategory_IsActive"", sc.""SortOrder"" AS ""AssociatedSignalCategory_SortOrder""
+            FROM public.""NewsItems"" n
+            LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
+            LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""";
         #endregion
 
         #region INewsItemRepository Read Operations
@@ -850,17 +852,7 @@ namespace Infrastructure.Persistence.Configurations
                     using var connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = @"
-                        SELECT
-                            n.Id, n.Title, n.Link, n.Summary, n.FullContent, n.ImageUrl, n.PublishedDate, n.CreatedAt, n.LastProcessedAt,
-                            n.SourceName, n.SourceItemId, n.SentimentScore, n.SentimentLabel, n.DetectedLanguage, n.AffectedAssets,
-                            n.RssSourceId, n.IsVipOnly, n.AssociatedSignalCategoryId,
-                            rs.Id AS RssSource_Id, rs.Url AS RssSource_Url, rs.SourceName AS RssSource_SourceName, rs.IsActive AS RssSource_IsActive, rs.CreatedAt AS RssSource_CreatedAt, rs.UpdatedAt AS RssSource_UpdatedAt, rs.LastModifiedHeader AS RssSource_LastModifiedHeader, rs.ETag AS RssSource_ETag, rs.LastFetchAttemptAt AS RssSource_LastFetchAttemptAt, rs.LastSuccessfulFetchAt AS RssSource_LastSuccessfulFetchAt, rs.FetchIntervalMinutes AS RssSource_FetchIntervalMinutes, rs.FetchErrorCount AS RssSource_FetchErrorCount, rs.Description AS RssSource_Description, rs.DefaultSignalCategoryId AS RssSource_DefaultSignalCategoryId,
-                            sc.Id AS AssociatedSignalCategory_Id, sc.Name AS AssociatedSignalCategory_Name, sc.Description AS AssociatedSignalCategory_Description, sc.IsActive AS AssociatedSignalCategory_IsActive, sc.SortOrder AS AssociatedSignalCategory_SortOrder
-                        FROM NewsItems n
-                        LEFT JOIN RssSources rs ON n.RssSourceId = rs.Id
-                        LEFT JOIN SignalCategories sc ON n.AssociatedSignalCategoryId = sc.Id
-                        WHERE n.Id = @Id;";
+                    var sql = $@"{FullNewsItemSelectSql} WHERE n.""Id"" = @Id;";
 
                     var newsItem = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds), // <--- ADDED: Pass CommandTimeout
@@ -939,17 +931,7 @@ namespace Infrastructure.Persistence.Configurations
                     using var connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = @"
-                        SELECT
-                            n.Id, n.Title, n.Link, n.Summary, n.FullContent, n.ImageUrl, n.PublishedDate, n.CreatedAt, n.LastProcessedAt,
-                            n.SourceName, n.SourceItemId, n.SentimentScore, n.SentimentLabel, n.DetectedLanguage, n.AffectedAssets,
-                            n.RssSourceId, n.IsVipOnly, n.AssociatedSignalCategoryId,
-                            rs.Id AS RssSource_Id, rs.Url AS RssSource_Url, rs.SourceName AS RssSource_SourceName, rs.IsActive AS RssSource_IsActive, rs.CreatedAt AS RssSource_CreatedAt, rs.UpdatedAt AS RssSource_UpdatedAt, rs.LastModifiedHeader AS RssSource_LastModifiedHeader, rs.ETag AS RssSource_ETag, rs.LastFetchAttemptAt AS RssSource_LastFetchAttemptAt, rs.LastSuccessfulFetchAt AS RssSource_LastSuccessfulFetchAt, rs.FetchIntervalMinutes AS RssSource_FetchIntervalMinutes, rs.FetchErrorCount AS RssSource_FetchErrorCount, rs.Description AS RssSource_Description, rs.DefaultSignalCategoryId AS RssSource_DefaultSignalCategoryId,
-                            sc.Id AS AssociatedSignalCategory_Id, sc.Name AS AssociatedSignalCategory_Name, sc.Description AS AssociatedSignalCategory_Description, sc.IsActive AS AssociatedSignalCategory_IsActive, sc.SortOrder AS AssociatedSignalCategory_SortOrder
-                        FROM NewsItems n
-                        LEFT JOIN RssSources rs ON n.RssSourceId = rs.Id
-                        LEFT JOIN SignalCategories sc ON n.AssociatedSignalCategoryId = sc.Id
-                        WHERE n.RssSourceId = @RssSourceId AND n.SourceItemId = @SourceItemId;";
+                    var sql = $@"{FullNewsItemSelectSql} WHERE n.""RssSourceId"" = @RssSourceId AND n.""SourceItemId"" = @SourceItemId;";
 
                     var newsItem = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, new { RssSourceId = rssSourceId, SourceItemId = sourceItemId }, commandTimeout: CommandTimeoutSeconds), // <--- ADDED: Pass CommandTimeout
@@ -1028,7 +1010,7 @@ namespace Infrastructure.Persistence.Configurations
                     using var connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = "SELECT COUNT(*) FROM NewsItems WHERE RssSourceId = @RssSourceId AND SourceItemId = @SourceItemId;";
+                    var sql = @"SELECT COUNT(1) FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" = @SourceItemId;";
                     var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { RssSourceId = rssSourceId, SourceItemId = sourceItemId }, commandTimeout: CommandTimeoutSeconds)); // <--- ADDED: Pass CommandTimeout
                     return count > 0;
                 });
@@ -1288,7 +1270,7 @@ namespace Infrastructure.Persistence.Configurations
                     using var connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = "SELECT SourceItemId FROM NewsItems WHERE RssSourceId = @RssSourceId AND SourceItemId IS NOT NULL;";
+                    var sql = @"SELECT ""SourceItemId"" FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" IS NOT NULL;";
                     var ids = (await connection.QueryAsync<string>(new CommandDefinition(sql, new { RssSourceId = rssSourceId }, commandTimeout: CommandTimeoutSeconds))).ToList(); // <--- ADDED: Pass CommandTimeout
                     return new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
                 });
@@ -1322,11 +1304,7 @@ namespace Infrastructure.Persistence.Configurations
         /// <param name="cancellationToken">A token to cancel the operation.</param>
         public async Task AddAsync(NewsItem newsItem, CancellationToken cancellationToken = default)
         {
-            if (newsItem == null)
-            {
-                throw new ArgumentNullException(nameof(newsItem));
-            }
-
+            if (newsItem == null) throw new ArgumentNullException(nameof(newsItem));
             _logger.LogDebug("Attempting to upsert NewsItem. Title: {Title}", newsItem.Title.Truncate(50));
 
             try
@@ -1335,65 +1313,53 @@ namespace Infrastructure.Persistence.Configurations
                 {
                     await using var connection = CreateConnection();
 
-                    string mergeSql;
-                    object mergeParams;
-                    string identityColumn; // The column used for matching
+                    string upsertSql;
+                    string conflictTarget;
 
-                    // --- Step 1: Prepare the correct MERGE statement based on available data ---
+                    // Determine the conflict target based on available data
                     if (!string.IsNullOrWhiteSpace(newsItem.SourceItemId))
                     {
-                        identityColumn = "SourceItemId";
-                        mergeParams = newsItem; // The whole object can be used as Dapper parameters
-                        mergeSql = @"
-MERGE INTO NewsItems AS Target
-USING (SELECT @RssSourceId AS RssSourceId, @SourceItemId AS SourceItemId) AS Source
-ON (Target.RssSourceId = Source.RssSourceId AND Target.SourceItemId = Source.SourceItemId)
-WHEN NOT MATCHED BY TARGET THEN
-    INSERT (Id, Title, Link, Summary, FullContent, ImageUrl, PublishedDate, CreatedAt, LastProcessedAt, SourceName, SourceItemId, SentimentScore, SentimentLabel, DetectedLanguage, AffectedAssets, RssSourceId, IsVipOnly, AssociatedSignalCategoryId)
-    VALUES (@Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt, @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets, @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId);
-";
+                        // IMPORTANT: You MUST have a UNIQUE constraint on ("RssSourceId", "SourceItemId") for this to work.
+                        // ALTER TABLE public."NewsItems" ADD CONSTRAINT UQ_NewsItems_Source UNIQUE ("RssSourceId", "SourceItemId");
+                        conflictTarget = @"(""RssSourceId"", ""SourceItemId"")";
                     }
                     else
                     {
-                        identityColumn = "Title";
-                        mergeParams = newsItem;
-                        mergeSql = @"
-MERGE INTO NewsItems AS Target
-USING (SELECT @RssSourceId AS RssSourceId, @Title AS Title) AS Source
-ON (Target.RssSourceId = Source.RssSourceId AND Target.Title = Source.Title)
-WHEN NOT MATCHED BY TARGET THEN
-    INSERT (Id, Title, Link, Summary, FullContent, ImageUrl, PublishedDate, CreatedAt, LastProcessedAt, SourceName, SourceItemId, SentimentScore, SentimentLabel, DetectedLanguage, AffectedAssets, RssSourceId, IsVipOnly, AssociatedSignalCategoryId)
-    VALUES (@Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt, @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets, @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId);
-";
+                        // IMPORTANT: You MUST have a UNIQUE constraint on ("RssSourceId", "Title") for this fallback.
+                        // ALTER TABLE public."NewsItems" ADD CONSTRAINT UQ_NewsItems_Title UNIQUE ("RssSourceId", "Title");
+                        conflictTarget = @"(""RssSourceId"", ""Title"")";
                     }
 
-                    // --- Step 2: Execute the atomic MERGE operation ---
-                    var command = new CommandDefinition(
-                        mergeSql,
-                        mergeParams,
-                        commandTimeout: CommandTimeoutSeconds,
-                        cancellationToken: ct);
+                    // Build the PostgreSQL UPSERT statement
+                    upsertSql = $@"
+                        INSERT INTO public.""NewsItems"" (
+                            ""Id"", ""Title"", ""Link"", ""Summary"", ""FullContent"", ""ImageUrl"", ""PublishedDate"", ""CreatedAt"", ""LastProcessedAt"",
+                            ""SourceName"", ""SourceItemId"", ""SentimentScore"", ""SentimentLabel"", ""DetectedLanguage"", ""AffectedAssets"",
+                            ""RssSourceId"", ""IsVipOnly"", ""AssociatedSignalCategoryId""
+                        ) VALUES (
+                            @Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt,
+                            @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets,
+                            @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId
+                        )
+                        ON CONFLICT {conflictTarget} DO NOTHING;";
 
-                    // .ExecuteAsync returns the number of rows affected. 1 for an insert, 0 if it already existed.
-                    var rowsAffected = await connection.ExecuteAsync(command).ConfigureAwait(false);
+                    var command = new CommandDefinition(upsertSql, newsItem, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct);
+                    var rowsAffected = await connection.ExecuteAsync(command);
 
                     if (rowsAffected > 0)
-                    {
-                        _logger.LogInformation("Successfully inserted new NewsItem via MERGE. NewsItemId: {NewsItemId}", newsItem.Id);
-                    }
+                        _logger.LogInformation("Successfully inserted new NewsItem via ON CONFLICT. NewsItemId: {NewsItemId}", newsItem.Id);
                     else
-                    {
-                        _logger.LogInformation("Duplicate NewsItem found (matched by {IdentityColumn}). MERGE operation skipped insert. Title: {Title}", identityColumn, newsItem.Title.Truncate(50));
-                    }
+                        _logger.LogInformation("Duplicate NewsItem found (matched by {ConflictTarget}). ON CONFLICT skipped insert. Title: {Title}", conflictTarget, newsItem.Title.Truncate(50));
 
-                }, cancellationToken).ConfigureAwait(false);
+                }, cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error during MERGE operation for NewsItem {NewsItemId}. Title: {Title}", newsItem.Id, newsItem.Title.Truncate(50));
+                _logger.LogError(ex, "Error during INSERT ON CONFLICT operation for NewsItem {NewsItemId}.", newsItem.Id);
                 throw new RepositoryException($"Failed to add or merge news item '{newsItem.Id}'.", ex);
             }
         }
+
 
         public async Task AddRangeAsync(IEnumerable<NewsItem> newsItems, CancellationToken cancellationToken = default)
         {
@@ -1411,15 +1377,13 @@ WHEN NOT MATCHED BY TARGET THEN
                     await connection.OpenAsync(cancellationToken);
 
                     var sql = @"
-                        INSERT INTO NewsItems (
-                            Id, Title, Link, Summary, FullContent, ImageUrl, PublishedDate, CreatedAt, LastProcessedAt,
-                            SourceName, SourceItemId, SentimentScore, SentimentLabel, DetectedLanguage, AffectedAssets,
-                            RssSourceId, IsVipOnly, AssociatedSignalCategoryId
-                        ) VALUES (
-                            @Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt,
-                            @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets,
-                            @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId
-                        );";
+                UPDATE public.""NewsItems"" SET
+                    ""Title"" = @Title, ""Link"" = @Link, ""Summary"" = @Summary, ""FullContent"" = @FullContent,
+                    ""ImageUrl"" = @ImageUrl, ""PublishedDate"" = @PublishedDate, ""LastProcessedAt"" = @LastProcessedAt,
+                    ""SourceName"" = @SourceName, ""SourceItemId"" = @SourceItemId, ""SentimentScore"" = @SentimentScore,
+                    ""SentimentLabel"" = @SentimentLabel, ""DetectedLanguage"" = @DetectedLanguage, ""AffectedAssets"" = @AffectedAssets,
+                    ""RssSourceId"" = @RssSourceId, ""IsVipOnly"" = @IsVipOnly, ""AssociatedSignalCategoryId"" = @AssociatedSignalCategoryId
+                WHERE ""Id"" = @Id;";
 
                     // Dapper can execute a single SQL statement multiple times for an IEnumerable of parameters
                     // This is efficient for bulk inserts.
@@ -1557,7 +1521,7 @@ WHEN NOT MATCHED BY TARGET THEN
 
                     // Note: If NewsItem has other entities that cascade delete, deleting the NewsItem will handle it.
                     // For performance, a simple DELETE is often best if cascades are set in DB.
-                    var sql = "DELETE FROM NewsItems WHERE Id = @Id;";
+                    var sql = @"DELETE FROM public.""NewsItems"" WHERE ""Id"" = @Id;";
                     var rowsAffected = await connection.ExecuteAsync(new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds)); // <--- ADDED: Pass CommandTimeout
 
                     if (rowsAffected == 0)

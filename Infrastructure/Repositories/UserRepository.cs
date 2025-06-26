@@ -10,13 +10,16 @@ using Domain.Enums; // For UserLevel enum (stored as string in DB)
 using Microsoft.Data.SqlClient; // SQL Server specific connection
 using Microsoft.Extensions.Configuration; // To access connection strings
 using Microsoft.Extensions.Logging; // For logging
+using Npgsql;
 using Polly; // For resilience policies
 using Polly.Retry; // For retry policies
 using Polly.Timeout; // For custom RepositoryException
 using Shared.Extensions;
 using System.Data; // Common Ado.Net interfaces like IDbConnection, IDbTransaction
 using System.Data.Common; // For DbException (base class for database exceptions)
-using System.Linq.Expressions; // Still included, but will throw NotSupportedException
+using System.Linq.Expressions;
+using System.Text;
+using System.Text.Json; // Still included, but will throw NotSupportedException
 #endregion
 
 namespace Infrastructure.Repositories
@@ -30,7 +33,114 @@ namespace Infrastructure.Repositories
         private readonly string _connectionString;
         private readonly ILogger<UserRepository> _logger;
         private readonly AsyncRetryPolicy _retryPolicy; // Polly policy for DB operations
+        private class UserWithRelatedDataDto
+        {
+            // --- User Properties (from Users table) ---
+            public Guid Id { get; set; }
+            public string Username { get; set; } = default!;
+            public string TelegramId { get; set; } = default!;
+            public string Email { get; set; } = default!;
+            public string Level { get; set; } = default!; // Mapped from DB string
+            public DateTime CreatedAt { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+            public bool EnableGeneralNotifications { get; set; }
+            public bool EnableVipSignalNotifications { get; set; }
+            public bool EnableRssNewsNotifications { get; set; }
+            public string PreferredLanguage { get; set; } = default!;
 
+            // --- JSON Properties for Related Data ---
+            // These properties will hold the JSON strings returned by PostgreSQL's json_agg.
+            // We expect them to be in the format '[{"Id": "...", ...}]' or '[]' if no records exist.
+            public string TokenWalletJson { get; set; } = default!;
+            public string SubscriptionsJson { get; set; } = default!;
+            public string PreferencesJson { get; set; } = default!;
+
+            /// <summary>
+            /// Converts this DTO into the User domain entity, deserializing JSON data
+            /// and utilizing the existing internal DTOs' ToDomainEntity methods.
+            /// </summary>
+            /// <param name="logger">The logger to use for reporting deserialization errors.</param>
+            /// <returns>The constructed User domain entity.</returns>
+            public User ToDomainEntity(ILogger logger)
+            {
+                // Create the main user entity using the properties from this DTO.
+                // This is similar to what UserDbDto.ToDomainEntity() does, but here we map directly.
+                var user = new User
+                {
+                    Id = Id,
+                    Username = Username,
+                    TelegramId = TelegramId,
+                    Email = Email,
+                    Level = Enum.Parse<UserLevel>(Level), // Convert string back to enum
+                    CreatedAt = CreatedAt,
+                    UpdatedAt = UpdatedAt,
+                    EnableGeneralNotifications = EnableGeneralNotifications,
+                    EnableVipSignalNotifications = EnableVipSignalNotifications,
+                    EnableRssNewsNotifications = EnableRssNewsNotifications,
+                    PreferredLanguage = PreferredLanguage
+                };
+
+                // --- Deserialize Token Wallet ---
+                TokenWalletDbDto? singleWalletDto = null;
+                // Check for null, empty string, or the specific "[]" string that json_agg can return for zero rows.
+                if (!string.IsNullOrWhiteSpace(TokenWalletJson) && TokenWalletJson != "[]")
+                {
+                    try
+                    {
+                        // Deserialize the JSON array string into a list of TokenWalletDbDto.
+                        var walletDtos = System.Text.Json.JsonSerializer.Deserialize<List<TokenWalletDbDto>>(TokenWalletJson);
+                        if (walletDtos != null && walletDtos.Any())
+                        {
+                            singleWalletDto = walletDtos.First(); // Get the first (and likely only) wallet
+                        }
+                    }
+                    catch (JsonException jsonEx)
+                    {
+                        // Log any errors during JSON deserialization. For read operations, it's often best to continue with default values.
+                        logger.LogError(jsonEx, "UserRepository: Failed to deserialize TokenWalletJson for User {UserId}. JSON: {TokenWalletJson}", user.Id, TokenWalletJson);
+                    }
+                }
+                // Assign the domain entity, providing a default if not found or if deserialization failed.
+                user.TokenWallet = singleWalletDto?.ToDomainEntity() ?? TokenWallet.Create(user.Id); // Assuming TokenWallet.Create() provides a default instance.
+
+                // --- Deserialize Subscriptions ---
+                List<SubscriptionDbDto>? subscriptionDtos = null;
+                if (!string.IsNullOrWhiteSpace(SubscriptionsJson) && SubscriptionsJson != "[]")
+                {
+                    try
+                    {
+                        subscriptionDtos = System.Text.Json.JsonSerializer.Deserialize<List<SubscriptionDbDto>>(SubscriptionsJson);
+                    }
+                    catch (JsonException jsonEx)
+                    {
+                        logger.LogError(jsonEx, "UserRepository: Failed to deserialize SubscriptionsJson for User {UserId}. JSON: {SubscriptionsJson}", user.Id, SubscriptionsJson);
+                    }
+                }
+                // Assign the domain entity list, providing an empty list if not found or if deserialization failed.
+                user.Subscriptions = subscriptionDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? new List<Subscription>();
+
+                // --- Deserialize User Signal Preferences ---
+                List<UserSignalPreferenceDbDto>? preferenceDtos = null;
+                if (!string.IsNullOrWhiteSpace(PreferencesJson) && PreferencesJson != "[]")
+                {
+                    try
+                    {
+                        preferenceDtos = System.Text.Json.JsonSerializer.Deserialize<List<UserSignalPreferenceDbDto>>(PreferencesJson);
+                    }
+                    catch (JsonException jsonEx)
+                    {
+                        logger.LogError(jsonEx, "UserRepository: Failed to deserialize PreferencesJson for User {UserId}. JSON: {PreferencesJson}", user.Id, PreferencesJson);
+                    }
+                }
+                // Assign the domain entity list, providing an empty list if not found or if deserialization failed.
+                user.Preferences = preferenceDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? new List<UserSignalPreference>();
+
+                // Transactions are not fetched in this query. Ensure the list is initialized.
+                user.Transactions = new List<Transaction>();
+
+                return user;
+            }
+        }
         // --- Internal DTOs for Dapper Mapping ---
         private class UserDbDto
         {
@@ -158,177 +268,327 @@ namespace Infrastructure.Repositories
         }
 
         // --- Helper to create a new SqlConnection ---
-        private SqlConnection CreateConnection()
+        private NpgsqlConnection CreateConnection()
         {
             try
             {
-                return new SqlConnection(_connectionString);
+                // --- CHANGE: Returning NpgsqlConnection ---
+                return new NpgsqlConnection(_connectionString);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "UserRepository: Error creating database connection. ConnectionString: {ConnectionString}", _connectionString);
+                _logger.LogError(ex, "UserRepository: Error creating PostgreSQL database connection. ConnectionString: {ConnectionString}", _connectionString);
                 throw;
             }
-         
         }
+        private const string UserWithRelatedDataSqlFragment = @"
+            SELECT
+                u.""Id"", u.""Username"", u.""TelegramId"", u.""Email"", u.""Level"", u.""CreatedAt"", u.""UpdatedAt"",
+                u.""EnableGeneralNotifications"", u.""EnableVipSignalNotifications"", u.""EnableRssNewsNotifications"", u.""PreferredLanguage"",
+                (
+                    SELECT COALESCE(json_agg(json_build_object(
+                        'Id', tw.""Id"", 'UserId', tw.""UserId"", 'Balance', tw.""Balance"", 'IsActive', tw.""IsActive"", 'CreatedAt', tw.""CreatedAt"", 'UpdatedAt', tw.""UpdatedAt""
+                    )), '[]'::json)
+                    FROM public.""TokenWallets"" tw WHERE tw.""UserId"" = u.""Id""
+                ) AS TokenWalletJson,
+                (
+                    SELECT COALESCE(json_agg(json_build_object(
+                        'Id', s.""Id"", 'UserId', s.""UserId"", 'StartDate', s.""StartDate"", 'EndDate', s.""EndDate"", 'Status', s.""Status"",
+                        'ActivatingTransactionId', s.""ActivatingTransactionId"", 'CreatedAt', s.""CreatedAt"", 'UpdatedAt', s.""UpdatedAt""
+                    )), '[]'::json)
+                    FROM public.""Subscriptions"" s WHERE s.""UserId"" = u.""Id""
+                ) AS SubscriptionsJson,
+                (
+                    SELECT COALESCE(json_agg(json_build_object(
+                        'Id', usp.""Id"", 'UserId', usp.""UserId"", 'CategoryId', usp.""CategoryId"", 'CreatedAt', usp.""CreatedAt""
+                    )), '[]'::json)
+                    FROM public.""UserSignalPreferences"" usp WHERE usp.""UserId"" = u.""Id""
+                ) AS PreferencesJson
+            FROM public.""Users"" u";
 
         // --- Read Operations ---
 
         /// <inheritdoc />
         public async Task<IEnumerable<User>> GetUsersForNewsNotificationAsync(
-           Guid? newsItemSignalCategoryId,
-           bool isNewsItemVipOnly,
-           CancellationToken cancellationToken = default)
+     Guid? newsItemSignalCategoryId,
+     bool isNewsItemVipOnly,
+     CancellationToken cancellationToken = default)
         {
             _logger.LogInformation(
                 "UserRepository: Fetching users for news notification. CategoryId: {CategoryId}, IsVipOnly: {IsVip}",
                 newsItemSignalCategoryId, isNewsItemVipOnly);
 
+            // --- 1. BUILD THE SQL QUERY ---
+            // Start with the base query that fetches users and their related data as JSON.
+            // We will dynamically add WHERE clauses based on the input parameters.
+            var baseSql = new StringBuilder(UserWithRelatedDataSqlFragment); // Use the shared SQL fragment
+            baseSql.AppendLine("WHERE u.\"EnableRssNewsNotifications\" = true");
+
+            var parameters = new DynamicParameters();
+
+            // Clause for VIP-only news
+            if (isNewsItemVipOnly)
+            {
+                // For PostgreSQL, use NOW() or CURRENT_TIMESTAMP for the current UTC time.
+                // The UserLevel enum values ('Premium', 'Vip') should match what's in your DB.
+                baseSql.AppendLine(@"
+            AND u.""Level"" IN ('Premium', 'Vip') 
+            AND EXISTS (
+                SELECT 1 FROM public.""Subscriptions"" s_sub 
+                WHERE s_sub.""UserId"" = u.""Id"" 
+                  AND s_sub.""StartDate"" <= NOW() 
+                  AND s_sub.""EndDate"" >= NOW() 
+                  AND s_sub.""Status"" = 'Active'
+            )");
+            }
+
+            // Clause for specific news categories
+            if (newsItemSignalCategoryId.HasValue)
+            {
+                baseSql.AppendLine(@"
+            AND (
+                NOT EXISTS (SELECT 1 FROM public.""UserSignalPreferences"" usp_pref WHERE usp_pref.""UserId"" = u.""Id"") 
+                OR EXISTS (
+                    SELECT 1 FROM public.""UserSignalPreferences"" usp_pref 
+                    WHERE usp_pref.""UserId"" = u.""Id"" AND usp_pref.""CategoryId"" = @NewsItemSignalCategoryId
+                )
+            )");
+                parameters.Add("NewsItemSignalCategoryId", newsItemSignalCategoryId.Value);
+            }
+
+            var finalSql = baseSql.ToString();
+
             try
             {
-                return await _retryPolicy.ExecuteAsync(async () =>
+                // Use the combined Polly policy for resilience.
+                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+
+                return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
+                    await connection.OpenAsync(ct);
 
-                    var parameters = new DynamicParameters();
-                    if (newsItemSignalCategoryId.HasValue)
-                    {
-                        parameters.Add("NewsItemSignalCategoryId", newsItemSignalCategoryId.Value);
-                    }
-
-                    // SQL Server specific query. Columns should match DTO properties for auto-mapping.
-                    // SELECT u.*, tw.*, s.*, usp.* is used for Dapper's multi-mapping to grab all fields.
-                    var sql = @"
-                        SELECT
-                            u.Id, u.Username, u.TelegramId, u.Email, u.Level, u.CreatedAt, u.UpdatedAt,
-                            u.EnableGeneralNotifications, u.EnableVipSignalNotifications, u.EnableRssNewsNotifications, u.PreferredLanguage,
-                            tw.Id, tw.UserId, tw.Balance, tw.IsActive, tw.CreatedAt, tw.UpdatedAt,
-                            s.Id, s.UserId, s.StartDate, s.EndDate, s.Status, s.ActivatingTransactionId, s.CreatedAt, s.UpdatedAt,
-                            usp.Id, usp.UserId, usp.CategoryId, usp.CreatedAt
-                        FROM Users u
-                        LEFT JOIN TokenWallets tw ON u.Id = tw.UserId
-                        LEFT JOIN Subscriptions s ON u.Id = s.UserId
-                        LEFT JOIN UserSignalPreferences usp ON u.Id = usp.UserId
-                        WHERE u.EnableRssNewsNotifications = 1"; // SQL Server boolean true
-
-                    if (isNewsItemVipOnly)
-                    {
-                        // Assuming VIP access is tied to User.Level being 'Premium' or 'Vip' AND having an active subscription.
-                        // Adjust 'Premium', 'Vip' if your UserLevel enum/DB values are different.
-                        sql += " AND u.Level IN ('Premium', 'Vip') AND EXISTS (SELECT 1 FROM Subscriptions s_sub WHERE s_sub.UserId = u.Id AND s_sub.StartDate <= GETUTCDATE() AND s_sub.EndDate >= GETUTCDATE() AND s_sub.Status = 'Active')";
-                    }
-
-                    if (newsItemSignalCategoryId.HasValue)
-                    {
-                        // Users with NO preferences OR users who prefer this specific category
-                        sql += " AND (NOT EXISTS (SELECT 1 FROM UserSignalPreferences usp_pref WHERE usp_pref.UserId = u.Id) OR EXISTS (SELECT 1 FROM UserSignalPreferences usp_pref WHERE usp_pref.UserId = u.Id AND usp_pref.CategoryId = @NewsItemSignalCategoryId))";
-                    }
-
-                    // Use a Dictionary to maintain unique User objects and aggregate their collections
-                    var userMap = new Dictionary<Guid, User>();
-
-                    // Dapper's QueryAsync with multi-mapping
-                    // The splitOn parameter needs to match the column names where new entities begin
-                    // Ensure the order of column names in the SELECT clause matches the order of DTOs here.
-                    var result = await connection.QueryAsync<UserDbDto, TokenWalletDbDto, SubscriptionDbDto, UserSignalPreferenceDbDto, User>(
-                        sql,
-                        (userDto, tokenWalletDto, subscriptionDto, userSignalPreferenceDto) =>
-                        {
-                            // Get or create the User entity
-                            if (!userMap.TryGetValue(userDto.Id, out var user))
-                            {
-                                user = userDto.ToDomainEntity();
-                                user.Subscriptions = [];
-                                user.Preferences = [];
-                                user.Transactions = []; // Transactions are not included in this query
-                                userMap.Add(user.Id, user);
-                            }
-
-                            // Assign TokenWallet (if not already assigned and DTO is not null)
-                            if (tokenWalletDto != null && user.TokenWallet == null)
-                            {
-                                user.TokenWallet = tokenWalletDto.ToDomainEntity();
-                            }
-                            // Ensure every user has a TokenWallet instance (even if default/empty)
-                            user.TokenWallet ??= TokenWallet.Create(user.Id); // Default wallet
-
-
-                            // Add Subscription to the user's collection if not already added
-                            if (subscriptionDto != null && !user.Subscriptions.Any(s => s.Id == subscriptionDto.Id))
-                            {
-                                user.Subscriptions.Add(subscriptionDto.ToDomainEntity());
-                            }
-
-                            // Add UserSignalPreference to the user's collection if not already added
-                            if (userSignalPreferenceDto != null && !user.Preferences.Any(usp => usp.Id == userSignalPreferenceDto.Id))
-                            {
-                                user.Preferences.Add(userSignalPreferenceDto.ToDomainEntity());
-                            }
-
-                            return user; // Dapper expects to return the parent entity for multi-mapping
-                        },
-                        param: parameters,
-                        splitOn: "Id,Id,Id" // Split on the 'Id' column of TokenWallet, Subscription, UserSignalPreference respectively
+                    // --- 2. EXECUTE THE QUERY ---
+                    // Execute the single, powerful JSON aggregation query.
+                    // Dapper will map each row to our UserWithRelatedDataDto.
+                    var userDtos = await connection.QueryAsync<UserWithRelatedDataDto>(
+                        new CommandDefinition(finalSql, parameters, cancellationToken: ct)
                     );
 
-                    // The 'result' IEnumerable will contain duplicate User objects (one for each related row).
-                    // userMap.Values already contains the unique, fully hydrated User objects.
-                    var eligibleUsers = userMap.Values.ToList();
+                    // --- 3. MAP TO DOMAIN ENTITIES ---
+                    // Convert the list of DTOs to a list of domain User entities.
+                    // The ToDomainEntity method handles the JSON deserialization for each user.
+                    var eligibleUsers = userDtos
+                        .Select(dto => dto.ToDomainEntity(_logger))
+                        .ToList();
 
                     _logger.LogInformation("UserRepository: Found {UserCount} eligible users for news notification.", eligibleUsers.Count);
                     return eligibleUsers;
-                });
+
+                }, cancellationToken);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UserRepository: Error fetching users for news notification.");
-                throw new RepositoryException("Failed to fetch users for news notification.", ex); // Wrap in custom exception
+                throw new RepositoryException("Failed to fetch users for news notification.", ex);
             }
         }
 
 
         /// <inheritdoc />
-        public async Task<User?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+        // Make sure the UserWithRelatedDataDto class is defined within your UserRepository class
+        // as shown in the previous example for GetByTelegramIdAsync.
+
+        // If you haven't added it yet, here's the DTO again for context:
+        /*
+        private class UserWithRelatedDataDto
         {
-            _logger.LogTrace("UserRepository: Fetching user by ID: {UserId}.", id);
-            return await _retryPolicy.ExecuteAsync(async () =>
+            public Guid Id { get; set; }
+            public string Username { get; set; } = default!;
+            public string TelegramId { get; set; } = default!;
+            public string Email { get; set; } = default!;
+            public string Level { get; set; } = default!;
+            public DateTime CreatedAt { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+            public bool EnableGeneralNotifications { get; set; }
+            public bool EnableVipSignalNotifications { get; set; }
+            public bool EnableRssNewsNotifications { get; set; }
+            public string PreferredLanguage { get; set; } = default!;
+
+            public string TokenWalletJson { get; set; } = default!;
+            public string SubscriptionsJson { get; set; } = default!;
+            public string PreferencesJson { get; set; } = default!;
+
+            public User ToDomainEntity(ILogger logger)
             {
-                using var connection = CreateConnection();
-                await connection.OpenAsync(cancellationToken);
-
-                // Use QueryMultiple to fetch main user and related entities in one roundtrip
-                var sql = @"
-                    SELECT Id, Username, TelegramId, Email, Level, CreatedAt, UpdatedAt, EnableGeneralNotifications, EnableVipSignalNotifications, EnableRssNewsNotifications, PreferredLanguage
-                    FROM Users WHERE Id = @Id;
-
-                    SELECT Id, UserId, Balance, IsActive, CreatedAt, UpdatedAt
-                    FROM TokenWallets WHERE UserId = @Id;
-
-                    SELECT Id, UserId, StartDate, EndDate, Status, ActivatingTransactionId, CreatedAt, UpdatedAt
-                    FROM Subscriptions WHERE UserId = @Id;
-
-                    SELECT Id, UserId, CategoryId, CreatedAt
-                    FROM UserSignalPreferences WHERE UserId = @Id;";
-
-                using var multi = await connection.QueryMultipleAsync(sql, new { Id = id });
-
-                var userDto = await multi.ReadFirstOrDefaultAsync<UserDbDto>();
-                if (userDto == null)
+                var user = new User
                 {
-                    return null;
-                }
+                    Id = Id,
+                    Username = Username,
+                    TelegramId = TelegramId,
+                    Email = Email,
+                    Level = Enum.Parse<UserLevel>(Level),
+                    CreatedAt = CreatedAt,
+                    UpdatedAt = UpdatedAt,
+                    EnableGeneralNotifications = EnableGeneralNotifications,
+                    EnableVipSignalNotifications = EnableVipSignalNotifications,
+                    EnableRssNewsNotifications = EnableRssNewsNotifications,
+                    PreferredLanguage = PreferredLanguage
+                };
 
-                var user = userDto.ToDomainEntity();
-                user.TokenWallet = (await multi.ReadFirstOrDefaultAsync<TokenWalletDbDto>())?.ToDomainEntity() ?? TokenWallet.Create(user.Id);
-                user.Subscriptions = (await multi.ReadAsync<SubscriptionDbDto>()).Select(s => s.ToDomainEntity()).ToList();
-                user.Preferences = (await multi.ReadAsync<UserSignalPreferenceDbDto>()).Select(usp => usp.ToDomainEntity()).ToList();
-                user.Transactions = []; // Not fetched by default in this query
+                TokenWalletDbDto? singleWalletDto = null;
+                if (!string.IsNullOrWhiteSpace(TokenWalletJson) && TokenWalletJson != "[]")
+                {
+                    try {
+                        var walletDtos = System.Text.Json.JsonSerializer.Deserialize<List<TokenWalletDbDto>>(TokenWalletJson);
+                        if (walletDtos != null && walletDtos.Any()) {
+                            singleWalletDto = walletDtos.First();
+                        }
+                    } catch (JsonException jsonEx) {
+                        logger.LogError(jsonEx, "UserRepository: Failed to deserialize TokenWalletJson for User {UserId}. JSON: {TokenWalletJson}", user.Id, TokenWalletJson);
+                    }
+                }
+                user.TokenWallet = singleWalletDto?.ToDomainEntity() ?? TokenWallet.Create(user.Id);
+
+                List<SubscriptionDbDto>? subscriptionDtos = null;
+                if (!string.IsNullOrWhiteSpace(SubscriptionsJson) && SubscriptionsJson != "[]")
+                {
+                    try {
+                        subscriptionDtos = System.Text.Json.JsonSerializer.Deserialize<List<SubscriptionDbDto>>(SubscriptionsJson);
+                    } catch (JsonException jsonEx) {
+                        logger.LogError(jsonEx, "UserRepository: Failed to deserialize SubscriptionsJson for User {UserId}. JSON: {SubscriptionsJson}", user.Id, SubscriptionsJson);
+                    }
+                }
+                user.Subscriptions = subscriptionDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? new List<Subscription>();
+
+                List<UserSignalPreferenceDbDto>? preferenceDtos = null;
+                if (!string.IsNullOrWhiteSpace(PreferencesJson) && PreferencesJson != "[]")
+                {
+                    try {
+                        preferenceDtos = System.Text.Json.JsonSerializer.Deserialize<List<UserSignalPreferenceDbDto>>(PreferencesJson);
+                    } catch (JsonException jsonEx) {
+                        logger.LogError(jsonEx, "UserRepository: Failed to deserialize PreferencesJson for User {UserId}. JSON: {PreferencesJson}", user.Id, PreferencesJson);
+                    }
+                }
+                user.Preferences = preferenceDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? new List<UserSignalPreference>();
+
+                user.Transactions = new List<Transaction>(); // Not fetched in this query
 
                 return user;
-            });
+            }
         }
+        */
 
+
+        // ... (Rest of your UserRepository class) ...
+
+        /// <inheritdoc />
+        public async Task<User?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            _logger.LogTrace("UserRepository: Fetching user by ID: {UserId} using PostgreSQL JSON aggregation.", id);
+
+            // --- OPTIMIZED SQL USING PostgreSQL JSON AGGREGATION WITH PROPER IDENTIFIERS ---
+            // CRITICAL: All column and table references MUST match the DDL casing and quotes.
+            const string sql = @"
+                SELECT
+                    u.""Id"",
+                    u.""Username"",
+                    u.""TelegramId"",
+                    u.""Email"",
+                    u.""Level"",
+                    u.""CreatedAt"",
+                    u.""UpdatedAt"",
+                    u.""EnableGeneralNotifications"",
+                    u.""EnableVipSignalNotifications"",
+                    u.""EnableRssNewsNotifications"",
+                    u.""PreferredLanguage"",
+                    ( -- Aggregate TokenWallets into a JSON array
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'Id', tw.""Id"",
+                            'UserId', tw.""UserId"",
+                            'Balance', tw.Balance, -- Assuming Balance was created without quotes, otherwise quote it.
+                            'IsActive', tw.IsActive, -- Assuming IsActive was created without quotes, otherwise quote it.
+                            'CreatedAt', tw.""CreatedAt"",
+                            'UpdatedAt', tw.""UpdatedAt""
+                        )), '[]'::json)
+                        FROM public.""TokenWallets"" tw
+                        WHERE tw.""UserId"" = u.""Id""
+                    ) AS TokenWalletJson,
+                    ( -- Aggregate Subscriptions into a JSON array
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'Id', s.""Id"",
+                            'UserId', s.""UserId"",
+                            'StartDate', s.StartDate, -- Assuming StartDate was created without quotes
+                            'EndDate', s.EndDate,     -- Assuming EndDate was created without quotes
+                            'Status', s.Status,       -- Assuming Status was created without quotes
+                            'ActivatingTransactionId', s.ActivatingTransactionId, -- Assuming this was created without quotes
+                            'CreatedAt', s.""CreatedAt"",
+                            'UpdatedAt', s.""UpdatedAt""
+                        )), '[]'::json)
+                        FROM public.""Subscriptions"" s
+                        WHERE s.""UserId"" = u.""Id""
+                    ) AS SubscriptionsJson,
+                    ( -- Aggregate UserSignalPreferences into a JSON array
+                        SELECT COALESCE(json_agg(json_build_object(
+                            'Id', usp.""Id"",
+                            'UserId', usp.""UserId"",
+                            'CategoryId', usp.CategoryId, -- Assuming CategoryId was created without quotes
+                            'CreatedAt', usp.""CreatedAt""
+                        )), '[]'::json)
+                        FROM public.""UserSignalPreferences"" usp
+                        WHERE usp.""UserId"" = u.""Id""
+                    ) AS PreferencesJson
+                FROM public.""Users"" u
+                WHERE u.""Id"" = @Id;";
+       
+            try
+            {
+                // Apply the combined resilience policy (timeout wrapping retry)
+                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+
+                // Execute the database operation within the policy
+                return await combinedPolicy.ExecuteAsync(async (ct) =>
+                {
+                    using var connection = CreateConnection(); // Ensure this returns NpgsqlConnection
+                    await connection.OpenAsync(ct); // Pass the policy-managed cancellation token
+
+                    // Execute the single, complex SQL query and map directly to our UserWithRelatedDataDto.
+                    // Dapper's CommandDefinition ensures the cancellation token is respected.
+                    var userWithRelatedDataDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                        new CommandDefinition(sql, new { Id = id }, cancellationToken: ct) // Parameter name is 'Id' matching @Id
+                    );
+
+                    // If no user was found with the given ID
+                    if (userWithRelatedDataDto == null)
+                    {
+                        _logger.LogTrace("User with ID {UserId} not found.", id);
+                        return null;
+                    }
+
+                    // Convert the DTO (which includes JSON deserialization) into the domain entity.
+                    // Pass the logger to the DTO's method for handling potential JSON deserialization errors.
+                    var user = userWithRelatedDataDto.ToDomainEntity(_logger);
+
+                    _logger.LogDebug("Successfully fetched user {UserId} with all related entities.", id);
+                    return user;
+
+                }, cancellationToken); // Pass the original cancellationToken to the policy execution
+            }
+            catch (TimeoutRejectedException ex)
+            {
+                // Catch specific timeout exceptions from Polly
+                _logger.LogError(ex, "UserRepository: Operation timed out after {TimeoutDuration} while fetching user by ID {UserId}.", 30, id);
+                // Rethrow as a more specific domain/application exception for better error handling upstream.
+                throw new RepositoryException($"The operation to fetch user by ID {id} timed out.", ex);
+            }
+            catch (Exception ex)
+            {
+                // Catch other exceptions that might occur during query execution or retries
+                _logger.LogError(ex, "Failed to get user by ID {UserId} after retries and within timeout.", id);
+                // Rethrow as a more specific domain/application exception.
+                throw new RepositoryException($"An error occurred while fetching user by ID: {id}", ex);
+            }
+        }
         /// <inheritdoc />
         /// <summary>
         /// Fetches a user and their complete related entity graph by their Telegram ID in a single,
@@ -339,99 +599,34 @@ namespace Infrastructure.Repositories
         /// <returns>The complete User entity, or null if not found.</returns>
         public async Task<User?> GetByTelegramIdAsync(string telegramId, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(telegramId))
-            {
-                _logger.LogWarning("UserRepository: GetByTelegramIdAsync called with null or empty telegramId.");
-                return null;
-            }
+            if (string.IsNullOrWhiteSpace(telegramId)) return null;
 
-            _logger.LogTrace("UserRepository: Fetching user and related entities by TelegramID: {TelegramId} in a single trip.", telegramId);
+            _logger.LogTrace("UserRepository: Fetching user by TelegramID: {TelegramId}", telegramId);
 
-            // ✅✅ --- OPTIMIZATION 1: COMBINED SQL FOR A SINGLE ROUND-TRIP --- ✅✅
-            // All queries are now in one command, executed by QueryMultiple.
-            const string combinedSql = @"
-        -- 1st Result: The main user
-        SELECT Id, Username, TelegramId, Email, Level, CreatedAt, UpdatedAt, EnableGeneralNotifications, EnableVipSignalNotifications, EnableRssNewsNotifications, PreferredLanguage
-        FROM Users 
-        WHERE TelegramId = @TelegramId;
-
-        -- 2nd Result: The user's wallet (if exists)
-        SELECT w.Id, w.UserId, w.Balance, w.IsActive, w.CreatedAt, w.UpdatedAt
-        FROM TokenWallets w
-        INNER JOIN Users u ON w.UserId = u.Id
-        WHERE u.TelegramId = @TelegramId;
-
-        -- 3rd Result: The user's subscriptions
-        SELECT s.Id, s.UserId, s.StartDate, s.EndDate, s.Status, s.ActivatingTransactionId, s.CreatedAt, s.UpdatedAt
-        FROM Subscriptions s
-        INNER JOIN Users u ON s.UserId = u.Id
-        WHERE u.TelegramId = @TelegramId;
-
-        -- 4th Result: The user's signal preferences
-        SELECT p.Id, p.UserId, p.CategoryId, p.CreatedAt
-        FROM UserSignalPreferences p
-        INNER JOIN Users u ON p.UserId = u.Id
-        WHERE u.TelegramId = @TelegramId;";
+            var sql = $"{UserWithRelatedDataSqlFragment} WHERE u.\"TelegramId\" = @TelegramId;";
 
             try
             {
-                // --- THIS IS THE CORE CHANGE ---
-                // We create a combined policy on the fly. The timeout policy wraps the retry policy.
-                // This means the 5-minute timer starts, and WITHIN that time, Polly can perform its retries.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
-
                 return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
-                    // The 'ct' CancellationToken passed here is now managed by the Pessimistic Timeout policy.
-                    // If the timeout is reached, this token will be cancelled.
-
                     using var connection = CreateConnection();
-                    // Pass the policy-managed token to OpenAsync
                     await connection.OpenAsync(ct);
+                    var userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                        new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct));
 
-                    // Dapper's CommandDefinition will respect the cancellation token.
-                    using var multi = await connection.QueryMultipleAsync(
-                        new CommandDefinition(combinedSql, new { TelegramId = telegramId }, cancellationToken: ct)
-                    );
+                    if (userDto == null) return null;
+                    return userDto.ToDomainEntity(_logger);
 
-                    var userDto = await multi.ReadFirstOrDefaultAsync<UserDbDto>();
-                    if (userDto == null)
-                    {
-                        _logger.LogTrace("User with TelegramID {TelegramId} not found.", telegramId);
-                        return null;
-                    }
-
-                    var user = userDto.ToDomainEntity();
-
-                    var walletDto = await multi.ReadFirstOrDefaultAsync<TokenWalletDbDto>();
-                    user.TokenWallet = walletDto?.ToDomainEntity() ?? TokenWallet.Create(user.Id);
-
-                    var subscriptionsDto = await multi.ReadAsync<SubscriptionDbDto>();
-                    user.Subscriptions = subscriptionsDto.Select(s => s.ToDomainEntity()).ToList();
-
-                    var preferencesDto = await multi.ReadAsync<UserSignalPreferenceDbDto>();
-                    user.Preferences = preferencesDto.Select(usp => usp.ToDomainEntity()).ToList();
-
-                    user.Transactions = [];
-
-                    _logger.LogDebug("Successfully fetched user {UserId} from TelegramID {TelegramId}.", user.Id, telegramId);
-                    return user;
-
-                }, cancellationToken); // Pass the original cancellationToken here
-            }
-            // --- CATCHING THE TIMEOUT EXCEPTION ---
-            catch (TimeoutRejectedException ex)
-            {
-                _logger.LogError(ex, "UserRepository: Operation timed out after 5 minutes while fetching user by TelegramID {TelegramId}.", telegramId);
-                // Rethrow as a more specific domain exception
-                throw new RepositoryException($"The operation to fetch user by TelegramID {telegramId} timed out.", ex);
+                }, cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to get user by TelegramID {TelegramId} after retries and within timeout.", telegramId);
+                _logger.LogError(ex, "Failed to get user by TelegramID {TelegramId}", telegramId);
                 throw new RepositoryException($"An error occurred while fetching user by TelegramID: {telegramId}", ex);
             }
         }
+
 
         /// <summary>
         /// Fetches a user and their complete related entity graph by their email address.
@@ -555,9 +750,11 @@ namespace Infrastructure.Repositories
         /// efficient, and resilient Dapper transaction. This method is designed for high performance
         /// and data integrity, with comprehensive, sanitized logging.
         /// </summary>
+        // ... (rest of your UserRepository class including ILoggingSanitizer, _logger, _retryPolicy, _timeoutPolicy, CreateConnection, UserDbDto, TokenWalletDbDto, etc.) ...
+
         public async Task AddAsync(User user, CancellationToken cancellationToken = default)
         {
-            // --- 1. Input Validation & Security ---
+            // --- 1. Input Validation & Security (This part is fine) ---
             if (user == null)
             {
                 _logger.LogError("UserRepository: Attempted to add a null User object.");
@@ -580,25 +777,24 @@ namespace Infrastructure.Repositories
             _logger.LogInformation("UserRepository: Preparing to add new user '{SanitizedUsername}' with Email '{SanitizedEmail}'.",
                                    sanitizedUsername, sanitizedEmail);
 
-            // --- 2. Combined SQL for Efficiency ---
-            // Combine both INSERT statements into a single command text.
-            // This reduces network latency by sending one command to the database instead of two.
+            // --- 2. Corrected SQL with Quoted Identifiers ---
+            // All table and column names that were created with quotes must be quoted here.
             const string insertSql = @"
         -- Statement 1: Insert the User
-        INSERT INTO Users (Id, Username, TelegramId, Email, Level, CreatedAt, UpdatedAt, EnableGeneralNotifications, EnableVipSignalNotifications, EnableRssNewsNotifications, PreferredLanguage)
+        INSERT INTO public.""Users"" (""Id"", ""Username"", ""TelegramId"", ""Email"", ""Level"", ""CreatedAt"", ""UpdatedAt"", ""EnableGeneralNotifications"", ""EnableVipSignalNotifications"", ""EnableRssNewsNotifications"", ""PreferredLanguage"")
         VALUES (@UserId, @Username, @TelegramId, @Email, @Level, @CreatedAt, @UpdatedAt, @EnableGeneralNotifications, @EnableVipSignalNotifications, @EnableRssNewsNotifications, @PreferredLanguage);
 
         -- Statement 2: Insert the TokenWallet
-        INSERT INTO TokenWallets (Id, UserId, Balance, IsActive, CreatedAt, UpdatedAt)
+        INSERT INTO public.""TokenWallets"" (""Id"", ""UserId"", ""Balance"", ""IsActive"", ""CreatedAt"", ""UpdatedAt"")
         VALUES (@TokenWalletId, @UserId, @Balance, @IsActive, @TokenWalletCreatedAt, @TokenWalletUpdatedAt);
     ";
 
             try
             {
-                // --- 3. Polly Resilience Policy ---
-                // Execute the entire transaction within the retry policy.
-                // If a transient error occurs, the whole transaction will be rolled back and retried.
-                await _retryPolicy.ExecuteAsync(async (ct) =>
+                // --- 3. Polly Resilience Policy (This part is fine) ---
+                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+
+                await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     await using var connection = CreateConnection();
                     await connection.OpenAsync(ct);
@@ -606,25 +802,20 @@ namespace Infrastructure.Repositories
 
                     try
                     {
-                        // --- 4. Parameterization for Security ---
-                        // Create a single anonymous object with all required parameters.
-                        // Use distinct names for properties that exist in both tables (e.g., Id, CreatedAt).
+                        // --- 4. Parameterization (This part is fine) ---
                         var parameters = new
                         {
-                            // User Parameters
                             UserId = user.Id,
                             user.Username,
                             user.TelegramId,
                             user.Email,
                             Level = user.Level.ToString(),
                             user.CreatedAt,
-                            UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
+                            user.UpdatedAt,
                             user.EnableGeneralNotifications,
                             user.EnableVipSignalNotifications,
                             user.EnableRssNewsNotifications,
                             user.PreferredLanguage,
-
-                            // TokenWallet Parameters (with distinct names where necessary)
                             TokenWalletId = user.TokenWallet.Id,
                             user.TokenWallet.Balance,
                             user.TokenWallet.IsActive,
@@ -632,42 +823,36 @@ namespace Infrastructure.Repositories
                             TokenWalletUpdatedAt = user.TokenWallet.UpdatedAt
                         };
 
-                        // --- 5. Atomic Execution ---
-                        // Execute the combined SQL command within the transaction.
-                        await connection.ExecuteAsync(insertSql, parameters, transaction);
-
-                        // If both inserts succeed without error, commit the transaction.
+                        // --- 5. Atomic Execution (This part is fine) ---
+                        await connection.ExecuteAsync(insertSql, parameters, transaction: transaction);
                         await transaction.CommitAsync(ct);
                     }
                     catch (Exception ex)
                     {
-                        // If any error occurs (e.g., primary key violation, db connection lost),
-                        // roll back the entire transaction.
                         await transaction.RollbackAsync(ct);
                         _logger.LogError(ex, "Transaction failed for user '{SanitizedUsername}'. Rolling back.", sanitizedUsername);
-
-                        // Wrap in a specific repository exception to be caught by the outer block.
                         throw new RepositoryException($"Dapper transaction failed for user '{sanitizedUsername}'.", ex);
                     }
                 }, cancellationToken);
 
                 _logger.LogInformation("UserRepository: Successfully added user '{SanitizedUsername}' and their wallet.", sanitizedUsername);
             }
-            catch (RepositoryException dbEx) // Catch our specific, wrapped exceptions
+            catch (RepositoryException dbEx) // This part is fine
             {
                 _logger.LogError(dbEx, "UserRepository: A database error occurred while adding user '{SanitizedUsername}' after retries. Exception (Sanitized): {SanitizedException}",
                     sanitizedUsername, _logSanitizer.Sanitize(dbEx.GetBaseException().Message));
-                // Re-throw the original exception to the service layer for handling.
                 throw;
             }
-            catch (Exception ex) // Catch any other unexpected errors (e.g., from Polly itself)
+            catch (Exception ex) // This part is fine
             {
                 _logger.LogCritical(ex, "UserRepository: An unexpected critical error occurred while adding user '{SanitizedUsername}'. Exception (Sanitized): {SanitizedException}",
                     sanitizedUsername, _logSanitizer.Sanitize(ex.Message));
                 throw;
             }
         }
-        /// <inheritdoc />
+
+        // In Infrastructure/Repositories/UserRepository.cs
+
         public async Task UpdateAsync(User user, CancellationToken cancellationToken = default)
         {
             if (user == null)
@@ -676,17 +861,51 @@ namespace Infrastructure.Repositories
                 throw new ArgumentNullException(nameof(user));
             }
             _logger.LogInformation("UserRepository: Updating user. UserID: {UserId}, Username: {Username}.", user.Id, user.Username);
+
+            // --- 1. SQL STATEMENTS WITH QUOTED IDENTIFIERS AND PG-SYNTAX ---
+
+            // SQL to update the main User record. All identifiers are quoted.
+            const string updateUserSql = @"
+        UPDATE public.""Users"" SET
+            ""Username"" = @Username,
+            ""TelegramId"" = @TelegramId,
+            ""Email"" = @Email,
+            ""Level"" = @Level,
+            ""UpdatedAt"" = @UpdatedAt,
+            ""EnableGeneralNotifications"" = @EnableGeneralNotifications,
+            ""EnableVipSignalNotifications"" = @EnableVipSignalNotifications,
+            ""EnableRssNewsNotifications"" = @EnableRssNewsNotifications,
+            ""PreferredLanguage"" = @PreferredLanguage
+        WHERE ""Id"" = @Id;";
+
+            // SQL for PostgreSQL UPSERT (INSERT ... ON CONFLICT).
+            // This atomically inserts a TokenWallet or updates it if it already exists.
+            // We specify the unique constraint on ""UserId"" as the conflict target.
+            const string upsertWalletSql = @"
+        INSERT INTO public.""TokenWallets"" (""Id"", ""UserId"", ""Balance"", ""IsActive"", ""CreatedAt"", ""UpdatedAt"")
+        VALUES (@Id, @UserId, @Balance, @IsActive, @CreatedAt, @UpdatedAt)
+        ON CONFLICT (""UserId"") DO UPDATE SET
+            ""Balance"" = EXCLUDED.""Balance"",
+            ""IsActive"" = EXCLUDED.""IsActive"",
+            ""UpdatedAt"" = EXCLUDED.""UpdatedAt"";";
+
             try
             {
-                await _retryPolicy.ExecuteAsync(async () =>
-                {
-                    using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
+                // Use the combined Polly policy for resilience
+                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
-                    using var transaction = connection.BeginTransaction();
+                await combinedPolicy.ExecuteAsync(async (ct) =>
+                {
+                    await using var connection = CreateConnection();
+                    await connection.OpenAsync(ct);
+
+                    // It's crucial that all operations happen within a single transaction for atomicity.
+                    await using var transaction = await connection.BeginTransactionAsync(ct);
                     try
                     {
-                        // Update User
+                        // --- 2. PARAMETER PREPARATION ---
+
+                        // Prepare parameters for the User update
                         var userParams = new
                         {
                             user.Id,
@@ -694,94 +913,73 @@ namespace Infrastructure.Repositories
                             user.TelegramId,
                             user.Email,
                             Level = user.Level.ToString(),
-                            UpdatedAt = DateTime.UtcNow, // Always update UpdatedAt on modification
+                            UpdatedAt = DateTime.UtcNow, // Always set UpdatedAt on modification
                             user.EnableGeneralNotifications,
                             user.EnableVipSignalNotifications,
                             user.EnableRssNewsNotifications,
                             user.PreferredLanguage
                         };
-                        var rowsAffected = await connection.ExecuteAsync(@"
-                            UPDATE Users SET
-                                Username = @Username,
-                                TelegramId = @TelegramId,
-                                Email = @Email,
-                                Level = @Level,
-                                UpdatedAt = @UpdatedAt,
-                                EnableGeneralNotifications = @EnableGeneralNotifications,
-                                EnableVipSignalNotifications = @EnableVipSignalNotifications,
-                                EnableRssNewsNotifications = @EnableRssNewsNotifications,
-                                PreferredLanguage = @PreferredLanguage
-                            WHERE Id = @Id;",
-                            userParams, transaction: transaction);
+
+                        // Execute the User update
+                        var rowsAffected = await connection.ExecuteAsync(updateUserSql, userParams, transaction: transaction);
 
                         if (rowsAffected == 0)
                         {
-                            // If no rows affected, it means user wasn't found or was concurrently deleted/modified.
-                            throw new InvalidOperationException($"User with ID '{user.Id}' not found or modified by another process. Concurrency conflict suspected.");
+                            // This is a valid concurrency check. If the user doesn't exist, we throw.
+                            throw new InvalidOperationException($"User with ID '{user.Id}' not found for update. Concurrency conflict or record does not exist.");
                         }
 
-                        // Update or Insert TokenWallet (UPSERT logic for SQL Server)
+                        // Prepare and execute the TokenWallet UPSERT
                         if (user.TokenWallet != null)
                         {
                             var walletParams = new
                             {
-                                user.TokenWallet.Id, // Needed for INSERT part of UPSERT
+                                user.TokenWallet.Id,
                                 user.TokenWallet.UserId,
                                 user.TokenWallet.Balance,
                                 user.TokenWallet.IsActive,
-                                user.TokenWallet.CreatedAt,
-                                UpdatedAt = DateTime.UtcNow // Set UpdatedAt here for wallet
+                                user.TokenWallet.CreatedAt, // Pass the original creation time for the INSERT part
+                                UpdatedAt = DateTime.UtcNow  // Set a new UpdatedAt for both INSERT and UPDATE parts
                             };
 
-                            // SQL Server UPSERT (MERGE is an option, but IF EXISTS / INSERT-UPDATE is simpler for this case)
-                            _ = await connection.ExecuteAsync(@"
-                                IF EXISTS (SELECT 1 FROM TokenWallets WHERE UserId = @UserId)
-                                    UPDATE TokenWallets SET Balance = @Balance, IsActive = @IsActive, UpdatedAt = @UpdatedAt WHERE UserId = @UserId;
-                                ELSE
-                                    INSERT INTO TokenWallets (Id, UserId, Balance, IsActive, CreatedAt, UpdatedAt)
-                                    VALUES (@Id, @UserId, @Balance, @IsActive, @CreatedAt, @UpdatedAt);",
-                                walletParams, transaction: transaction);
+                            await connection.ExecuteAsync(upsertWalletSql, walletParams, transaction: transaction);
                         }
                         else
                         {
-                            _logger.LogWarning("UserRepository: User {UserId} has no TokenWallet object for update. Ensure wallet is initialized and passed.", user.Id);
+                            _logger.LogWarning("UserRepository: User {UserId} has no TokenWallet object for update. Skipping wallet update.", user.Id);
                         }
 
-                        // Subscriptions and Preferences should generally be updated by their own dedicated repository methods
-                        // if their changes are independent of the User's core properties. If changes to User entity
-                        // automatically imply changes to these collections, you would need explicit DELETE/INSERT or MERGE statements here.
+                        // If all operations succeed, commit the transaction.
+                        await transaction.CommitAsync(ct);
+                    }
+                    catch (Exception)
+                    {
+                        // If any error occurs (e.g., the concurrency exception or a DB error),
+                        // roll back the entire transaction.
+                        await transaction.RollbackAsync();
+                        throw; // Re-throw the original exception to be handled by the outer catch blocks.
+                    }
+                }, cancellationToken);
 
-                        transaction.Commit();
-                    }
-                    catch (InvalidOperationException) // Re-throw the concurrency specific error
-                    {
-                        transaction.Rollback();
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        transaction.Rollback();
-                        throw new RepositoryException($"Failed to update user '{user.Username}' with Dapper transaction.", ex); // Wrap in custom exception
-                    }
-                });
                 _logger.LogInformation("UserRepository: Successfully updated user: {Username}", user.Username);
             }
-            catch (InvalidOperationException concEx) // Catch the custom concurrency exception
+            catch (InvalidOperationException concEx) // Catch the specific concurrency exception
             {
                 _logger.LogError(concEx, "UserRepository: Concurrency conflict or user not found while updating user {Username}.", user.Username);
                 throw;
             }
-            catch (RepositoryException dbEx) // Catch the wrapped DB errors
+            catch (Exception ex) // Catch any other exceptions, including wrapped ones from Polly
             {
-                _logger.LogError(dbEx, "UserRepository: Error updating user {Username} in the database after retries.", user.Username);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "UserRepository: An unexpected error occurred while updating user {Username}.", user.Username);
+                _logger.LogError(ex, "UserRepository: An error occurred while updating user {Username}.", user.Username);
+                // Wrap in a custom RepositoryException if it isn't one already.
+                if (ex is not RepositoryException)
+                {
+                    throw new RepositoryException($"Failed to update user '{user.Username}'.", ex);
+                }
                 throw;
             }
         }
+
         public async Task<User?> GetByTelegramIdWithNotificationsAsync(string telegramId, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(telegramId))
@@ -790,33 +988,11 @@ namespace Infrastructure.Repositories
                 return null;
             }
 
-            _logger.LogTrace("UserRepository: Fetching user with notifications and related entities by TelegramID: {TelegramId}", telegramId);
+            _logger.LogTrace("UserRepository: Fetching user with notifications by TelegramID: {TelegramId} using JSON aggregation.", telegramId);
 
-            // This single query fetches the user, their notification settings, and all related entities in one go.
-            const string combinedSql = @"
-                -- 1. Main user with all notification flags
-                SELECT Id, Username, TelegramId, Email, Level, CreatedAt, UpdatedAt, 
-                       EnableGeneralNotifications, EnableVipSignalNotifications, EnableRssNewsNotifications, PreferredLanguage
-                FROM Users 
-                WHERE TelegramId = @TelegramId;
-
-                -- 2. User's wallet
-                SELECT w.Id, w.UserId, w.Balance, w.IsActive, w.CreatedAt, w.UpdatedAt
-                FROM TokenWallets w
-                INNER JOIN Users u ON w.UserId = u.Id
-                WHERE u.TelegramId = @TelegramId;
-
-                -- 3. User's subscriptions
-                SELECT s.Id, s.UserId, s.StartDate, s.EndDate, s.Status, s.ActivatingTransactionId, s.CreatedAt, s.UpdatedAt
-                FROM Subscriptions s
-                INNER JOIN Users u ON s.UserId = u.Id
-                WHERE u.TelegramId = @TelegramId;
-
-                -- 4. User's signal preferences
-                SELECT p.Id, p.UserId, p.CategoryId, p.CreatedAt
-                FROM UserSignalPreferences p
-                INNER JOIN Users u ON p.UserId = u.Id
-                WHERE u.TelegramId = @TelegramId;";
+            // --- USE THE OPTIMIZED SQL FRAGMENT ---
+            // This query is identical to the one in GetByTelegramIdAsync.
+            var sql = $"{UserWithRelatedDataSqlFragment} WHERE u.\"TelegramId\" = @TelegramId;";
 
             try
             {
@@ -827,22 +1003,19 @@ namespace Infrastructure.Repositories
                     using var connection = CreateConnection();
                     await connection.OpenAsync(ct);
 
-                    using var multi = await connection.QueryMultipleAsync(new CommandDefinition(combinedSql, new { TelegramId = telegramId }, cancellationToken: ct));
+                    // Use QueryFirstOrDefaultAsync with the DTO designed for this query.
+                    var userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                        new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct)
+                    );
 
-                    var userDto = await multi.ReadFirstOrDefaultAsync<UserDbDto>();
                     if (userDto == null)
                     {
                         _logger.LogTrace("User with TelegramID {TelegramId} not found.", telegramId);
                         return null;
                     }
 
-                    var user = userDto.ToDomainEntity();
-                    var walletDto = await multi.ReadFirstOrDefaultAsync<TokenWalletDbDto>();
-                    user.TokenWallet = walletDto?.ToDomainEntity() ?? TokenWallet.Create(user.Id);
-
-                    user.Subscriptions = (await multi.ReadAsync<SubscriptionDbDto>()).Select(s => s.ToDomainEntity()).ToList();
-                    user.Preferences = (await multi.ReadAsync<UserSignalPreferenceDbDto>()).Select(usp => usp.ToDomainEntity()).ToList();
-                    user.Transactions = []; // Not fetched in this query
+                    // The DTO handles all the complex mapping and JSON deserialization.
+                    var user = userDto.ToDomainEntity(_logger);
 
                     _logger.LogDebug("Successfully fetched user {UserId} (TelegramID: {TelegramId}) with all related entities.", user.Id, telegramId);
                     return user;

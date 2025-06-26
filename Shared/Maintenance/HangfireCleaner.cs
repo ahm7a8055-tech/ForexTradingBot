@@ -123,68 +123,68 @@ GO
         /// <param name="connectionString">This parameter is included to match the required method signature but is not used.</param>
         public void PurgeCompletedAndFailedJobs(string connectionString)
         {
-            Console.WriteLine("--- Starting Hangfire Purge using Dapper (Recurring Job Safe) ---");
+        //    Console.WriteLine("--- Starting Hangfire Purge using Dapper (Recurring Job Safe) ---");
 
-            const string schema = "[HangFire]";
-            const int batchSize = 5000;
+        //    const string schema = "[HangFire]";
+        //    const int batchSize = 5000;
 
-            // CRITICAL FIX: The 'Set' and 'Hash' tables are REMOVED from this list
-            // as they are used to store recurring job data.
-            var tablesToDeleteFrom = new[]
-            {
-            // Job statistics data (safe to delete)
-            "AggregatedCounter",
-            "Counter", 
+        //    // CRITICAL FIX: The 'Set' and 'Hash' tables are REMOVED from this list
+        //    // as they are used to store recurring job data.
+        //    var tablesToDeleteFrom = new[]
+        //    {
+        //    // Job statistics data (safe to delete)
+        //    "AggregatedCounter",
+        //    "Counter", 
             
-            // Job-specific data (safe to delete)
-            "JobParameter",
-            "JobQueue",
-            "List", 
+        //    // Job-specific data (safe to delete)
+        //    "JobParameter",
+        //    "JobQueue",
+        //    "List", 
             
-            // Stale server data (safe to delete)
-            "Server", 
+        //    // Stale server data (safe to delete)
+        //    "Server", 
             
-            // Core job tables (must be last, in this order)
-            "State",
-            "Job"
-        };
+        //    // Core job tables (must be last, in this order)
+        //    "State",
+        //    "Job"
+        //};
 
-            try
-            {
-                using (var connection = new SqlConnection(connectionString))
-                {
-                    connection.Open();
-                    Console.WriteLine("Successfully connected to the database.");
+        //    try
+        //    {
+        //        using (var connection = new SqlConnection(connectionString))
+        //        {
+        //            connection.Open();
+        //            Console.WriteLine("Successfully connected to the database.");
 
-                    foreach (var table in tablesToDeleteFrom)
-                    {
-                        string fullTableName = $"{schema}.[{table}]";
-                        Console.WriteLine($"Starting batched delete for: {fullTableName}...");
+        //            foreach (var table in tablesToDeleteFrom)
+        //            {
+        //                string fullTableName = $"{schema}.[{table}]";
+        //                Console.WriteLine($"Starting batched delete for: {fullTableName}...");
 
-                        string sql = $@"
-                        WHILE 1 = 1
-                        BEGIN
-                            DELETE TOP ({batchSize}) FROM {fullTableName};
-                            IF @@ROWCOUNT = 0 BREAK;
-                        END";
+        //                string sql = $@"
+        //                WHILE 1 = 1
+        //                BEGIN
+        //                    DELETE TOP ({batchSize}) FROM {fullTableName};
+        //                    IF @@ROWCOUNT = 0 BREAK;
+        //                END";
 
-                        connection.Execute(sql, commandTimeout: 300);
+        //                connection.Execute(sql, commandTimeout: 300);
 
-                        Console.WriteLine($"Successfully completed batched delete for {fullTableName}.");
-                    }
-                }
+        //                Console.WriteLine($"Successfully completed batched delete for {fullTableName}.");
+        //            }
+        //        }
 
-                Console.WriteLine();
-                Console.WriteLine("--- Dapper Hangfire Purge Operation Complete ---");
-                Console.WriteLine("All job execution data, history, and statistics have been purged.");
-                Console.WriteLine("Recurring job definitions have been preserved.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("An error occurred during the Dapper batch purge operation.");
-                Console.WriteLine($"Error: {ex.Message}");
-                throw;
-            }
+        //        Console.WriteLine();
+        //        Console.WriteLine("--- Dapper Hangfire Purge Operation Complete ---");
+        //        Console.WriteLine("All job execution data, history, and statistics have been purged.");
+        //        Console.WriteLine("Recurring job definitions have been preserved.");
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine("An error occurred during the Dapper batch purge operation.");
+        //        Console.WriteLine($"Error: {ex.Message}");
+        //        throw;
+        //    }
         }
     }
 }

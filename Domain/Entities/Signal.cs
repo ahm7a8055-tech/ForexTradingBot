@@ -2,11 +2,16 @@
 #region Usings
 // using System.ComponentModel.DataAnnotations.Schema; // اگر از ForeignKey Attribute استفاده می‌کنید
 using Domain.Enums; // ✅ برای SignalType و SignalStatus
+using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 #endregion
 
 namespace Domain.Entities
 {
+    [Table("Signals")]
+    [Index(nameof(Symbol))]
+    [Index(nameof(Status))]
     public class Signal
     {
         #region Core Properties

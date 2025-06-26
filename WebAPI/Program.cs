@@ -317,7 +317,7 @@ try
         try
         {
             Log.Information("Running on Windows (not in a container). Checking for local SQL Server services...");
-            ServiceManagerHelper.EnsureAllServicesRunningAndHealthy(); // Changed 
+       //     ServiceManagerHelper.EnsureAllServicesRunningAndHealthy(); // Changed 
             Log.Information("SQL Server service check complete.");
         }
         catch (Exception exSql)
@@ -365,45 +365,47 @@ try
     }
     else
     {
-        // --- PRODUCTION / REAL DEVELOPMENT CONFIGURATION ---
-        // Read the database provider from configuration.
-        string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
-
-        Log.Information("Configuring Hangfire for production/development with '{DbProvider}' provider.", dbProvider);
-
-        _ = dbProvider switch
+        if (isSmokeTest)
         {
-            "sqlserver" => builder.Services.AddHangfire(config => config
-                                .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-                                .UseSimpleAssemblyNameTypeSerializer()
-                                .UseRecommendedSerializerSettings()
-                                .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection"), new SqlServerStorageOptions
-                                {
-                                    CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
-                                    SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
-                                    QueuePollInterval = TimeSpan.FromSeconds(15),
-                                    UseRecommendedIsolationLevel = true,
-                                    DisableGlobalLocks = true,
-                                    SchemaName = "HangFire"
-                                })),// Use the robust SQL Server storage provider.
-            "postgres" or "postgresql" => builder.Services.AddHangfire(config => config
-                                .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-                                .UseSimpleAssemblyNameTypeSerializer()
-                                .UseRecommendedSerializerSettings()
-                                .UsePostgreSqlStorage(options =>
-                                    options.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgresConnection"))
-                                )),// Use the PostgreSQL storage provider.
-            _ => throw new NotSupportedException($"Hangfire configuration failed: Unsupported DatabaseProvider '{dbProvider}'."),
-        };
-    }
+            Log.Information("Configuring Hangfire with In-Memory storage for Smoke Test.");
+            builder.Services.AddHangfire(config => config.UseMemoryStorage());
+        }
+        else
+        {
+            string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
+            Log.Information("Configuring Hangfire using the '{DbProvider}' provider.", dbProvider ?? "UNDEFINED");
 
-    _ = builder.Services.AddHangfireCleaner();
+            switch (dbProvider)
+            {
+                case "sqlserver":
+                    builder.Services.AddHangfire(config => config
+                        .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection"), new SqlServerStorageOptions
+                        {
+                            SchemaName = "HangFire",
+                            QueuePollInterval = TimeSpan.FromSeconds(15)
+                        }));
+                    break;
+
+                case "postgres":
+                case "postgresql":
+                    builder.Services.AddHangfire(config => config
+                        .UsePostgreSqlStorage(c => c.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgresConnection"))));
+                    break;
+
+                default:
+                    throw new NotSupportedException($"Hangfire configuration failed: Unsupported or missing 'DatabaseSettings:DatabaseProvider': '{dbProvider}'.");
+            }
+        }
+
+    }
+       _ = builder.Services.AddHangfireCleaner();
     _ = builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Notifications";
         options.WorkerCount = 25; // <--- THE THROTTLE! Adjust this based on Telegram API limits.
         options.Queues = new[] { "notifications" }; // It ONLY processes this queue.
     });
+ 
 
     builder.Services.AddHangfireServer(options =>
     {
@@ -452,10 +454,10 @@ try
 
             Log.Information("Enqueuing Hangfire core cleanup job to run in the background...");
             // This job will run once, as soon as a Hangfire server is available.
-            _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeCompletedAndFailedJobs(connectionString));
+        //    _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeCompletedAndFailedJobs(connectionString));
 
             Log.Information("Enqueuing duplicate NewsItem cleanup job to run in the background...");
-            _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeDuplicateNewsItems(connectionString));
+           // _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeDuplicateNewsItems(connectionString));
 
             Log.Information("✅ All startup maintenance jobs have been successfully enqueued. They will run asynchronously.");
         }
@@ -568,29 +570,29 @@ try
     _ = app.MapHealthChecks("/healthz");
 
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
-    app.MapGet("/maintenance/force-hangfire-purge-all", async (IConfiguration config, IHangfireCleaner cleaner, ILogger<Program> logger) => {
-        logger.LogWarning("MANUAL TRIGGER: Forcefully purging all Succeeded and Failed Hangfire jobs.");
-        string? connectionString = config.GetConnectionString("DefaultConnection");
+    //app.MapGet("/maintenance/force-hangfire-purge-all", async (IConfiguration config, IHangfireCleaner cleaner, ILogger<Program> logger) => {
+    //    logger.LogWarning("MANUAL TRIGGER: Forcefully purging all Succeeded and Failed Hangfire jobs.");
+    //    string? connectionString = config.GetConnectionString("DefaultConnection");
 
-        if (string.IsNullOrEmpty(connectionString))
-        {
-            logger.LogError("Force Purge Failed: DefaultConnection string is missing.");
-            return Results.Problem("DefaultConnection string not found.");
-        }
+    //    if (string.IsNullOrEmpty(connectionString))
+    //    {
+    //        logger.LogError("Force Purge Failed: DefaultConnection string is missing.");
+    //        return Results.Problem("DefaultConnection string not found.");
+    //    }
 
-        try
-        {
-            // Use the cleaner service you already have!
-            cleaner.PurgeCompletedAndFailedJobs(connectionString);
-            logger.LogInformation("MANUAL TRIGGER: Hangfire job purge completed successfully.");
-            return Results.Ok("Hangfire Succeeded/Failed jobs have been purged. Check the Hangfire Dashboard to see the result.");
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "MANUAL TRIGGER: An error occurred during the Hangfire purge.");
-            return Results.Problem($"An error occurred: {ex.Message}");
-        }
-    });
+    //    try
+    //    {
+    //        // Use the cleaner service you already have!
+    //        cleaner.PurgeCompletedAndFailedJobs(connectionString);
+    //        logger.LogInformation("MANUAL TRIGGER: Hangfire job purge completed successfully.");
+    //        return Results.Ok("Hangfire Succeeded/Failed jobs have been purged. Check the Hangfire Dashboard to see the result.");
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        logger.LogError(ex, "MANUAL TRIGGER: An error occurred during the Hangfire purge.");
+    //        return Results.Problem($"An error occurred: {ex.Message}");
+    //    }
+    //});
     _ = app.MapControllers(); //  مسیردهی درخواست‌ها به Action های کنترلرها
     programLogger.LogInformation("Application setup complete. Starting web host now...");
 

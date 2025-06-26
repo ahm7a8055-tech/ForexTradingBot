@@ -1,5 +1,6 @@
 ﻿// File: Domain\Features\Forwarding\Entities\ForwardingRule.cs
 using Domain.Features.Forwarding.ValueObjects;
+using Domain.Features.Fowarding.ValueObjects;
 
 namespace Domain.Features.Forwarding.Entities
 {
@@ -8,28 +9,24 @@ namespace Domain.Features.Forwarding.Entities
         public string RuleName { get; private set; } = null!;
         public bool IsEnabled { get; private set; }
         public long SourceChannelId { get; private set; }
-        public IReadOnlyList<long> TargetChannelIds { get; private set; } = null!;
+        public IReadOnlyList<long> TargetChannelIds { get; private set; } = [];
         public MessageEditOptions EditOptions { get; private set; } = null!;
         public MessageFilterOptions FilterOptions { get; private set; } = null!;
 
         private ForwardingRule() { } // For EF Core
 
         public ForwardingRule(
-            string ruleName,
-            bool isEnabled,
-            long sourceChannelId,
-            IReadOnlyList<long> targetChannelIds,
-            MessageEditOptions editOptions, // نوع پارامتر درست است
-            MessageFilterOptions filterOptions) // نوع پارامتر درست است
+              string ruleName, bool isEnabled, long sourceChannelId,
+              IReadOnlyList<long> targetChannelIds, MessageEditOptions editOptions,
+              MessageFilterOptions filterOptions)
         {
             RuleName = ruleName;
             IsEnabled = isEnabled;
             SourceChannelId = sourceChannelId;
             TargetChannelIds = targetChannelIds;
-            EditOptions = editOptions; // مقادیر از ورودی گرفته می‌شوند
-            FilterOptions = filterOptions; // مقادیر از ورودی گرفته می‌شوند
+            EditOptions = editOptions;
+            FilterOptions = filterOptions;
         }
-
         public void UpdateStatus(bool isEnabled)
         {
             IsEnabled = isEnabled;

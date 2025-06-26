@@ -66,10 +66,11 @@ namespace Domain.Entities
         /// <summary>
         /// Calculated property to determine if the subscription is currently active based on dates and status.
         /// </summary>
-        [NotMapped] //  این پراپرتی نباید به دیتابیس مپ شود
-        public bool IsCurrentlyActive => Status.Equals("Active", StringComparison.OrdinalIgnoreCase) &&
-                                        DateTime.UtcNow >= StartDate &&
-                                        DateTime.UtcNow <= EndDate;
+        [NotMapped] // Ensures EF Core does not try to create a column for this property.
+        public bool IsCurrentlyActive => DateTime.UtcNow >= StartDate && DateTime.UtcNow < EndDate;
+
+
+
         #endregion
 
         #region Constructors

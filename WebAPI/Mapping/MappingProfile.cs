@@ -1,6 +1,7 @@
 ﻿using AutoMapper;
 using Domain.Features.Forwarding.Entities;
 using Domain.Features.Forwarding.ValueObjects;
+using Domain.Features.Fowarding.ValueObjects;
 using WebAPI.Models;
 
 namespace WebAPI.Mapping

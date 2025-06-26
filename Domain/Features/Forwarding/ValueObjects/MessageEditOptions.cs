@@ -1,89 +1,87 @@
 ﻿// File: Domain\Features\Forwarding\ValueObjects\MessageEditOptions.cs
 // این فایل نیاز به using برای TextReplacement ندارد زیرا TextReplacement
 // در همین namespace Domain.Features.Forwarding.ValueObjects تعریف شده است.
+using Microsoft.EntityFrameworkCore;
 namespace Domain.Features.Forwarding.ValueObjects
 {
     /// <summary>
     /// تنظیمات و گزینه‌های قابل اعمال بر ویرایش پیام‌ها در هنگام فوروارد یا پردازش متن.
     /// این کلاس به عنوان Value Object استفاده می‌شود و تغییرناپذیر (immutable) طراحی شده است.
     /// </summary>
+    [Owned]
     public class MessageEditOptions
     {
+        #region Properties
+
+
+
         /// <summary>
-        /// متن دلخواهی که باید به ابتدای پیام افزوده شود.
+        /// Custom text to be prepended to the message content.
         /// </summary>
         public string? PrependText { get; private set; }
 
         /// <summary>
-        /// متن دلخواهی که باید به انتهای پیام افزوده شود.
+        /// Custom text to be appended to the message content.
         /// </summary>
         public string? AppendText { get; private set; }
 
         /// <summary>
-        /// لیستی از قوانین جایگزینی متن برای اصلاح یا فیلتر کردن پیام.
+        /// A list of text replacement rules to be applied to the message.
+        /// Configured as a separate table owned by MessageEditOptions.
         /// </summary>
-        public IReadOnlyList<TextReplacement>? TextReplacements { get; private set; }
+        public IReadOnlyList<TextReplacement> TextReplacements { get; private set; }
 
         /// <summary>
-        /// حذف سربرگ مربوط به منبع پیام فوروارد شده (Forward Header).
-        /// اگر true باشد، "Forwarded from..." حذف می‌شود.
+        /// If true, the "Forwarded from..." header is removed from the message.
         /// </summary>
         public bool RemoveSourceForwardHeader { get; private set; }
 
         /// <summary>
-        /// حذف لینک‌ها (URLs) از متن پیام.
+        /// If true, all URLs are stripped from the message text.
         /// </summary>
         public bool RemoveLinks { get; private set; }
 
         /// <summary>
-        /// حذف تمام فرمت‌بندی‌ها از پیام (مثل بولد، ایتالیک، لینک‌ها و ...).
-        /// اگر true باشد، پیام به صورت plain text فوروارد می‌شود.
+        /// If true, all formatting (bold, italic, etc.) is removed, sending a plain text message.
         /// </summary>
         public bool StripFormatting { get; private set; }
 
         /// <summary>
-        /// افزودن پاورقی دلخواه در انتهای پیام.
-        /// این متن پس از `AppendText` اضافه می‌شود.
+        /// Custom footer text to add at the very end of the message.
         /// </summary>
         public string? CustomFooter { get; private set; }
 
         /// <summary>
-        /// حذف نام نویسنده یا ارسال‌کننده اصلی از پیام.
-        /// این مورد معمولاً در حالت کپی کردن پیام (CopyInsteadOfForward) کاربرد دارد.
+        /// If true, the original message author's name is dropped.
         /// </summary>
         public bool DropAuthor { get; private set; }
 
         /// <summary>
-        /// حذف کپشن‌های مربوط به مدیا (عکس، ویدیو و ...).
-        /// اگر true باشد، رسانه‌ها بدون متن توضیح فوروارد می‌شوند.
+        /// If true, captions for media (photos, videos) are removed.
         /// </summary>
         public bool DropMediaCaptions { get; private set; }
 
         /// <summary>
-        /// جلوگیری از فوروارد شدن پیام توسط کاربران بعدی.
-        /// این یک ویژگی خاص در پلتفرم‌هایی مانند تلگرام است که تگ "Forward" را غیرفعال می‌کند.
+        /// If true, disables the ability for others to forward the message.
         /// </summary>
         public bool NoForwards { get; private set; }
 
-        /// <summary>
-        /// سازنده‌ی پیش‌فرض مورد نیاز برای ORM (مانند EF Core) یا عملیات‌های deserialization.
-        /// این سازنده خصوصی است تا از ایجاد نمونه‌های ناقص جلوگیری شود.
-        /// </summary>
-        private MessageEditOptions() { }
+        #endregion
+
+        #region Constructors and Methods
 
         /// <summary>
-        /// سازنده‌ی کامل برای تنظیم تمام گزینه‌های ویرایش پیام.
+        /// Private constructor for Entity Framework Core.
         /// </summary>
-        /// <param name="prependText">متن افزوده‌شده به ابتدای پیام. می‌تواند null باشد.</param>
-        /// <param name="appendText">متن افزوده‌شده به انتهای پیام. می‌تواند null باشد.</param>
-        /// <param name="textReplacements">لیستی از قوانین جایگزینی متنی. اگر null باشد، لیست خالی در نظر گرفته می‌شود.</param>
-        /// <param name="removeSourceForwardHeader">اگر true باشد، سربرگ فوروارد حذف می‌شود.</param>
-        /// <param name="removeLinks">اگر true باشد، لینک‌ها از متن حذف می‌شوند.</param>
-        /// <param name="stripFormatting">اگر true باشد، تمام فرمت‌بندی‌ها حذف می‌شوند.</param>
-        /// <param name="customFooter">پاورقی سفارشی. می‌تواند null باشد.</param>
-        /// <param name="dropAuthor">اگر true باشد، نام نویسنده حذف می‌شود.</param>
-        /// <param name="dropMediaCaptions">اگر true باشد، کپشن مدیا حذف می‌شود.</param>
-        /// <param name="noForwards">اگر true باشد، فوروارد بعدی پیام توسط دیگران غیرفعال می‌شود.</param>
+        private MessageEditOptions()
+        {
+            // Initialize collections to prevent null reference issues.
+            TextReplacements = [];
+        }
+
+        /// <summary>
+        /// Creates a new instance of MessageEditOptions with specified values.
+        /// </summary>
         public MessageEditOptions(
             string? prependText,
             string? appendText,
@@ -98,7 +96,6 @@ namespace Domain.Features.Forwarding.ValueObjects
         {
             PrependText = prependText;
             AppendText = appendText;
-            // اطمینان حاصل می‌شود که لیست جایگزینی متن هرگز null نباشد.
             TextReplacements = textReplacements ?? [];
             RemoveSourceForwardHeader = removeSourceForwardHeader;
             RemoveLinks = removeLinks;
@@ -108,7 +105,7 @@ namespace Domain.Features.Forwarding.ValueObjects
             DropMediaCaptions = dropMediaCaptions;
             NoForwards = noForwards;
         }
-
+        #endregion
         /// <summary>
         /// متد ساخت یک نمونه‌ی جدید از <see cref="MessageEditOptions"/> با اعمال تغییرات دلخواه بر فیلدهای خاص،
         /// بدون تغییر سایر مقادیر موجود. این الگو به عنوان "Builder-Like" برای حفظ تغییرناپذیری (immutability) استفاده می‌شود.

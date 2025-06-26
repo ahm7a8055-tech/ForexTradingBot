@@ -1,5 +1,6 @@
 ﻿// File: Domain/Entities/RssSource.cs
 #region Usings
+using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema; // برای ForeignKey
 #endregion
@@ -10,6 +11,8 @@ namespace Domain.Entities
     /// Represents an RSS feed source.
     /// The bot uses these sources to gather news, data, or potential signals.
     /// </summary>
+    [Index(nameof(Url), IsUnique = true)]
+    [Index(nameof(IsActive), nameof(LastFetchAttemptAt), Name = "IX_RssSources_IsActive_LastFetchAttemptAt")]
     public class RssSource
     {
         #region Core Properties
@@ -107,13 +110,17 @@ namespace Domain.Entities
         /// (Optional) Navigation property to the default SignalCategory.
         /// </summary>
         [ForeignKey(nameof(DefaultSignalCategoryId))]
-        public virtual SignalCategory? DefaultSignalCategory { get; set; } //  این فیلد از قبل در کد شما وجود داشت
+        public virtual SignalCategory? DefaultSignalCategory { get; set; }
 
         /// <summary>
         /// Collection of news items fetched from this RSS source.
         /// This defines the "many" side of the one-to-many relationship.
         /// </summary>
         public virtual ICollection<NewsItem> NewsItems { get; set; } //  برای رابطه با NewsItem
+
+
+        // --- NEW NAVIGATION PROPERTY ---
+        public virtual ICollection<UserRssPreference> UserPreferences { get; set; } = [];
         #endregion
 
         #region Constructor

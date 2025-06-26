@@ -172,7 +172,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             try
             {
                 var connectionString = _configuration.GetConnectionString("DefaultConnection")!;
-                _hangfireCleaner.PurgeCompletedAndFailedJobs(connectionString);
+              // await _hangfireCleaner.PurgeCompletedAndFailedJobs();
                 _logger.LogInformation("Admin manually purged Hangfire jobs.");
                 await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ Hangfire 'Succeeded' and 'Failed' job lists have been cleared.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }

@@ -12,6 +12,7 @@ namespace Infrastructure.Data
     /// و پیکربندی مدل داده‌ای با استفاده از Fluent API است.
     /// همچنین اینترفیس <see cref="IAppDbContext"/> را برای تسهیل تست و تزریق وابستگی پیاده‌سازی می‌کند.
     /// </summary>
+    
     public class AppDbContext : DbContext, IAppDbContext
     {
         /// <summary>

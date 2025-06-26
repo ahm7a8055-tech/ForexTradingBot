@@ -18,12 +18,13 @@ namespace Infrastructure.Persistence.Configurations
                 .IsRequired()
                 .HasMaxLength(150);
 
+            // --- FIX APPLIED HERE ---
             _ = builder.Property(sa => sa.AnalysisText) // Renamed from Notes for clarity
                 .IsRequired()
-                .HasColumnType("nvarchar(max)"); // For potentially long analysis text
+                .HasColumnType("TEXT"); // Changed to "TEXT" for PostgreSQL
+            // --- END FIX ---
 
             _ = builder.Property(sa => sa.SentimentScore); // Nullable double or decimal
-            // builder.Property(sa => sa.AnalysisType).HasMaxLength(50); // e.g., "Technical", "Fundamental", "AI_Sentiment"
 
             _ = builder.Property(sa => sa.CreatedAt).IsRequired();
 

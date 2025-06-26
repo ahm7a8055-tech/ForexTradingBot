@@ -28,7 +28,8 @@ namespace Infrastructure.Persistence.Configurations
                 .HasMaxLength(500); // Optional
 
             _ = builder.Property(t => t.Timestamp) // Renamed from CreatedAt in your previous DbContext to avoid confusion with audit fields
-                .IsRequired();
+                .IsRequired()
+                .HasDefaultValueSql("NOW()"); // Keeping this as it's correct for PostgreSQL
 
             // New fields for payment gateway integration
             _ = builder.Property(t => t.PaymentGatewayInvoiceId)
@@ -43,11 +44,13 @@ namespace Infrastructure.Persistence.Configurations
 
             _ = builder.Property(t => t.PaidAt); // Nullable DateTime
 
+            // --- FIX APPLIED HERE ---
             _ = builder.Property(t => t.PaymentGatewayPayload)
-                .HasColumnType("nvarchar(max)"); // For potentially long JSON strings
+                .HasColumnType("TEXT"); // Changed from "nvarchar(max)" to "TEXT" for PostgreSQL
 
             _ = builder.Property(t => t.PaymentGatewayResponse)
-                .HasColumnType("nvarchar(max)"); // For potentially long JSON strings
+                .HasColumnType("TEXT"); // Changed from "nvarchar(max)" to "TEXT" for PostgreSQL
+            // --- END FIX ---
 
             // Indexes
             _ = builder.HasIndex(t => t.UserId);

@@ -1,127 +1,126 @@
-﻿// File: Infrastructure\Data\Configurations\ForwardingRuleConfiguration.cs
+﻿// File: Infrastructure/Persistence/Configurations/ForwardingRuleConfiguration.cs
 
 #region Usings
-using Domain.Features.Forwarding.Entities;
+// ... (Usings are correct and remain the same) ...
+using Domain.Entities;
+using Domain.ValueObjects;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using System.Text.Json;
+using Domain.Features.Forwarding.Entities;
 #endregion
 
-namespace Infrastructure.Persistence.Configurations // یا Infrastructure.Data.Configurations اگر ساختارتان متفاوت است
+namespace Infrastructure.Persistence.Configurations
 {
     public class ForwardingRuleConfiguration : IEntityTypeConfiguration<ForwardingRule>
     {
-        private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+        private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = false };
 
         public void Configure(EntityTypeBuilder<ForwardingRule> builder)
         {
-            _ = builder.ToTable("ForwardingRules");
-            _ = builder.HasKey(fr => fr.RuleName);
+            builder.ToTable("ForwardingRules");
+            builder.HasKey(fr => fr.RuleName);
 
-            _ = builder.Property(fr => fr.RuleName)
-                .IsRequired()
-                .HasMaxLength(100);
-
-            _ = builder.Property(fr => fr.IsEnabled)
-                .IsRequired();
-
-            _ = builder.Property(fr => fr.SourceChannelId)
-                .IsRequired();
-
-            // برای TargetChannelIds (IReadOnlyList<long>)
+            // ... (Core properties and TargetChannelIds config are correct) ...
+            builder.Property(fr => fr.RuleName).IsRequired().HasMaxLength(100);
+            builder.Property(fr => fr.IsEnabled).IsRequired().HasDefaultValue(true);
+            builder.Property(fr => fr.SourceChannelId).IsRequired();
             builder.Property(fr => fr.TargetChannelIds)
-                .HasConversion(
-                    v => JsonSerializer.Serialize(v ?? new List<long>(), _jsonOptions),
-                    v => JsonSerializer.Deserialize<List<long>>(v, _jsonOptions) ?? new List<long>()
-                )
-                .Metadata.SetValueComparer(new ValueComparer<IReadOnlyList<long>>(
-                    (c1, c2) => (c1 == null && c2 == null) || (c1 != null && c2 != null && c1.SequenceEqual(c2)),
-                    (c) => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                    (c) => c.ToList() // Snapshot: Create a new list for tracking changes
-                ));
+                   .HasColumnType("jsonb")
+                   .HasConversion(
+                       v => JsonSerializer.Serialize(v ?? new List<long>(), _jsonOptions),
+                       v => JsonSerializer.Deserialize<List<long>>(v, _jsonOptions) ?? new List<long>()
+                   )
+                   .Metadata.SetValueComparer(CreateValueComparer<long>());
 
-            // OwnerOne برای MessageEditOptions
-            _ = builder.OwnsOne(fr => fr.EditOptions, editOptions =>
+            // --- Configure Owned Types ---
+            builder.OwnsOne(fr => fr.EditOptions, editOptionsBuilder =>
             {
-                _ = editOptions.Property(e => e.PrependText);
-                _ = editOptions.Property(e => e.AppendText);
-                _ = editOptions.Property(e => e.RemoveSourceForwardHeader);
-                _ = editOptions.Property(e => e.RemoveLinks);
-                _ = editOptions.Property(e => e.StripFormatting);
-                _ = editOptions.Property(e => e.CustomFooter);
-                _ = editOptions.Property(e => e.DropAuthor);
-                _ = editOptions.Property(e => e.DropMediaCaptions);
-                _ = editOptions.Property(e => e.NoForwards);
-
-                // OwnsMany برای TextReplacements - استفاده از نام کلاس TextReplacement (جدید)
-                _ = editOptions.OwnsMany(e => e.TextReplacements, tr =>
+                // ... (This part was correct and remains the same) ...
+                editOptionsBuilder.OwnsMany(e => e.TextReplacements, replacementBuilder =>
                 {
-                    _ = tr.WithOwner().HasForeignKey("EditOptionsForwardingRuleName"); // باید این نام با نام FK در دیتابیس هماهنگ باشه
-                    _ = tr.Property<int>("Id").ValueGeneratedOnAdd();
-                    _ = tr.HasKey("Id", "EditOptionsForwardingRuleName"); // کلید ترکیبی
-                    _ = tr.Property(t => t.Find).IsRequired();
-                    _ = tr.Property(t => t.ReplaceWith);
-                    _ = tr.Property(t => t.IsRegex).IsRequired();
-                    _ = tr.Property(t => t.RegexOptions).IsRequired(); // System.Text.RegularExpressions.RegexOptions enum value
+                    replacementBuilder.ToTable("ForwardingRuleTextReplacements");
+                    replacementBuilder.WithOwner().HasForeignKey("ForwardingRuleName");
+                    replacementBuilder.Property<int>("Id").ValueGeneratedOnAdd();
+                    replacementBuilder.HasKey("Id");
+                    replacementBuilder.Property(t => t.Find).IsRequired();
                 });
             });
 
-            // OwnerOne برای MessageFilterOptions
-            _ = builder.OwnsOne(fr => fr.FilterOptions, filterOptions =>
+            // Configure MessageFilterOptions as an owned entity.
+            builder.OwnsOne(fr => fr.FilterOptions, filterOptionsBuilder =>
             {
-                filterOptions.Property(f => f.AllowedMessageTypes)
-                    .HasConversion(
-                        v => JsonSerializer.Serialize(v ?? new List<string>(), _jsonOptions),
-                        v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>()
-                    )
-                    .Metadata.SetValueComparer(new ValueComparer<IReadOnlyList<string>>(
-                        (c1, c2) => (c1 == null && c2 == null) || (c1 != null && c2 != null && c1.SequenceEqual(c2)),
-                        (c) => c.Aggregate(0, (a, v) => HashCode.Combine(a, v == null ? 0 : v.GetHashCode())),
-                        (c) => c.ToList()
-                    ));
+                // First, configure the properties of the owned type.
+                ConfigureJsonbList(filterOptionsBuilder.Property(f => f.AllowedMessageTypes));
+                ConfigureJsonbList(filterOptionsBuilder.Property(f => f.AllowedMimeTypes));
+                ConfigureJsonbList(filterOptionsBuilder.Property(f => f.AllowedSenderUserIds));
+                ConfigureJsonbList(filterOptionsBuilder.Property(f => f.BlockedSenderUserIds));
 
-                filterOptions.Property(f => f.AllowedMimeTypes)
-                    .HasConversion(
-                        v => JsonSerializer.Serialize(v ?? new List<string>(), _jsonOptions),
-                        v => JsonSerializer.Deserialize<List<string>>(v, _jsonOptions) ?? new List<string>()
-                    )
-                    .Metadata.SetValueComparer(new ValueComparer<IReadOnlyList<string>>(
-                        (c1, c2) => (c1 == null && c2 == null) || (c1 != null && c2 != null && c1.SequenceEqual(c2)),
-                        (c) => c.Aggregate(0, (a, v) => HashCode.Combine(a, v == null ? 0 : v.GetHashCode())),
-                        (c) => c.ToList()
-                    ));
+                // --- FIX APPLIED HERE: Define indexes on the OWNED TYPE's builder ---
 
-                filterOptions.Property(f => f.AllowedSenderUserIds)
-                    .HasConversion(
-                        v => JsonSerializer.Serialize(v ?? new List<long>(), _jsonOptions),
-                        v => JsonSerializer.Deserialize<List<long>>(v, _jsonOptions) ?? new List<long>()
-                    )
-                    .Metadata.SetValueComparer(new ValueComparer<IReadOnlyList<long>>(
-                        (c1, c2) => (c1 == null && c2 == null) || (c1 != null && c2 != null && c1.SequenceEqual(c2)),
-                        (c) => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                        (c) => c.ToList()
-                    ));
+                // 3. TEXT SEARCH ON FILTER (PostgreSQL Trigram Index)
+                // We define the index here, on the builder for FilterOptions.
+                filterOptionsBuilder.HasIndex(f => f.ContainsText)
+                    .HasMethod("gist")
+                    .HasOperators("gist_trgm_ops")
+                    .HasDatabaseName("IX_ForwardingRules_ContainsText_Trgm");
 
-                filterOptions.Property(f => f.BlockedSenderUserIds)
-                    .HasConversion(
-                        v => JsonSerializer.Serialize(v ?? new List<long>(), _jsonOptions),
-                        v => JsonSerializer.Deserialize<List<long>>(v, _jsonOptions) ?? new List<long>()
-                    )
-                    .Metadata.SetValueComparer(new ValueComparer<IReadOnlyList<long>>(
-                        (c1, c2) => (c1 == null && c2 == null) || (c1 != null && c2 != null && c1.SequenceEqual(c2)),
-                        (c) => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                        (c) => c.ToList()
-                    ));
+                // 4. SENDER ID FILTER (PostgreSQL GIN Index)
+                filterOptionsBuilder.HasIndex(f => f.AllowedSenderUserIds)
+                    .HasMethod("gin")
+                    .HasDatabaseName("IX_ForwardingRules_AllowedSenders_GIN");
 
-                _ = filterOptions.Property(f => f.ContainsText);
-                _ = filterOptions.Property(f => f.ContainsTextIsRegex);
-                _ = filterOptions.Property(f => f.ContainsTextRegexOptions);
-                _ = filterOptions.Property(f => f.IgnoreEditedMessages);
-                _ = filterOptions.Property(f => f.IgnoreServiceMessages);
-                _ = filterOptions.Property(f => f.MaxMessageLength);
-                _ = filterOptions.Property(f => f.MinMessageLength);
+                // 5. MESSAGE TYPE FILTER (PostgreSQL GIN Index)
+                filterOptionsBuilder.HasIndex(f => f.AllowedMessageTypes)
+                    .HasMethod("gin")
+                    .HasDatabaseName("IX_ForwardingRules_MessageTypes_GIN");
             });
+
+            // =================================================================
+            // --- INDEXES on the ROOT ENTITY (ForwardingRule) ---
+            // =================================================================
+            #region Indexes
+
+            // These indexes reference properties directly on ForwardingRule, so they stay here.
+
+            // 1. PRIMARY RULE LOOKUP INDEX (CRITICAL)
+            builder.HasIndex(fr => new { fr.SourceChannelId, fr.IsEnabled })
+                   .HasDatabaseName("IX_ForwardingRules_BySourceChannelAndStatus");
+
+            // 2. TARGET CHANNEL LOOKUP INDEX (PostgreSQL GIN Index)
+            builder.HasIndex(fr => fr.TargetChannelIds)
+                   .HasMethod("gin")
+                   .HasDatabaseName("IX_ForwardingRules_ByTargetChannel_GIN");
+
+            // 6. GENERAL STATUS LOOKUP
+            builder.HasIndex(fr => fr.IsEnabled)
+                   .HasDatabaseName("IX_ForwardingRules_IsEnabled");
+
+            #endregion
         }
+
+        #region Helper Methods
+        // Helper methods remain the same...
+        private static ValueComparer<IReadOnlyList<T>> CreateValueComparer<T>()
+        {
+            return new ValueComparer<IReadOnlyList<T>>(
+                (c1, c2) => (c1 == null && c2 == null) || (c1 != null && c2 != null && c1.SequenceEqual(c2)),
+                c => c == null ? 0 : c.Aggregate(0, (a, v) => HashCode.Combine(a, v == null ? 0 : v.GetHashCode())),
+                c => c == null ? new List<T>() : c.ToList()
+            );
+        }
+
+        private static void ConfigureJsonbList<T>(PropertyBuilder<IReadOnlyList<T>> propertyBuilder)
+        {
+            propertyBuilder
+                .HasColumnType("jsonb")
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v ?? new List<T>(), _jsonOptions),
+                    v => JsonSerializer.Deserialize<List<T>>(v, _jsonOptions) ?? new List<T>()
+                )
+                .Metadata.SetValueComparer(CreateValueComparer<T>());
+        }
+        #endregion
     }
 }

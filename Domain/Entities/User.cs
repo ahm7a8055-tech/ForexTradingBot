@@ -71,7 +71,7 @@ namespace Domain.Entities
             EnableRssNewsNotifications = true;
             PreferredLanguage = "en";
         }
-
+        public virtual ICollection<UserRssPreference> RssPreferences { get; set; } = [];
         public User(string username, string telegramId, string email) : this()
         {
             Username = username?.Trim() ?? throw new ArgumentNullException(nameof(username));
