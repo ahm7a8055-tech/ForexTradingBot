@@ -7,11 +7,13 @@ using Dapper; // Added for Dapper
 using Domain.Features.Forwarding.Entities;     // For ForwardingRule entity
 using Domain.Features.Forwarding.Repositories; // For IForwardingRuleRepository interface
 using Domain.Features.Forwarding.ValueObjects; // For MessageEditOptions, MessageFilterOptions, TextReplacement
+using Domain.Features.Fowarding.ValueObjects;
 using Microsoft.Data.SqlClient; // Added for SqlConnection (assuming SQL Server)
 // using Infrastructure.Data; // No longer directly using AppDbContext here
 using Microsoft.EntityFrameworkCore; // Still needed for DbUpdateConcurrencyException type check in Polly
 using Microsoft.Extensions.Configuration; // Added to get connection string
 using Microsoft.Extensions.Logging;   // For logging
+using Npgsql;
 using Polly; // For Polly policies
 using Polly.Retry; // For Retry policy
 using System.Data; // For IDbConnection
@@ -62,7 +64,37 @@ namespace Infrastructure.Features.Forwarding.Repositories
                    });
         }
         #region Internal DTOs for Dapper Mapping
+        private NpgsqlConnection CreateConnection() => new(_connectionString);
+        private class ForwardingRuleWithReplacementsDto
+        {
+            // All properties from ForwardingRules table
+            public string RuleName { get; set; } = default!;
+            public bool IsEnabled { get; set; }
+            public long SourceChannelId { get; set; }
+            public string TargetChannelIds { get; set; } = default!;
+            public string? EditOptions_PrependText { get; set; }
+            public string? EditOptions_AppendText { get; set; }
+            public bool EditOptions_RemoveSourceForwardHeader { get; set; }
+            public bool EditOptions_RemoveLinks { get; set; }
+            public bool EditOptions_StripFormatting { get; set; }
+            public string? EditOptions_CustomFooter { get; set; }
+            public bool EditOptions_DropAuthor { get; set; }
+            public bool EditOptions_DropMediaCaptions { get; set; }
+            public bool EditOptions_NoForwards { get; set; }
+            public string FilterOptions_AllowedMessageTypes { get; set; } = default!;
+            public string FilterOptions_AllowedMimeTypes { get; set; } = default!;
+            public string? FilterOptions_ContainsText { get; set; }
+            public bool FilterOptions_ContainsTextIsRegex { get; set; }
+            public int FilterOptions_ContainsTextRegexOptions { get; set; }
+            public string FilterOptions_AllowedSenderUserIds { get; set; } = default!;
+            public string FilterOptions_BlockedSenderUserIds { get; set; } = default!;
+            public bool FilterOptions_IgnoreEditedMessages { get; set; }
+            public bool FilterOptions_IgnoreServiceMessages { get; set; }
+            public int? FilterOptions_MinMessageLength { get; set; }
+            public int? FilterOptions_MaxMessageLength { get; set; }
+            public string? TextReplacementsJson { get; set; } // JSON array of replacements
 
+        }
         // DTO that mirrors the flattened database structure for ForwardingRule
         private class ForwardingRuleDbDto
         {
