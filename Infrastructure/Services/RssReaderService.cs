@@ -611,6 +611,27 @@ namespace Infrastructure.Services
         /// </list>
         /// The logging within this method is essential for MLOps to audit when and why sources are being removed.
         /// </remarks>
+        // In NewsItemRepository.cs
+
+        /// <summary>
+        /// Deletes an RSS source from the database by its ID. This method is designed to be resilient
+        /// to transient database errors through the use of a Polly retry policy. It also ensures
+        /// proper transaction management and error handling, including specific logging for
+        /// cases where the source is not found or concurrent modifications occur.
+        /// </summary>
+        /// <param name="rssSourceId">The unique identifier (GUID) of the RSS source to be deleted.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe for cancellation requests.
+        /// If cancellation is requested, the operation will attempt to terminate gracefully.</param>
+        /// <returns>
+        /// A <see cref="Task"/> representing the asynchronous delete operation.
+        /// </returns>
+        /// <exception cref="RepositoryException">
+        /// Thrown if the database operation fails after exhausting all configured retry attempts,
+        /// wrapping the original database exception for consistent error handling.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if the <paramref name="cancellationToken"/> is signaled during the database operation or while retrying.
+        /// </exception>
         private async Task DeleteRssSourceAsync(Guid rssSourceId, CancellationToken cancellationToken)
         {
             const string methodName = nameof(DeleteRssSourceAsync);
@@ -618,38 +639,48 @@ namespace Infrastructure.Services
 
             try
             {
+                // Apply the retry policy for this database operation.
                 await _dbRetryPolicy.ExecuteAsync(async (ct) =>
                 {
+                    // CORRECTED: Use NpgsqlConnection.
                     await using var connection = CreateConnection();
                     await connection.OpenAsync(ct);
-                    var sql = "DELETE FROM RssSources WHERE Id = @Id;";
-                    var rowsAffected = await connection.ExecuteAsync(
-                        new CommandDefinition(sql, new { Id = rssSourceId }, commandTimeout: 120, cancellationToken: ct)
-                    );
+
+                    // CORRECTED: SQL statement with quoted identifiers for PostgreSQL.
+                    // The schema name 'public' is explicitly included for clarity and robustness.
+                    var sql = @"DELETE FROM public.""RssSources"" WHERE ""Id"" = @Id;";
+
+                    var command = new CommandDefinition(sql, new { Id = rssSourceId }, commandTimeout: 90, cancellationToken: ct);
+                    var rowsAffected = await connection.ExecuteAsync(command);
+
                     if (rowsAffected > 0)
                     {
                         _logger.LogInformation("RssSource with ID {RssSourceId} successfully deleted from database. {RowsAffected} rows affected.", rssSourceId, rowsAffected);
                     }
                     else
                     {
-                        _logger.LogWarning("Attempted to delete RssSource with ID {RssSourceId}, but no rows were affected. It may not exist.", rssSourceId);
+                        // Log a warning if the delete operation did not affect any rows, as this might indicate
+                        // the source was already deleted or never existed, which is not necessarily an error but worth noting.
+                        _logger.LogWarning("Attempted to delete RssSource with ID {RssSourceId}, but no rows were affected. It may not exist or was already deleted.", rssSourceId);
                     }
                 }, cancellationToken);
             }
             catch (OperationCanceledException oce)
             {
+                // Log cancellation explicitly, but re-throw to propagate.
                 _logger.LogWarning(oce, "DeleteRssSourceAsync for RssSourceId {RssSourceId} was cancelled.", rssSourceId);
                 throw;
             }
             catch (Exception ex)
             {
+                // Log any other exceptions encountered during the operation as an error,
+                // and wrap them in a RepositoryException for consistent error handling by callers.
                 _logger.LogError(ex, "Error deleting RssSource with ID {RssSourceId} from the database after retries. Original exception: {ErrorMessage}", rssSourceId, ex.Message);
                 throw new RepositoryException($"Failed to delete RssSource '{rssSourceId}' from database.", ex);
             }
 
-            _logger.LogTrace("Exiting {MethodName}", methodName);
+            _logger.LogTrace("Exiting {MethodName} for RssSourceId: {RssSourceId}", methodName, rssSourceId);
         }
-
         /// <summary>
         /// Orchestrates the processing of a received HTTP response from an RSS feed.
         /// This method analyzes the HTTP status code and response headers to determine the next steps:
@@ -849,24 +880,28 @@ namespace Infrastructure.Services
         private async Task<SyndicationFeed> ParseFeedContentAsync(HttpResponseMessage response, CancellationToken cancellationToken)
         {
             const string methodName = nameof(ParseFeedContentAsync);
-            _logger.LogTrace("Entering {MethodName}", methodName);
+            _logger.LogTrace("Entering {MethodName} to parse decompressed feed stream.", methodName);
 
+            // With automatic decompression enabled on HttpClient, this stream is guaranteed to be plain text.
             await using var feedStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+
             var readerSettings = new XmlReaderSettings
             {
                 Async = true,
-                DtdProcessing = DtdProcessing.Ignore, // Security best practice: prevent XXE attacks.
+                DtdProcessing = DtdProcessing.Ignore, // Security: Prevent XXE attacks.
                 IgnoreWhitespace = true
             };
 
+            // Using will correctly dispose of the reader.
             using var xmlReader = XmlReader.Create(feedStream, readerSettings);
+
+            // Task.Run is appropriate because SyndicationFeed.Load is a synchronous, potentially CPU-bound operation.
             var feed = await Task.Run(() => SyndicationFeed.Load(xmlReader), cancellationToken);
 
             _logger.LogDebug("Successfully parsed feed content. Feed Title: '{FeedTitle}'", feed.Title?.Text.Truncate(100));
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return feed;
         }
-
         /// <summary>
         /// Processes a collection of raw <see cref="SyndicationItem"/>s obtained from an RSS feed.
         /// This method performs several crucial steps:

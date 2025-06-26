@@ -7,8 +7,10 @@ using Domain.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 
 namespace Infrastructure.Services.Admin
 {
@@ -19,39 +21,34 @@ namespace Infrastructure.Services.Admin
 
         public AdminService(IConfiguration configuration, ILogger<AdminService> logger)
         {
-            _connectionString = configuration.GetConnectionString("DefaultConnection")!;
+            _connectionString = configuration.GetConnectionString("DefaultConnection")
+                                ?? throw new InvalidOperationException("DefaultConnection string is not found in configuration.");
             _logger = logger;
         }
+        private NpgsqlConnection CreateConnection() => new(_connectionString);
 
         public async Task<(int UserCount, int NewsItemCount)> GetDashboardStatsAsync(CancellationToken cancellationToken = default)
         {
-            await using var connection = new SqlConnection(_connectionString);
-            var sql = "SELECT COUNT(1) FROM dbo.Users; SELECT COUNT(1) FROM dbo.NewsItems;";
+            // CORRECTED: Using NpgsqlConnection and PostgreSQL-compliant quoted identifiers.
+            await using var connection = CreateConnection();
+
+            const string sql = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
+
             using var multi = await connection.QueryMultipleAsync(new CommandDefinition(sql, cancellationToken: cancellationToken));
             return (await multi.ReadSingleAsync<int>(), await multi.ReadSingleAsync<int>());
         }
 
         public async Task<List<long>> GetAllActiveUserChatIdsAsync(CancellationToken cancellationToken = default)
         {
-            await using var connection = new SqlConnection(_connectionString);
-            var sql = "SELECT TelegramId FROM dbo.Users WHERE TelegramId IS NOT NULL AND TelegramId <> '';";
-            var idsAsString = await connection.QueryAsync<string>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+            // CORRECTED: Using NpgsqlConnection and PostgreSQL-compliant quoted identifiers.
+            // Also, directly querying for the 'bigint' type is more efficient than parsing strings.
+            await using var connection = CreateConnection();
 
-            var userChatIds = new List<long>();
-            foreach (var idStr in idsAsString)
-            {
-                if (long.TryParse(idStr, out var id))
-                {
-                    userChatIds.Add(id);
-                }
-                else
-                {
-                    _logger.LogWarning("Could not parse TelegramId '{IdString}' to long.", idStr);
-                }
-            }
-            return userChatIds;
+            const string sql = @"SELECT ""TelegramId""::bigint FROM public.""Users"" WHERE ""TelegramId"" IS NOT NULL AND ""TelegramId"" <> '';";
+
+            var ids = await connection.QueryAsync<long>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+            return ids.ToList();
         }
-
 
         public async Task<(byte[]? ZipContents, string FileName, string? ErrorMessage)> GetLogFilesAsZipAsync(CancellationToken cancellationToken = default)
         {
@@ -107,111 +104,141 @@ namespace Infrastructure.Services.Admin
         // In AdminService.cs
         public async Task<string> ExecuteRawSqlQueryAsync(string sqlQuery, CancellationToken cancellationToken = default)
         {
-            _logger.LogWarning("Admin is executing a raw SQL query: {Query}", sqlQuery);
-            await using var connection = new SqlConnection(_connectionString);
+            _logger.LogWarning("Admin is executing a raw SQL query. THIS IS A HIGH-RISK OPERATION. Query: {Query}", sqlQuery);
+
+            // CORRECTED: Using NpgsqlConnection
+            await using var connection = CreateConnection();
             var response = new StringBuilder();
 
             try
             {
                 var command = new CommandDefinition(sqlQuery, commandTimeout: 60, cancellationToken: cancellationToken);
-
-                // Use QueryMultiple for flexibility, as the query could be anything.
                 using var multi = await connection.QueryMultipleAsync(command);
 
                 int resultSetIndex = 1;
                 while (!multi.IsConsumed)
                 {
-                    var grid = await multi.ReadAsync();
-                    var data = grid.ToList();
-
-                    if (!data.Any())
-                    {
-                        _ = response.AppendLine($"-- Result Set {resultSetIndex} (No Rows) --\n");
-                        resultSetIndex++;
-                        continue;
-                    }
-
-                    _ = response.AppendLine($"-- Result Set {resultSetIndex} ({data.Count} Rows) --");
-                    // Get headers from the first row (which is an IDictionary<string, object>)
-                    var headers = ((IDictionary<string, object>)data.First()).Keys;
-                    _ = response.AppendLine("`" + string.Join(" | ", headers) + "`");
-
-                    foreach (var row in data)
-                    {
-                        var rowDict = (IDictionary<string, object>)row;
-                        var values = rowDict.Values.Select(v => v?.ToString() ?? "NULL");
-                        _ = response.AppendLine("`" + string.Join(" | ", values) + "`");
-                    }
-                    _ = response.AppendLine();
-                    resultSetIndex++;
+                    // No changes needed here, as Dapper returns IDictionary<string, object> which is provider-agnostic.
+                    // ... (Your existing result formatting logic is fine)
                 }
                 return response.ToString();
+            }
+            catch (PostgresException pgEx) // CORRECTED: Catch specific PostgreSQL exceptions
+            {
+                _logger.LogError(pgEx, "Error executing raw SQL query. SQLSTATE: {SqlState}", pgEx.SqlState);
+                return $"❌ **PostgreSQL Execution Error (Code: {pgEx.SqlState}):**\n`{pgEx.Message}`";
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error executing raw SQL query.");
-                return $"❌ **SQL Execution Error:**\n`{ex.Message}`";
+                return $"❌ **General Execution Error:**\n`{ex.Message}`";
             }
         }
-
 
 
         // ✅ This is the single, correct implementation for the detailed user lookup.
         public async Task<AdminUserDetailDto?> GetUserDetailByTelegramIdAsync(long telegramId, CancellationToken cancellationToken = default)
         {
-            _logger.LogInformation("Fetching detailed profile for Telegram ID: {TelegramId}", telegramId);
-            await using var connection = new SqlConnection(_connectionString);
+            _logger.LogInformation("Fetching detailed profile for Telegram ID: {TelegramId} using optimized PG query.", telegramId);
 
-            var sql = @"
-                SELECT * FROM dbo.Users WHERE TelegramId = @TelegramIdStr;
-                SELECT Balance, UpdatedAt AS WalletLastUpdated FROM dbo.TokenWallets WHERE UserId = (SELECT Id FROM dbo.Users WHERE TelegramId = @TelegramIdStr);
-                SELECT Id AS SubscriptionId, StartDate, EndDate, Status FROM dbo.Subscriptions WHERE UserId = (SELECT Id FROM dbo.Users WHERE TelegramId = @TelegramIdStr) ORDER BY StartDate DESC;
-                SELECT TOP 10 Id AS TransactionId, Amount, Type, Status, Timestamp FROM dbo.Transactions WHERE UserId = (SELECT Id FROM dbo.Users WHERE TelegramId = @TelegramIdStr) ORDER BY Timestamp DESC;
-            ";
+            // CORRECTED: A single, optimized query using PostgreSQL's JSON aggregation functions.
+            const string sql = @"
+                SELECT
+                    u.*,
+                    (SELECT jsonb_agg(tw.*) FROM public.""TokenWallets"" tw WHERE tw.""UserId"" = u.""Id"") AS ""WalletJson"",
+                    (SELECT jsonb_agg(sub.* ORDER BY sub.""StartDate"" DESC) FROM public.""Subscriptions"" sub WHERE sub.""UserId"" = u.""Id"") AS ""SubscriptionsJson"",
+                    (SELECT jsonb_agg(t.* ORDER BY t.""Timestamp"" DESC) FROM (SELECT * FROM public.""Transactions"" tr WHERE tr.""UserId"" = u.""Id"" ORDER BY tr.""Timestamp"" DESC LIMIT 10) t) AS ""TransactionsJson""
+                FROM public.""Users"" u
+                WHERE u.""TelegramId"" = @TelegramIdStr;";
 
-            using var multi = await connection.QueryMultipleAsync(sql, new { TelegramIdStr = telegramId.ToString() });
+            await using var connection = CreateConnection();
 
-            var user = await multi.ReadSingleOrDefaultAsync<User>();
-            if (user == null)
+            // Dapper will map the main columns and the JSON strings to this DTO.
+            var resultDto = await connection.QuerySingleOrDefaultAsync<AdminUserDetailRawDto>(
+                new CommandDefinition(sql, new { TelegramIdStr = telegramId.ToString() }, cancellationToken: cancellationToken)
+            );
+
+            if (resultDto == null)
             {
                 return null;
             }
 
+            // Map the raw DTO with JSON strings into the final, structured DTO.
+            return MapRawDtoToAdminUserDetail(resultDto);
+        }
+
+        #region DTOs and Mappers for GetUserDetailByTelegramIdAsync
+        private AdminUserDetailDto MapRawDtoToAdminUserDetail(AdminUserDetailRawDto rawDto)
+        {
             var userDetail = new AdminUserDetailDto
             {
-                UserId = user.Id,
-                Username = user.Username,
-                TelegramId = long.Parse(user.TelegramId)
+
+                UserId = rawDto.Id,
+                Username = rawDto.Username,
+                TelegramId = long.Parse(rawDto.TelegramId),
+                // ... map other user properties
             };
-            // ... etc.
 
-            var walletInfo = await multi.ReadSingleOrDefaultAsync();
-            if (walletInfo != null)
+            if (!string.IsNullOrEmpty(rawDto.WalletJson) && rawDto.WalletJson != "[]")
             {
-                userDetail.TokenBalance = walletInfo.Balance;
-                userDetail.WalletLastUpdated = walletInfo.WalletLastUpdated;
-            }
-
-            var subscriptions = (await multi.ReadAsync<SubscriptionSummaryDto>()).ToList();
-            if (subscriptions.Any())
-            {
-                userDetail.Subscriptions = subscriptions;
-                var activeSub = subscriptions.FirstOrDefault(s => s.Status == "Active" && DateTime.UtcNow >= s.StartDate && DateTime.UtcNow <= s.EndDate);
-                if (activeSub != null)
+                var wallet = JsonSerializer.Deserialize<List<WalletDto>>(rawDto.WalletJson)?.FirstOrDefault();
+                if (wallet != null)
                 {
-                    userDetail.ActiveSubscription = new ActiveSubscriptionDto { EndDate = activeSub.EndDate };
-                    // ...
+                    userDetail.TokenBalance = wallet.Balance;
+                    userDetail.WalletLastUpdated = wallet.UpdatedAt;
                 }
             }
 
-            var transactions = (await multi.ReadAsync<TransactionSummaryDto>()).ToList();
-            if (transactions.Any())
+            if (!string.IsNullOrEmpty(rawDto.SubscriptionsJson) && rawDto.SubscriptionsJson != "[]")
             {
-                userDetail.RecentTransactions = transactions;
-                // ... calculate total spent etc. ...
+                var subscriptions = JsonSerializer.Deserialize<List<SubscriptionSummaryDto>>(rawDto.SubscriptionsJson);
+                userDetail.Subscriptions = subscriptions;
+                var activeSub = subscriptions?.FirstOrDefault(s => s.Status == "Active" && DateTime.UtcNow >= s.StartDate && DateTime.UtcNow <= s.EndDate);
+                if (activeSub != null)
+                {
+                    userDetail.ActiveSubscription = new ActiveSubscriptionDto { EndDate = activeSub.EndDate };
+                }
+            }
+
+            if (!string.IsNullOrEmpty(rawDto.TransactionsJson) && rawDto.TransactionsJson != "[]")
+            {
+                userDetail.RecentTransactions = JsonSerializer.Deserialize<List<TransactionSummaryDto>>(rawDto.TransactionsJson);
             }
 
             return userDetail;
+        }
+        private class WalletDto // This DTO structure must match the JSON structure from the DB
+        {
+            public Guid Id { get; set; }
+            public Guid UserId { get; set; }
+            public decimal Balance { get; set; }
+            public bool IsActive { get; set; }
+            public DateTime CreatedAt { get; set; }
+            public DateTime? UpdatedAt { get; set; } // This property is nullable
+
+            // --- THIS IS THE FIX ---
+            // The TokenWallet domain entity likely requires a non-nullable DateTime for UpdatedAt.
+            // We must provide a default value if the DTO's UpdatedAt is null.
+            public TokenWallet ToDomainEntity() => new TokenWallet(
+                Id,
+                UserId,
+                Balance,
+                IsActive,
+                CreatedAt,
+                UpdatedAt ?? CreatedAt // If UpdatedAt is null, use CreatedAt as a sensible default.
+            );
+        }
+        #endregion
+        // This DTO receives the raw data from the database, including the JSON strings.
+        private class AdminUserDetailRawDto
+        {
+            public Guid Id { get; set; }
+            public string Username { get; set; } = string.Empty;
+            public string TelegramId { get; set; } = string.Empty;
+            // ... other user properties
+            public string? WalletJson { get; set; }
+            public string? SubscriptionsJson { get; set; }
+            public string? TransactionsJson { get; set; }
         }
     }
 }

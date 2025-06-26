@@ -21,7 +21,11 @@ namespace Application.DTOs.Admin
 
         // Wallet Info
         public decimal TokenBalance { get; set; }
-        public DateTime WalletLastUpdated { get; set; }
+
+        // --- THIS IS THE FIX ---
+        // Changed from 'DateTime' to 'DateTime?' to allow for null values from the database,
+        // which can occur if a wallet has been created but never updated.
+        public DateTime? WalletLastUpdated { get; set; }
 
         // Subscription Info
         public List<SubscriptionSummaryDto> Subscriptions { get; set; } = [];

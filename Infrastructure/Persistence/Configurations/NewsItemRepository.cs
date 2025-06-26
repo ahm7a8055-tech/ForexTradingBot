@@ -728,17 +728,22 @@ namespace Infrastructure.Persistence.Configurations
 
                     // --- CORRECTED: Paged data query with quoted identifiers ---
                     var sql = $@"
-                        SELECT
-                            n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", 
-                            n.""SourceName"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
-                            rs.""Id"" AS ""RssSource_Id"", rs.""SourceName"" AS ""RssSource_SourceName"",
-                            sc.""Id"" AS ""AssociatedSignalCategory_Id"", sc.""Name"" AS ""AssociatedSignalCategory_Name""
-                        FROM public.""NewsItems"" n
-                        LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
-                        LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""
-                        {fullWhereClause}
-                        ORDER BY n.""PublishedDate"" DESC
-                        OFFSET @Offset FETCH NEXT @PageSize ROWS ONLY;"; // This syntax is valid in PostgreSQL
+        SELECT
+            n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", 
+            n.""SourceName"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
+            
+            -- CORRECTED: Aliases without quotes
+            rs.""Id"" AS RssSource_Id, 
+            rs.""SourceName"" AS RssSource_SourceName,
+            sc.""Id"" AS AssociatedSignalCategory_Id, 
+            sc.""Name"" AS AssociatedSignalCategory_Name
+            
+        FROM public.""NewsItems"" n
+        LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
+        LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""
+        {fullWhereClause}
+        ORDER BY n.""PublishedDate"" DESC
+        LIMIT @PageSize OFFSET @Offset;";
 
                     parameters.Add("Offset", (pageNumber - 1) * pageSize);
                     parameters.Add("PageSize", pageSize);
@@ -769,15 +774,37 @@ namespace Infrastructure.Persistence.Configurations
             }
         }
         private const string FullNewsItemSelectSql = @"
-            SELECT
-                n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", n.""LastProcessedAt"",
-                n.""SourceName"", n.""SourceItemId"", n.""SentimentScore"", n.""SentimentLabel"", n.""DetectedLanguage"", n.""AffectedAssets"",
-                n.""RssSourceId"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
-                rs.""Id"" AS ""RssSource_Id"", rs.""Url"" AS ""RssSource_Url"", rs.""SourceName"" AS ""RssSource_SourceName"", rs.""IsActive"" AS ""RssSource_IsActive"", rs.""CreatedAt"" AS ""RssSource_CreatedAt"", rs.""UpdatedAt"" AS ""RssSource_UpdatedAt"", rs.""LastModifiedHeader"" AS ""RssSource_LastModifiedHeader"", rs.""ETag"" AS ""RssSource_ETag"", rs.""LastFetchAttemptAt"" AS ""RssSource_LastFetchAttemptAt"", rs.""LastSuccessfulFetchAt"" AS ""RssSource_LastSuccessfulFetchAt"", rs.""FetchIntervalMinutes"" AS ""RssSource_FetchIntervalMinutes"", rs.""FetchErrorCount"" AS ""RssSource_FetchErrorCount"", rs.""Description"" AS ""RssSource_Description"", rs.""DefaultSignalCategoryId"" AS ""RssSource_DefaultSignalCategoryId"",
-                sc.""Id"" AS ""AssociatedSignalCategory_Id"", sc.""Name"" AS ""AssociatedSignalCategory_Name"", sc.""Description"" AS ""AssociatedSignalCategory_Description"", sc.""IsActive"" AS ""AssociatedSignalCategory_IsActive"", sc.""SortOrder"" AS ""AssociatedSignalCategory_SortOrder""
-            FROM public.""NewsItems"" n
-            LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
-            LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""";
+    SELECT
+        n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", n.""LastProcessedAt"",
+        n.""SourceName"", n.""SourceItemId"", n.""SentimentScore"", n.""SentimentLabel"", n.""DetectedLanguage"", n.""AffectedAssets"",
+        n.""RssSourceId"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"", ""LinkHash"",
+        
+        -- CORRECTED: Removed double quotes from AS aliases
+        rs.""Id"" AS RssSource_Id, 
+        rs.""Url"" AS RssSource_Url, 
+        rs.""SourceName"" AS RssSource_SourceName, 
+        rs.""IsActive"" AS RssSource_IsActive, 
+        rs.""CreatedAt"" AS RssSource_CreatedAt, 
+        rs.""UpdatedAt"" AS RssSource_UpdatedAt, 
+        rs.""LastModifiedHeader"" AS RssSource_LastModifiedHeader, 
+        rs.""ETag"" AS RssSource_ETag, 
+        rs.""LastFetchAttemptAt"" AS RssSource_LastFetchAttemptAt, 
+        rs.""LastSuccessfulFetchAt"" AS RssSource_LastSuccessfulFetchAt, 
+        rs.""FetchIntervalMinutes"" AS RssSource_FetchIntervalMinutes, 
+        rs.""FetchErrorCount"" AS RssSource_FetchErrorCount, 
+        rs.""Description"" AS RssSource_Description, 
+        rs.""DefaultSignalCategoryId"" AS RssSource_DefaultSignalCategoryId,
+        
+        -- CORRECTED: Removed double quotes from AS aliases
+        sc.""Id"" AS AssociatedSignalCategory_Id, 
+        sc.""Name"" AS AssociatedSignalCategory_Name, 
+        sc.""Description"" AS AssociatedSignalCategory_Description, 
+        sc.""IsActive"" AS AssociatedSignalCategory_IsActive, 
+        sc.""SortOrder"" AS AssociatedSignalCategory_SortOrder
+        
+    FROM public.""NewsItems"" n
+    LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
+    LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""";
         #endregion
 
         #region INewsItemRepository Read Operations
@@ -835,27 +862,21 @@ namespace Infrastructure.Persistence.Configurations
         public async Task<NewsItem?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
             _logger.LogDebug("Fetching NewsItem by ID: {NewsItemId}", id);
+
+            // Use the corrected shared SQL fragment
+            var sql = $@"{FullNewsItemSelectSql} WHERE n.""Id"" = @Id;";
+
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
-
-                    var sql = $@"{FullNewsItemSelectSql} WHERE n.""Id"" = @Id;";
-
-                    var newsItem = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
-                        new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds), // <--- ADDED: Pass CommandTimeout
-                        (newsItemDto, rssSourceDto, signalCategoryDto) =>
-                        {
-                            var item = newsItemDto.ToDomainEntity();
-                            // NewsItemDbDto's ToDomainEntity should already handle the RssSource and SignalCategory mapping from aliased properties
-                            return item;
-                        },
-                        splitOn: "RssSource_Id,AssociatedSignalCategory_Id"
+                    var newsItems = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                        new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken),
+                        (newsItemDto, rssSourceDto, signalCategoryDto) => newsItemDto.ToDomainEntity(),
+                        splitOn: "RssSource_Id,AssociatedSignalCategory_Id" // This now works
                     );
-
-                    return newsItem.FirstOrDefault();
+                    return newsItems.FirstOrDefault();
                 });
             }
             catch (Exception ex)
@@ -922,7 +943,6 @@ namespace Infrastructure.Persistence.Configurations
                     await connection.OpenAsync(cancellationToken);
 
                     var sql = $@"{FullNewsItemSelectSql} WHERE n.""RssSourceId"" = @RssSourceId AND n.""SourceItemId"" = @SourceItemId;";
-
                     var newsItem = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, new { RssSourceId = rssSourceId, SourceItemId = sourceItemId }, commandTimeout: CommandTimeoutSeconds), // <--- ADDED: Pass CommandTimeout
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
@@ -1059,10 +1079,10 @@ namespace Infrastructure.Persistence.Configurations
         /// The query is designed for efficiency by using `OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY` and eager loading related entities with Dapper's multi-mapping.
         /// </remarks>
         public async Task<IEnumerable<NewsItem>> GetRecentNewsAsync(
-     int count,
-     Guid? rssSourceId = null,
-     bool includeRssSource = false, // This hint remains for interface compatibility.
-     CancellationToken cancellationToken = default)
+            int count,
+            Guid? rssSourceId = null,
+            bool includeRssSource = false, // This hint remains for interface compatibility.
+            CancellationToken cancellationToken = default)
         {
             if (count <= 0)
             {
@@ -1072,15 +1092,37 @@ namespace Infrastructure.Persistence.Configurations
             _logger.LogDebug("Fetching {Count} recent news items. RssSourceIdFilter: {RssSourceIdFilter}",
                 count, rssSourceId?.ToString() ?? "Any");
 
-            // --- 1. CORRECTED: All identifiers are quoted for PostgreSQL ---
-            // Use a StringBuilder for safe and efficient query construction.
+            // --- 1. CORRECTED: PostgreSQL-Compliant SQL Query ---
+            // Use StringBuilder for safe and efficient query construction.
+            // ALL table and column names are now quoted and correctly cased.
             var sqlBuilder = new StringBuilder(@"
         SELECT
             n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", n.""LastProcessedAt"",
             n.""SourceName"", n.""SourceItemId"", n.""SentimentScore"", n.""SentimentLabel"", n.""DetectedLanguage"", n.""AffectedAssets"",
             n.""RssSourceId"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
-            rs.""Id"" AS ""RssSource_Id"", rs.""Url"" AS ""RssSource_Url"", rs.""SourceName"" AS ""RssSource_SourceName"", rs.""IsActive"" AS ""RssSource_IsActive"", rs.""CreatedAt"" AS ""RssSource_CreatedAt"", rs.""UpdatedAt"" AS ""RssSource_UpdatedAt"", rs.""LastModifiedHeader"" AS ""RssSource_LastModifiedHeader"", rs.""ETag"" AS ""RssSource_ETag"", rs.""LastFetchAttemptAt"" AS ""RssSource_LastFetchAttemptAt"", rs.""LastSuccessfulFetchAt"" AS ""RssSource_LastSuccessfulFetchAt"", rs.""FetchIntervalMinutes"" AS ""RssSource_FetchIntervalMinutes"", rs.""FetchErrorCount"" AS ""RssSource_FetchErrorCount"", rs.""Description"" AS ""RssSource_Description"", rs.""DefaultSignalCategoryId"" AS ""RssSource_DefaultSignalCategoryId"",
-            sc.""Id"" AS ""AssociatedSignalCategory_Id"", sc.""Name"" AS ""AssociatedSignalCategory_Name"", sc.""Description"" AS ""AssociatedSignalCategory_Description"", sc.""IsActive"" AS ""AssociatedSignalCategory_IsActive"", sc.""SortOrder"" AS ""AssociatedSignalCategory_SortOrder""
+            
+            -- Aliases for Dapper multi-mapping REMAIN UNQUOTED to ensure compatibility with Dapper's splitOn logic.
+            rs.""Id"" AS RssSource_Id, 
+            rs.""Url"" AS RssSource_Url, 
+            rs.""SourceName"" AS RssSource_SourceName, 
+            rs.""IsActive"" AS RssSource_IsActive, 
+            rs.""CreatedAt"" AS RssSource_CreatedAt, 
+            rs.""UpdatedAt"" AS RssSource_UpdatedAt, 
+            rs.""LastModifiedHeader"" AS RssSource_LastModifiedHeader, 
+            rs.""ETag"" AS RssSource_ETag, 
+            rs.""LastFetchAttemptAt"" AS RssSource_LastFetchAttemptAt, 
+            rs.""LastSuccessfulFetchAt"" AS RssSource_LastSuccessfulFetchAt, 
+            rs.""FetchIntervalMinutes"" AS RssSource_FetchIntervalMinutes, 
+            rs.""FetchErrorCount"" AS RssSource_FetchErrorCount, 
+            rs.""Description"" AS RssSource_Description, 
+            rs.""DefaultSignalCategoryId"" AS RssSource_DefaultSignalCategoryId,
+            
+            sc.""Id"" AS AssociatedSignalCategory_Id, 
+            sc.""Name"" AS AssociatedSignalCategory_Name, 
+            sc.""Description"" AS AssociatedSignalCategory_Description, 
+            sc.""IsActive"" AS AssociatedSignalCategory_IsActive, 
+            sc.""SortOrder"" AS AssociatedSignalCategory_SortOrder
+            
         FROM public.""NewsItems"" n
         LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
         LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""
@@ -1097,7 +1139,7 @@ namespace Infrastructure.Persistence.Configurations
             }
 
             // --- 2. CORRECTED: PostgreSQL LIMIT syntax ---
-            // Replaced 'OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY'
+            // Replaced SQL Server's 'OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY' with PostgreSQL's standard 'LIMIT'.
             sqlBuilder.Append(@"
         ORDER BY n.""PublishedDate"" DESC, n.""CreatedAt"" DESC
         LIMIT @Limit
@@ -1109,7 +1151,9 @@ namespace Infrastructure.Persistence.Configurations
             {
                 return await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
-                    using var connection = CreateConnection(); // This should return NpgsqlConnection
+                    // --- CORRECTED: Use NpgsqlConnection ---
+                    using var connection = CreateConnection();
+                    await connection.OpenAsync(ct);
 
                     // Using a dictionary to handle potential duplicates from LEFT JOINs is a robust pattern.
                     var newsItemsMap = new Dictionary<Guid, NewsItem>();
@@ -1127,6 +1171,7 @@ namespace Infrastructure.Persistence.Configurations
                             }
                             return newsItem;
                         },
+                        // Dapper expects the splitOn values to be UNQUOTED.
                         splitOn: "RssSource_Id,AssociatedSignalCategory_Id"
                     );
 

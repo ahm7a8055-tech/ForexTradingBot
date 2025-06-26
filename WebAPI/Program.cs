@@ -388,8 +388,30 @@ try
 
                 case "postgres":
                 case "postgresql":
-                    builder.Services.AddHangfire(config => config
-                        .UsePostgreSqlStorage(c => c.UseNpgsqlConnection(builder.Configuration.GetConnectionString("PostgresConnection"))));
+                    builder.Services.AddHangfire(config =>
+                    {
+                        // Configure the storage provider (PostgreSQL in this case)
+                        // Ensure you are using the correct connection string for PostgreSQL here.
+                        string? postgresConnectionString = builder.Configuration.GetConnectionString("PostgresConnection") ?? builder.Configuration.GetConnectionString("DefaultConnection");
+                        if (string.IsNullOrEmpty(postgresConnectionString))
+                        {
+                            throw new InvalidOperationException("PostgreSQL connection string is missing. Ensure 'PostgresConnection' or 'DefaultConnection' is configured.");
+                        }
+
+                        config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(postgresConnectionString));
+
+                        // --- THIS IS THE KEY FIX ---
+                        // Use UseSerializerSettings to configure the JSON serializer.
+                        // TypeNameHandling.All is essential for polymorphic types like ReplyMarkup.
+                        config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+                        {
+                            TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All, // Ensures type information is preserved
+                            NullValueHandling = Newtonsoft.Json.NullValueHandling.Include // Good practice to include nulls
+                        });
+
+                        // You might also want to ensure recommended settings are applied if not using TypeNameHandling.All
+                        // config.UseRecommendedSerializerSettings(); 
+                    });
                     break;
 
                 default:

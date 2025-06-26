@@ -36,6 +36,8 @@ using Infrastructure.Persistence.Configurations;
 using Polly.Retry;
 using Shared.Maintenance;
 using Hangfire.MemoryStorage;
+using System.Net.Http.Headers;
+using System.Net;
 #endregion
 
 namespace Infrastructure.Data
@@ -59,41 +61,40 @@ namespace Infrastructure.Data
                 // ✅ UPGRADE: Added in-memory storage for Hangfire during smoke tests to avoid db dependency.
                 services.AddHangfire(config => config.UseMemoryStorage());
             }
-            else
+            else // Not a smoke test, configure for real environments
             {
-                // For real environments, read the provider and connection string from configuration.
                 string? dbProvider = configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
-
                 string? connectionString = configuration.GetConnectionString("DefaultConnection");
 
-                // Fail-fast validation: Ensure critical settings are present.
                 if (string.IsNullOrEmpty(dbProvider) || string.IsNullOrEmpty(connectionString))
                 {
-                    throw new InvalidOperationException(
-                        "FATAL ERROR: The 'DatabaseSettings:DatabaseProvider' or 'ConnectionStrings:DefaultConnection' " +
-                        "is missing in the configuration. The application cannot start without a configured database.");
+                    throw new InvalidOperationException("FATAL ERROR: The 'DatabaseSettings:DatabaseProvider' or 'ConnectionStrings:DefaultConnection' is missing in the configuration. The application cannot start without a configured database.");
                 }
 
-                // Use a switch statement to configure services that are specific to the database provider.
                 switch (dbProvider)
                 {
                     case "postgres":
-                        // Configure EF Core (AppDbContext) for PostgreSQL.
-                        services.AddDbContext<AppDbContext>(opts =>
-                            opts.UseNpgsql(connectionString, npgsql =>
-                                npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
+                        services.AddDbContext<AppDbContext>(opts => opts.UseNpgsql(connectionString, npgsql => npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
 
-                        // Configure Hangfire to use PostgreSQL as its backing store.
-                        services.AddHangfire(config => config
-                            .UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString)));
+                        // --- CORRECTED HANGFIRE CONFIGURATION ---
+                        services.AddHangfire(config =>
+                        {
+                            // Configure the storage provider (PostgreSQL in this case)
+                            config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString));
+
+                            // --- CORRECTED: Use UseSerializerSettings for JSON settings ---
+                            // This applies the settings to the serializer Hangfire uses internally.
+                            // TypeNameHandling.All is essential for serializing/deserializing polymorphic types.
+                            config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+                            {
+                                TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All, // Ensures type information is preserved
+                                NullValueHandling = Newtonsoft.Json.NullValueHandling.Include // Good practice to include nulls
+                            });
+                        });
                         break;
 
                     case "sqlserver":
-                        // Configure EF Core (AppDbContext) for SQL Server.
-                        services.AddDbContext<AppDbContext>(opts =>
-                            opts.UseSqlServer(connectionString, sql =>
-                                sql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
-
+                        services.AddDbContext<AppDbContext>(opts => opts.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
                         // Configure Hangfire to use SQL Server as its backing store.
                         services.AddHangfire(config => config.UseSqlServerStorage(connectionString));
                         break;
@@ -150,8 +151,16 @@ namespace Infrastructure.Data
             services.Configure<RssReaderServiceSettings>(configuration.GetSection(RssReaderServiceSettings.ConfigurationSectionName));
             services.AddHttpClient(RssReaderService.HttpClientNamedClient, (serviceProvider, client) =>
             {
+                // Configure default headers for every request made by this client.
                 var settings = serviceProvider.GetRequiredService<IOptions<RssReaderServiceSettings>>().Value;
                 client.DefaultRequestHeaders.UserAgent.ParseAdd(settings.UserAgent);
+                client.DefaultRequestHeaders.Accept.Clear();
+                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xml"));
+                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/xml"));
+                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/rss+xml"));
+            }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
             });
             services.AddHttpClient<ICoinGeckoApiClient, CoinGeckoApiClient>().AddPolicyHandler(retryPolicy);
             services.AddHttpClient<IFmpApiClient, FmpApiClient>().AddPolicyHandler(retryPolicy);

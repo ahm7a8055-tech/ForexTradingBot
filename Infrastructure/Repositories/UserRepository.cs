@@ -310,28 +310,41 @@ namespace Infrastructure.Repositories
 
         /// <inheritdoc />
         public async Task<IEnumerable<User>> GetUsersForNewsNotificationAsync(
-     Guid? newsItemSignalCategoryId,
-     bool isNewsItemVipOnly,
-     CancellationToken cancellationToken = default)
+        Guid? newsItemSignalCategoryId,
+        bool isNewsItemVipOnly,
+        CancellationToken cancellationToken = default)
         {
             _logger.LogInformation(
                 "UserRepository: Fetching users for news notification. CategoryId: {CategoryId}, IsVipOnly: {IsVip}",
                 newsItemSignalCategoryId, isNewsItemVipOnly);
 
-            // --- 1. BUILD THE SQL QUERY ---
-            // Start with the base query that fetches users and their related data as JSON.
-            // We will dynamically add WHERE clauses based on the input parameters.
-            var baseSql = new StringBuilder(UserWithRelatedDataSqlFragment); // Use the shared SQL fragment
-            baseSql.AppendLine("WHERE u.\"EnableRssNewsNotifications\" = true");
+            // --- 1. BUILD A LIGHTWEIGHT AND TARGETED SQL QUERY ---
+            // We only select the columns needed to construct a minimal User object for notifications.
+            // This avoids the overhead of JSON aggregation for related data we don't need here.
+            var sqlBuilder = new StringBuilder(@"
+        SELECT
+            u.""Id"",
+            u.""Username"",
+            u.""TelegramId"",
+            u.""Email"",
+            u.""Level"",
+            u.""CreatedAt"",
+            u.""UpdatedAt"",
+            u.""EnableGeneralNotifications"",
+            u.""EnableVipSignalNotifications"",
+            u.""EnableRssNewsNotifications"",
+            u.""PreferredLanguage""
+        FROM public.""Users"" u
+        WHERE u.""EnableRssNewsNotifications"" = true
+    ");
 
             var parameters = new DynamicParameters();
 
             // Clause for VIP-only news
             if (isNewsItemVipOnly)
             {
-                // For PostgreSQL, use NOW() or CURRENT_TIMESTAMP for the current UTC time.
-                // The UserLevel enum values ('Premium', 'Vip') should match what's in your DB.
-                baseSql.AppendLine(@"
+                // This EXISTS subquery is efficient and correctly uses PostgreSQL syntax.
+                sqlBuilder.AppendLine(@"
             AND u.""Level"" IN ('Premium', 'Vip') 
             AND EXISTS (
                 SELECT 1 FROM public.""Subscriptions"" s_sub 
@@ -345,7 +358,8 @@ namespace Infrastructure.Repositories
             // Clause for specific news categories
             if (newsItemSignalCategoryId.HasValue)
             {
-                baseSql.AppendLine(@"
+                // This logic correctly finds users with no preferences OR a matching preference.
+                sqlBuilder.AppendLine(@"
             AND (
                 NOT EXISTS (SELECT 1 FROM public.""UserSignalPreferences"" usp_pref WHERE usp_pref.""UserId"" = u.""Id"") 
                 OR EXISTS (
@@ -356,30 +370,27 @@ namespace Infrastructure.Repositories
                 parameters.Add("NewsItemSignalCategoryId", newsItemSignalCategoryId.Value);
             }
 
-            var finalSql = baseSql.ToString();
+            var finalSql = sqlBuilder.ToString();
 
             try
             {
-                // Use the combined Polly policy for resilience.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
                 return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(ct);
 
-                    // --- 2. EXECUTE THE QUERY ---
-                    // Execute the single, powerful JSON aggregation query.
-                    // Dapper will map each row to our UserWithRelatedDataDto.
-                    var userDtos = await connection.QueryAsync<UserWithRelatedDataDto>(
+                    // --- 2. EXECUTE THE LIGHTWEIGHT QUERY ---
+                    // We map the results to the simpler UserDbDto, as we are not fetching related JSON.
+                    var userDtos = await connection.QueryAsync<UserDbDto>(
                         new CommandDefinition(finalSql, parameters, cancellationToken: ct)
                     );
 
                     // --- 3. MAP TO DOMAIN ENTITIES ---
                     // Convert the list of DTOs to a list of domain User entities.
-                    // The ToDomainEntity method handles the JSON deserialization for each user.
+                    // The ToDomainEntity method will initialize related collections as empty, which is correct for this use case.
                     var eligibleUsers = userDtos
-                        .Select(dto => dto.ToDomainEntity(_logger))
+                        .Select(dto => dto.ToDomainEntity()) // No longer needs to pass the logger for JSON parsing
                         .ToList();
 
                     _logger.LogInformation("UserRepository: Found {UserCount} eligible users for news notification.", eligibleUsers.Count);

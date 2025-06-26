@@ -596,6 +596,8 @@ namespace TelegramPanel.Infrastructure
 
 
         // REWRITTEN METHOD
+        private const int TelegramApiMaxCaptionLength = 1024;
+
         public async Task SendPhotoToTelegramAsync(
             long chatId,
             string photoUrlOrFileId,
@@ -604,7 +606,7 @@ namespace TelegramPanel.Infrastructure
             ReplyMarkup? replyMarkup,
             CancellationToken cancellationToken)
         {
-            // Apply robust sanitization immediately.
+            // Apply robust sanitization immediately for logging.
             string sanitizedLogCaption = SanitizeSensitiveData(caption);
 
             _logger.LogDebug("Hangfire Job (ActualSend): Sending photo. ChatID: {ChatId}, Photo: {PhotoIdOrUrl}, Caption (Sanitized): '{SanitizedLogCaption}'", chatId, photoUrlOrFileId, sanitizedLogCaption);
@@ -622,11 +624,23 @@ namespace TelegramPanel.Infrastructure
 
                 await _telegramApiRetryPolicy.ExecuteAsync(async (context, ct) =>
                 {
+                    // --- THE FIX IS APPLIED HERE ---
+                    string processedCaption = caption;
+                    if (!string.IsNullOrWhiteSpace(caption) && caption.Length > TelegramApiMaxCaptionLength)
+                    {
+                        // Truncate the caption if it's too long.
+                        // Add an ellipsis to indicate truncation, but be mindful that the ellipsis itself counts towards the length.
+                        // For simplicity, we'll just truncate. If you want to be precise, you might need to truncate to `MaxCaptionLength - 3` and append "...".
+                        processedCaption = caption.Substring(0, TelegramApiMaxCaptionLength);
+                        _logger.LogWarning("Caption was truncated for ChatID {ChatId}. Original length: {OriginalLength}, Max allowed: {MaxCaptionLength}.", chatId, caption.Length, TelegramApiMaxCaptionLength);
+                    }
+                    // --- END OF FIX ---
+
                     await _botClient.SendPhoto(
                         chatId: new ChatId(chatId),
                         photo: photoInput,
-                        caption: caption,
-                        parseMode: ParseMode.Markdown,
+                        caption: processedCaption, // Use the potentially truncated caption
+                        parseMode: ParseMode.Markdown, // Assuming Markdown is always the desired parse mode here
                         replyMarkup: replyMarkup,
                         cancellationToken: ct);
                 }, pollyContext, cancellationToken);
@@ -646,11 +660,10 @@ namespace TelegramPanel.Infrastructure
             {
                 // HARDENED: Log sanitized caption, not raw exception message which might contain it.
                 _logger.LogError(ex, "Hangfire Job (ActualSend): Unexpected error sending photo to ChatID {ChatId} after retries. Caption (Sanitized): '{SanitizedLogCaption}'", chatId, sanitizedLogCaption);
-                throw;
+                throw; // Re-throw to ensure the calling policy retries.
             }
-
-
         }
+
         // =========================================================================
         // 3. اینترفیس ITelegramMessageSender (بدون تغییر)
         // =========================================================================
