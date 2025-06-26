@@ -14,7 +14,8 @@ using Polly.Retry; // For retry policies
 using Shared.Extensions; // For Truncate extension method
 using System.Data; // Common Ado.Net interfaces like IDbConnection
 using System.Data.Common; // For DbException (base class for database exceptions)
-using System.Linq.Expressions; // <--- CORRECTED: Needed for Expression<> type in FindAsync signature
+using System.Linq.Expressions;
+using System.Text; // <--- CORRECTED: Needed for Expression<> type in FindAsync signature
 #endregion
 
 namespace Infrastructure.Persistence.Configurations
@@ -609,19 +610,8 @@ namespace Infrastructure.Persistence.Configurations
         /// using, and disposing of the returned <see cref="SqlConnection"/> instance (typically via `using` statements)
         /// to ensure connections are returned to the pool efficiently.
         /// </remarks>
-        private NpgsqlConnection CreateConnection()
-        {
-            try
-            {
-                // --- CHANGE: Returning NpgsqlConnection ---
-                return new NpgsqlConnection(_connectionString);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "UserRepository: Error creating PostgreSQL database connection. ConnectionString: {ConnectionString}", _connectionString);
-                throw;
-            }
-        }
+        private NpgsqlConnection CreateConnection() => new(_connectionString);
+
 
         #region SearchNewsAsync Implementation
 
@@ -1069,10 +1059,10 @@ namespace Infrastructure.Persistence.Configurations
         /// The query is designed for efficiency by using `OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY` and eager loading related entities with Dapper's multi-mapping.
         /// </remarks>
         public async Task<IEnumerable<NewsItem>> GetRecentNewsAsync(
-            int count,
-            Guid? rssSourceId = null,
-            bool includeRssSource = false, // This hint is less relevant for Dapper, joins are explicit.
-            CancellationToken cancellationToken = default)
+     int count,
+     Guid? rssSourceId = null,
+     bool includeRssSource = false, // This hint remains for interface compatibility.
+     CancellationToken cancellationToken = default)
         {
             if (count <= 0)
             {
@@ -1082,55 +1072,67 @@ namespace Infrastructure.Persistence.Configurations
             _logger.LogDebug("Fetching {Count} recent news items. RssSourceIdFilter: {RssSourceIdFilter}",
                 count, rssSourceId?.ToString() ?? "Any");
 
+            // --- 1. CORRECTED: All identifiers are quoted for PostgreSQL ---
+            // Use a StringBuilder for safe and efficient query construction.
+            var sqlBuilder = new StringBuilder(@"
+        SELECT
+            n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", n.""LastProcessedAt"",
+            n.""SourceName"", n.""SourceItemId"", n.""SentimentScore"", n.""SentimentLabel"", n.""DetectedLanguage"", n.""AffectedAssets"",
+            n.""RssSourceId"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
+            rs.""Id"" AS ""RssSource_Id"", rs.""Url"" AS ""RssSource_Url"", rs.""SourceName"" AS ""RssSource_SourceName"", rs.""IsActive"" AS ""RssSource_IsActive"", rs.""CreatedAt"" AS ""RssSource_CreatedAt"", rs.""UpdatedAt"" AS ""RssSource_UpdatedAt"", rs.""LastModifiedHeader"" AS ""RssSource_LastModifiedHeader"", rs.""ETag"" AS ""RssSource_ETag"", rs.""LastFetchAttemptAt"" AS ""RssSource_LastFetchAttemptAt"", rs.""LastSuccessfulFetchAt"" AS ""RssSource_LastSuccessfulFetchAt"", rs.""FetchIntervalMinutes"" AS ""RssSource_FetchIntervalMinutes"", rs.""FetchErrorCount"" AS ""RssSource_FetchErrorCount"", rs.""Description"" AS ""RssSource_Description"", rs.""DefaultSignalCategoryId"" AS ""RssSource_DefaultSignalCategoryId"",
+            sc.""Id"" AS ""AssociatedSignalCategory_Id"", sc.""Name"" AS ""AssociatedSignalCategory_Name"", sc.""Description"" AS ""AssociatedSignalCategory_Description"", sc.""IsActive"" AS ""AssociatedSignalCategory_IsActive"", sc.""SortOrder"" AS ""AssociatedSignalCategory_SortOrder""
+        FROM public.""NewsItems"" n
+        LEFT JOIN public.""RssSources"" rs ON n.""RssSourceId"" = rs.""Id""
+        LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""
+    ");
+
+            var parameters = new DynamicParameters();
+            parameters.Add("Limit", count);
+
+            if (rssSourceId.HasValue)
+            {
+                // Add WHERE clause with quoted identifier
+                sqlBuilder.Append(@" WHERE n.""RssSourceId"" = @RssSourceId");
+                parameters.Add("RssSourceId", rssSourceId.Value);
+            }
+
+            // --- 2. CORRECTED: PostgreSQL LIMIT syntax ---
+            // Replaced 'OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY'
+            sqlBuilder.Append(@"
+        ORDER BY n.""PublishedDate"" DESC, n.""CreatedAt"" DESC
+        LIMIT @Limit
+    ");
+
+            var sql = sqlBuilder.ToString();
+
             try
             {
-                return await _retryPolicy.ExecuteAsync(async () =>
+                return await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
-                    using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
+                    using var connection = CreateConnection(); // This should return NpgsqlConnection
 
-                    var sql = @"
-                        SELECT
-                            n.Id, n.Title, n.Link, n.Summary, n.FullContent, n.ImageUrl, n.PublishedDate, n.CreatedAt, n.LastProcessedAt,
-                            n.SourceName, n.SourceItemId, n.SentimentScore, n.SentimentLabel, n.DetectedLanguage, n.AffectedAssets,
-                            n.RssSourceId, n.IsVipOnly, n.AssociatedSignalCategoryId,
-                            rs.Id AS RssSource_Id, rs.Url AS RssSource_Url, rs.SourceName AS RssSource_SourceName, rs.IsActive AS RssSource_IsActive, rs.CreatedAt AS RssSource_CreatedAt, rs.UpdatedAt AS RssSource_UpdatedAt, rs.LastModifiedHeader AS RssSource_LastModifiedHeader, rs.ETag AS RssSource_ETag, rs.LastFetchAttemptAt AS RssSource_LastFetchAttemptAt, rs.LastSuccessfulFetchAt AS RssSource_LastSuccessfulFetchAt, rs.FetchIntervalMinutes AS RssSource_FetchIntervalMinutes, rs.FetchErrorCount AS RssSource_FetchErrorCount, rs.Description AS RssSource_Description, rs.DefaultSignalCategoryId AS RssSource_DefaultSignalCategoryId,
-                            sc.Id AS AssociatedSignalCategory_Id, sc.Name AS AssociatedSignalCategory_Name, sc.Description AS AssociatedSignalCategory_Description, sc.IsActive AS AssociatedSignalCategory_IsActive, sc.SortOrder AS AssociatedSignalCategory_SortOrder
-                        FROM NewsItems n
-                        LEFT JOIN RssSources rs ON n.RssSourceId = rs.Id
-                        LEFT JOIN SignalCategories sc ON n.AssociatedSignalCategoryId = sc.Id";
+                    // Using a dictionary to handle potential duplicates from LEFT JOINs is a robust pattern.
+                    var newsItemsMap = new Dictionary<Guid, NewsItem>();
 
-                    var whereClauses = new List<string>();
-                    var parameters = new DynamicParameters();
-
-                    if (rssSourceId.HasValue)
-                    {
-                        whereClauses.Add("n.RssSourceId = @RssSourceId");
-                        parameters.Add("RssSourceId", rssSourceId.Value);
-                    }
-
-                    if (whereClauses.Any())
-                    {
-                        sql += " WHERE " + string.Join(" AND ", whereClauses);
-                    }
-
-                    sql += @"
-                        ORDER BY n.PublishedDate DESC, n.CreatedAt DESC
-                        OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY;"; // Always fetch from start for 'recent'
-                    parameters.Add("Count", count);
-
-                    var newsItems = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
-                        new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds), // <--- ADDED: Pass CommandTimeout
+                    var items = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                        new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct),
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
                         {
-                            var item = newsItemDto.ToDomainEntity();
-                            return item;
+                            // This mapping logic correctly handles hydrating the domain entity.
+                            // The ToDomainEntity method in your DTO is well-designed for this.
+                            if (!newsItemsMap.TryGetValue(newsItemDto.Id, out var newsItem))
+                            {
+                                newsItem = newsItemDto.ToDomainEntity();
+                                newsItemsMap.Add(newsItem.Id, newsItem);
+                            }
+                            return newsItem;
                         },
                         splitOn: "RssSource_Id,AssociatedSignalCategory_Id"
                     );
 
-                    return newsItems.ToList();
-                });
+                    // newsItemsMap.Values ensures we return only unique NewsItem objects.
+                    return newsItemsMap.Values.ToList();
+                }, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -1428,86 +1430,67 @@ namespace Infrastructure.Persistence.Configurations
         /// <exception cref="RepositoryException">Thrown for general database or retry policy errors.</exception>
         public async Task UpdateAsync(NewsItem newsItem, CancellationToken cancellationToken = default)
         {
-            if (newsItem == null)
-            {
-                throw new ArgumentNullException(nameof(newsItem));
-            }
-
+            ArgumentNullException.ThrowIfNull(newsItem);
             _logger.LogInformation("Updating NewsItem. NewsItemId: {NewsItemId}", newsItem.Id);
+
+            // CORRECTED: All table and column names are now quoted for PostgreSQL.
+            const string sql = @"
+        UPDATE public.""NewsItems"" SET
+            ""Title"" = @Title,
+            ""Link"" = @Link,
+            ""Summary"" = @Summary,
+            ""FullContent"" = @FullContent,
+            ""ImageUrl"" = @ImageUrl,
+            ""PublishedDate"" = @PublishedDate,
+            ""LastProcessedAt"" = @LastProcessedAt,
+            ""SourceName"" = @SourceName,
+            ""SourceItemId"" = @SourceItemId,
+            ""SentimentScore"" = @SentimentScore,
+            ""SentimentLabel"" = @SentimentLabel,
+            ""DetectedLanguage"" = @DetectedLanguage,
+            ""AffectedAssets"" = @AffectedAssets,
+            ""RssSourceId"" = @RssSourceId,
+            ""IsVipOnly"" = @IsVipOnly,
+            ""AssociatedSignalCategoryId"" = @AssociatedSignalCategoryId,
+            ""LinkHash"" = @LinkHash
+        WHERE ""Id"" = @Id;";
 
             try
             {
                 await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
-                    // Use 'await using' for modern async disposal
                     await using var connection = CreateConnection();
-                    await connection.OpenAsync(ct).ConfigureAwait(false);
+                    var command = new CommandDefinition(sql, newsItem, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct);
+                    var rowsAffected = await connection.ExecuteAsync(command);
 
-                    var sql = @"
-                UPDATE NewsItems SET
-                    Title = @Title,
-                    Link = @Link,
-                    Summary = @Summary,
-                    FullContent = @FullContent,
-                    ImageUrl = @ImageUrl,
-                    PublishedDate = @PublishedDate,
-                    LastProcessedAt = @LastProcessedAt,
-                    SourceName = @SourceName,
-                    SourceItemId = @SourceItemId,
-                    SentimentScore = @SentimentScore,
-                    SentimentLabel = @SentimentLabel,
-                    DetectedLanguage = @DetectedLanguage,
-                    AffectedAssets = @AffectedAssets,
-                    RssSourceId = @RssSourceId,
-                    IsVipOnly = @IsVipOnly,
-                    AssociatedSignalCategoryId = @AssociatedSignalCategoryId
-                WHERE Id = @Id;";
-
-                    // ✅ UPGRADE: Pass the entire newsItem object directly.
-                    // Dapper will map all the properties to the SQL parameters. This is cleaner.
-                    var command = new CommandDefinition(
-                        sql,
-                        newsItem, // <-- Cleaner parameter passing
-                        commandTimeout: CommandTimeoutSeconds,
-                        cancellationToken: ct);
-
-                    var rowsAffected = await connection.ExecuteAsync(command).ConfigureAwait(false);
-
-                    // ✅ UPGRADE: More precise concurrency check.
                     if (rowsAffected == 0)
                     {
-                        // This is the most likely reason for 0 rows affected.
-                        // It's a clear signal that the entity we tried to update doesn't exist.
-                        throw new InvalidOperationException($"Update failed: NewsItem with ID '{newsItem.Id}' was not found in the database.");
+                        throw new InvalidOperationException($"Update failed: NewsItem with ID '{newsItem.Id}' was not found in the database. Concurrency conflict suspected.");
                     }
-
-                }, cancellationToken).ConfigureAwait(false);
+                }, cancellationToken);
 
                 _logger.LogInformation("Successfully updated NewsItem: {NewsItemId}", newsItem.Id);
             }
-            catch (InvalidOperationException ex) // Catch our specific "not found" error
+            catch (InvalidOperationException ex)
             {
-                // This log is now more accurate.
                 _logger.LogWarning(ex, "Update failed for NewsItem {NewsItemId}, likely because it was deleted before the update could be applied.", newsItem.Id);
                 throw; // Re-throw to let the caller know the update failed.
             }
-            catch (Exception ex) // Catch all other errors (DB connection, Polly timeout, etc.)
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "An unexpected error occurred while updating NewsItem {NewsItemId} in the database.", newsItem.Id);
                 throw new RepositoryException($"Failed to update news item '{newsItem.Id}'.", ex);
             }
         }
 
+
         public async Task DeleteAsync(NewsItem newsItem, CancellationToken cancellationToken = default)
         {
-            if (newsItem == null)
-            {
-                throw new ArgumentNullException(nameof(newsItem));
-            }
-
+            ArgumentNullException.ThrowIfNull(newsItem);
             _logger.LogInformation("Removing NewsItem. NewsItemId: {NewsItemId}", newsItem.Id);
-            _ = await DeleteByIdAsync(newsItem.Id, cancellationToken); // Delegate to DeleteByIdAsync
+            await DeleteByIdAsync(newsItem.Id, cancellationToken);
         }
+
 
         public async Task<bool> DeleteByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {

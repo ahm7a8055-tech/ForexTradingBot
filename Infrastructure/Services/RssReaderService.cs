@@ -38,6 +38,7 @@ using Shared.Extensions;
 using Shared.Results;
 using System.Xml.Linq;
 using StackExchange.Redis;
+using Npgsql;
 
 #endregion
 
@@ -410,40 +411,34 @@ namespace Infrastructure.Services
 
 
             _dbRetryPolicy = Policy
-                .Handle<DbException>(ex =>
+            .Handle<DbException>(ex =>
+            {
+                // Check for PostgreSQL-specific non-transient errors.
+                if (ex is PostgresException pgEx)
                 {
-                    // Check for specific SQL Server error numbers that are NOT transient.
-                    if (ex is SqlException sqlEx)
+                    // '23505' is the SQLSTATE for unique_violation.
+                    if (pgEx.SqlState == "23505")
                     {
-                        // Specific error numbers to NOT retry:
-                        // 2627: Unique constraint violation (PK or unique index).
-                        // 2601: Another unique constraint violation.
-                        // 547: Foreign key constraint violation (this is the key addition).
-                        if (sqlEx.Number == 2627 || sqlEx.Number == 2601 || sqlEx.Number == 547)
-                        {
-                            _logger.LogWarning(
-                                sqlEx,
-                                "Polly DB Policy: Encountered non-transient SQL error (Number {ErrorNumber}: {ErrorMessage}). This indicates a data integrity issue, not a transient fault. Will NOT retry.",
-                                sqlEx.Number, sqlEx.Message);
-                            return false; // Do NOT retry for these specific errors.
-                        }
-                        // For other SQL errors, assume they might be transient and allow retries.
-                        _logger.LogWarning(sqlEx, "Polly DB Policy: Encountered SQL error (Number {ErrorNumber}). Assuming transient, will retry.", sqlEx.Number);
-                        return true;
+                        _logger.LogWarning(pgEx,
+                            "Polly DB Policy: Encountered non-transient PostgreSQL error (SqlState {SqlState}: Unique Constraint Violation). This indicates a data integrity issue. Will NOT retry.",
+                            pgEx.SqlState);
+                        return false; // Do NOT retry for unique key violations.
                     }
-                    // For non-SQL DbExceptions (e.g., from other DB providers), assume transient and retry.
-                    _logger.LogWarning(ex, "Polly DB Policy: Encountered a general DbException. Assuming transient, will retry.");
-                    return true;
-                })
-                .WaitAndRetryAsync(
-                    retryCount: _settings.DbRetryCount,
-                    sleepDurationProvider: retryAttempt =>
-                    {
-                        var delay = TimeSpan.FromSeconds(Math.Pow(2, retryAttempt));
-                        _logger.LogWarning("Polly DB Retry: Database operation failed on attempt {RetryAttempt} of {MaxRetries}. Waiting {Delay} before next retry.",
-                            retryAttempt, _settings.DbRetryCount, delay);
-                        return delay;
-                    });
+                }
+                // For other DbExceptions, assume they might be transient and allow retries.
+                _logger.LogWarning(ex, "Polly DB Policy: Encountered a general or transient DbException. Assuming transient, will retry.");
+                return true;
+            })
+            .WaitAndRetryAsync(
+                retryCount: _settings.DbRetryCount,
+                sleepDurationProvider: retryAttempt =>
+                {
+                    var delay = TimeSpan.FromSeconds(Math.Pow(2, retryAttempt));
+                    _logger.LogWarning("Polly DB Retry: Database operation failed on attempt {RetryAttempt} of {MaxRetries}. Waiting {Delay} before next retry.",
+                        retryAttempt, _settings.DbRetryCount, delay);
+                    return delay;
+                });
+
 
             _logger.LogInformation("RssReaderService initialized successfully.");
         }
@@ -456,7 +451,7 @@ namespace Infrastructure.Services
         /// This is a simple factory method. Connection management, opening, and closing are handled
         /// within the methods that use it, leveraging .NET's built-in connection pooling.
         /// </remarks>
-        private SqlConnection CreateConnection() => new(_connectionString);
+        private NpgsqlConnection CreateConnection() => new(_connectionString);
 
         #endregion
 
@@ -983,7 +978,7 @@ namespace Infrastructure.Services
             var ids = await _dbRetryPolicy.ExecuteAsync(async () =>
             {
                 await using var connection = CreateConnection();
-                var sql = "SELECT SourceItemId FROM NewsItems WHERE RssSourceId = @RssSourceId AND SourceItemId IS NOT NULL;";
+                const string sql = @"SELECT ""SourceItemId"" FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" IS NOT NULL;";
                 _logger.LogDebug("Executing SQL to fetch existing SourceItemIds.");
                 return await connection.QueryAsync<string>(sql, new { RssSourceId = rssSourceId });
             });
@@ -1212,10 +1207,9 @@ namespace Infrastructure.Services
                     // Using a simple, high-performance INSERT statement.
                     // This assumes that the logic feeding this method has already filtered out duplicates.
                     // For bulk operations, this is much more efficient than a per-row "NOT EXISTS" check.
-                    var sql = @"
-              INSERT INTO NewsItems (Id, Title, Link, Summary, FullContent, ImageUrl, PublishedDate, CreatedAt, LastProcessedAt, SourceName, SourceItemId, SentimentScore, SentimentLabel, DetectedLanguage, AffectedAssets, RssSourceId, IsVipOnly, AssociatedSignalCategoryId) 
-              VALUES (@Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt, @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets, @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId);";
-
+                    const string sql = @"
+        INSERT INTO public.""NewsItems"" (""Id"", ""Title"", ""Link"", ""Summary"", ""FullContent"", ""ImageUrl"", ""PublishedDate"", ""CreatedAt"", ""LastProcessedAt"", ""SourceName"", ""SourceItemId"", ""SentimentScore"", ""SentimentLabel"", ""DetectedLanguage"", ""AffectedAssets"", ""RssSourceId"", ""IsVipOnly"", ""AssociatedSignalCategoryId"") 
+        VALUES (@Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt, @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets, @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId);";
                     // Dapper's ExecuteAsync on a list of objects will efficiently execute the command for each item.
                     var rowsAffected = await connection.ExecuteAsync(sql, itemsToSave, transaction, commandTimeout: 30); // Added a command timeout
 
@@ -1512,7 +1506,7 @@ namespace Infrastructure.Services
                 await _dbRetryPolicy.ExecuteAsync(async () =>
                 {
                     await using var connection = CreateConnection();
-                    var sql = @"UPDATE RssSources SET LastSuccessfulFetchAt = @LastSuccessfulFetchAt, FetchErrorCount = @FetchErrorCount, UpdatedAt = @UpdatedAt, ETag = @ETag, LastModifiedHeader = @LastModifiedHeader, IsActive = @IsActive, LastFetchAttemptAt = @LastFetchAttemptAt WHERE Id = @Id;";
+                    const string sql = @"UPDATE public.""RssSources"" SET ""LastSuccessfulFetchAt"" = @LastSuccessfulFetchAt, ""FetchErrorCount"" = @FetchErrorCount, ""UpdatedAt"" = @UpdatedAt, ""ETag"" = @ETag, ""LastModifiedHeader"" = @LastModifiedHeader, ""IsActive"" = @IsActive, ""LastFetchAttemptAt"" = @LastFetchAttemptAt WHERE ""Id"" = @Id;";
                     await connection.ExecuteAsync(sql, source);
                 });
             }
