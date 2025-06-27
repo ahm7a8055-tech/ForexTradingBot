@@ -12,6 +12,7 @@ using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Formatters;
 using Hangfire;
+using Application.Interfaces;
 
 namespace TelegramPanel.Infrastructure
 {
@@ -33,6 +34,14 @@ namespace TelegramPanel.Infrastructure
             long chatId,
             int messageId,
             CancellationToken cancellationToken = default);
+        /// <summary>
+        /// Hangfire/internal use only: retryable version for progressive retry logic.
+        /// </summary>
+        Task RetryableSendTextMessageAsync(long chatId, string text, ParseMode? parseMode, ReplyMarkup? replyMarkup, bool disableNotification, LinkPreviewOptions? linkPreviewOptions, CancellationToken cancellationToken, int retryCount);
+        /// <summary>
+        /// Hangfire/internal use only: retryable version for progressive retry logic.
+        /// </summary>
+        Task RetryableSendPhotoToTelegramAsync(long chatId, string photoUrlOrFileId, string? caption, ParseMode? parseMode, ReplyMarkup? replyMarkup, CancellationToken cancellationToken, int retryCount);
     }
 
     // =========================================================================
@@ -57,12 +66,14 @@ namespace TelegramPanel.Infrastructure
         private const int MaxLogLength = 150;
         private readonly AsyncRetryPolicy _sendMessagePolicy;
         private readonly AsyncRetryPolicy _answerCallbackQueryPolicy;
+        private readonly IUserService _userService;
         public ActualTelegramMessageActions(ILoggingSanitizer logSanitizer,
             ITelegramBotClient botClient,
             ILogger<ActualTelegramMessageActions> logger,
             IUserRepository userRepository,
             INotificationJobScheduler jobScheduler,
-            IAppDbContext context)
+            IAppDbContext context,
+            IUserService userService)
         {
             _jobScheduler = jobScheduler ?? throw new ArgumentNullException(nameof(jobScheduler));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
@@ -70,6 +81,7 @@ namespace TelegramPanel.Infrastructure
             _userRepository = userRepository ?? throw new ArgumentNullException(nameof(userRepository));
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _logSanitizer = logSanitizer;
+            _userService = userService ?? throw new ArgumentNullException(nameof(userService));
 
 
             _sendMessagePolicy = CreateTelegramRetryPolicy(
@@ -367,6 +379,20 @@ namespace TelegramPanel.Infrastructure
        LinkPreviewOptions? linkPreviewOptions,
        CancellationToken cancellationToken)
         {
+            await SendTextMessageToTelegramWithRetryAsync(chatId, text, parseMode, replyMarkup, disableNotification, linkPreviewOptions, cancellationToken, 0);
+        }
+
+        // Internal retry logic overload
+        private async Task SendTextMessageToTelegramWithRetryAsync(
+           long chatId,
+           string text,
+           ParseMode? parseMode,
+           ReplyMarkup? replyMarkup,
+           bool disableNotification,
+           LinkPreviewOptions? linkPreviewOptions,
+           CancellationToken cancellationToken,
+           int retryCount)
+        {
             // Apply robust sanitization immediately. This is the single source of truth for logging this text.
             string sanitizedLogText = SanitizeSensitiveData(text);
 
@@ -402,28 +428,35 @@ namespace TelegramPanel.Infrastructure
                         apiEx.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))) ||
                       (apiEx.ErrorCode == 403 && apiEx.Message.Contains("bot was blocked by the user", StringComparison.OrdinalIgnoreCase)))
             {
-                _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user deactivated/blocked (Code: {ApiErrorCode}) for ChatID {ChatId}. Text (Sanitized): '{SanitizedLogText}'. Attempting user removal.",
-                                    apiEx.ErrorCode,
-                                    chatId,
-                                    sanitizedLogText);
-
+                #region Progressive Retry Logic
+                if (retryCount < 3)
+                {
+                    int[] delays = { 3, 5, 10 }; // minutes
+                    int delayMinutes = delays[Math.Min(retryCount, delays.Length - 1)];
+                    _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API error for ChatID {ChatId} (Attempt {RetryCount}/3). Scheduling retry in {DelayMinutes} minutes.", chatId, retryCount + 1, delayMinutes);
+                    _jobScheduler.Schedule<IActualTelegramMessageActions>(
+                        sender => sender.RetryableSendTextMessageAsync(chatId, text, parseMode, replyMarkup, disableNotification, linkPreviewOptions, CancellationToken.None, retryCount + 1),
+                        TimeSpan.FromMinutes(delayMinutes));
+                    return;
+                }
+                #endregion
+                #region User Removal on Deactivation
+                _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user deactivated/blocked (Code: {ApiErrorCode}) for ChatID {ChatId} after {RetryCount} retries. Marking user as unreachable.", apiEx.ErrorCode, chatId, retryCount);
                 try
                 {
-                    Domain.Entities.User? userToDelete = await _userRepository.GetByTelegramIdAsync(chatId.ToString(), cancellationToken);
-                    if (userToDelete != null)
-                    {
-                        await _userRepository.DeleteAndSaveAsync(userToDelete, cancellationToken);
-                        _logger.LogInformation("Hangfire Job (ActualSend): Successfully removed user with Telegram ID {TelegramId} from database.", userToDelete.TelegramId);
-                    }
+                    await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", cancellationToken);
+                    _logger.LogInformation("Hangfire Job (ActualSend): Successfully marked user with Telegram ID {TelegramId} as unreachable (text send).", chatId);
                 }
                 catch (Exception dbEx)
                 {
-                    // HARDENED: Sanitize the original API exception message before logging.
                     var sanitizedApiExMessage = SanitizeSensitiveData(apiEx.Message);
-                    _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to remove user with ChatID {ChatId} from database. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
-                                        chatId,
-                                        sanitizedApiExMessage);
+                    _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to mark user with ChatID {ChatId} as unreachable after text send. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
+                        chatId,
+                        sanitizedApiExMessage);
                 }
+                _logger.LogInformation("Hangfire Job (ActualSend): User {ChatId} is already unreachable or deactivated. No further action required.", chatId);
+                return;
+                #endregion
             }
             catch (Exception ex)
             {
@@ -639,6 +672,19 @@ namespace TelegramPanel.Infrastructure
             ReplyMarkup? replyMarkup,
             CancellationToken cancellationToken)
         {
+            await SendPhotoToTelegramWithRetryAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, cancellationToken, 0);
+        }
+
+        // Internal retry logic overload
+        private async Task SendPhotoToTelegramWithRetryAsync(
+            long chatId,
+            string photoUrlOrFileId,
+            string? caption,
+            ParseMode? parseMode,
+            ReplyMarkup? replyMarkup,
+            CancellationToken cancellationToken,
+            int retryCount)
+        {
             // Apply robust sanitization immediately for logging.
             string sanitizedLogCaption = SanitizeSensitiveData(caption);
 
@@ -688,24 +734,34 @@ namespace TelegramPanel.Infrastructure
                         apiEx.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))) ||
                       (apiEx.ErrorCode == 403 && apiEx.Message.Contains("bot was blocked by the user", StringComparison.OrdinalIgnoreCase)))
             {
+                #region Progressive Retry Logic
+                if (retryCount < 3)
+                {
+                    int[] delays = { 3, 5, 10 }; // minutes
+                    int delayMinutes = delays[Math.Min(retryCount, delays.Length - 1)];
+                    _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API error for ChatID {ChatId} (Attempt {RetryCount}/3). Scheduling retry in {DelayMinutes} minutes.", chatId, retryCount + 1, delayMinutes);
+                    _jobScheduler.Schedule<IActualTelegramMessageActions>(
+                        sender => sender.RetryableSendPhotoToTelegramAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, CancellationToken.None, retryCount + 1),
+                        TimeSpan.FromMinutes(delayMinutes));
+                    return;
+                }
+                #endregion
                 #region User Removal on Deactivation
-                _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user deactivated/blocked (Code: {ApiErrorCode}) for ChatID {ChatId} while sending photo. Attempting user removal.", apiEx.ErrorCode, chatId);
+                _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user deactivated/blocked (Code: {ApiErrorCode}) for ChatID {ChatId} after {RetryCount} retries. Marking user as unreachable.", apiEx.ErrorCode, chatId, retryCount);
                 try
                 {
-                    Domain.Entities.User? userToDelete = await _userRepository.GetByTelegramIdAsync(chatId.ToString(), cancellationToken);
-                    if (userToDelete != null)
-                    {
-                        await _userRepository.DeleteAndSaveAsync(userToDelete, cancellationToken);
-                        _logger.LogInformation("Hangfire Job (ActualSend): Successfully removed user with Telegram ID {TelegramId} from database (photo send).", userToDelete.TelegramId);
-                    }
+                    await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", cancellationToken);
+                    _logger.LogInformation("Hangfire Job (ActualSend): Successfully marked user with Telegram ID {TelegramId} as unreachable (photo send).", chatId);
                 }
                 catch (Exception dbEx)
                 {
                     var sanitizedApiExMessage = SanitizeSensitiveData(apiEx.Message);
-                    _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to remove user with ChatID {ChatId} from database after photo send. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
+                    _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to mark user with ChatID {ChatId} as unreachable after photo send. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
                         chatId,
                         sanitizedApiExMessage);
                 }
+                _logger.LogInformation("Hangfire Job (ActualSend): User {ChatId} is already unreachable or deactivated. No further action required.", chatId);
+                return;
                 #endregion
             }
             catch (Exception ex)
@@ -714,6 +770,43 @@ namespace TelegramPanel.Infrastructure
                 _logger.LogError(ex, "Hangfire Job (ActualSend): Unexpected error sending photo to ChatID {ChatId} after retries. Caption (Sanitized): '{SanitizedLogCaption}'", chatId, sanitizedLogCaption);
                 throw; // Re-throw to ensure the calling policy retries.
             }
+        }
+
+        /// <summary>
+        /// Hangfire-internal: Retryable version for progressive retry logic. Not part of the interface.
+        /// </summary>
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
+        public async Task RetryableSendTextMessageAsync(
+           long chatId,
+           string text,
+           ParseMode? parseMode,
+           ReplyMarkup? replyMarkup,
+           bool disableNotification,
+           LinkPreviewOptions? linkPreviewOptions,
+           CancellationToken cancellationToken,
+           int retryCount)
+        {
+            await SendTextMessageToTelegramWithRetryAsync(chatId, text, parseMode, replyMarkup, disableNotification, linkPreviewOptions, cancellationToken, retryCount);
+        }
+
+        /// <summary>
+        /// Hangfire-internal: Retryable version for progressive retry logic. Not part of the interface.
+        /// </summary>
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
+        public async Task RetryableSendPhotoToTelegramAsync(
+            long chatId,
+            string photoUrlOrFileId,
+            string? caption,
+            ParseMode? parseMode,
+            ReplyMarkup? replyMarkup,
+            CancellationToken cancellationToken,
+            int retryCount)
+        {
+            await SendPhotoToTelegramWithRetryAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, cancellationToken, retryCount);
         }
 
         // =========================================================================
@@ -830,8 +923,7 @@ namespace TelegramPanel.Infrastructure
             {
                 _logger.LogDebug("Enqueueing SendTextMessageAsync for ChatID {ChatId}", chatId);
                 _ = _jobScheduler.Enqueue<IActualTelegramMessageActions>(
-                    // ✅ CORRECTED LINE: Swapped the order of linkPreviewOptions and CancellationToken.None
-                    sender => sender.SendTextMessageToTelegramAsync(chatId, text, parseMode, replyMarkup, false, linkPreviewOptions, CancellationToken.None)
+                    sender => sender.RetryableSendTextMessageAsync(chatId, text, parseMode, replyMarkup, false, linkPreviewOptions, CancellationToken.None, 0)
                 );
                 return Task.CompletedTask;
             }
@@ -860,7 +952,7 @@ namespace TelegramPanel.Infrastructure
             {
                 _logger.LogDebug("Enqueueing SendPhotoAsync for ChatID {ChatId}", chatId);
                 _ = _jobScheduler.Enqueue<IActualTelegramMessageActions>(
-                    sender => sender.SendPhotoToTelegramAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, CancellationToken.None)
+                    sender => sender.RetryableSendPhotoToTelegramAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, CancellationToken.None, 0)
                 );
                 return Task.CompletedTask;
             }
