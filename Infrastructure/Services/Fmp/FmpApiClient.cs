@@ -9,6 +9,8 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Polly;
+using Polly.Retry;
 namespace Infrastructure.Services.Fmp
 {
     public class FmpApiClient : IFmpApiClient
@@ -22,14 +24,43 @@ namespace Infrastructure.Services.Fmp
         {
             var requestUrl = $"{BaseUrl}/quote/{fmpSymbol}?apikey={ApiKey}";
             _logger.LogInformation("Requesting full quote from FMP API for {Symbol}.", fmpSymbol);
+
+            #region Polly Retry Policy
+            // Retry on transient HTTP errors (timeouts, 5xx, DNS, etc.), not on 4xx
+            AsyncRetryPolicy retryPolicy = Policy
+                .Handle<HttpRequestException>(ex =>
+                    ex.StatusCode == null || ((int)ex.StatusCode >= 500 && (int)ex.StatusCode < 600))
+                .Or<TaskCanceledException>()
+                .WaitAndRetryAsync(
+                    retryCount: 3,
+                    sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                    onRetry: (exception, timespan, retryCount, context) =>
+                    {
+                        _logger.LogWarning(exception, "Retry {RetryCount}/3: Transient error fetching FMP quote for {Symbol}. Retrying in {Delay}s...", retryCount, fmpSymbol, timespan.TotalSeconds);
+                    });
+            #endregion
+
             try
             {
-                var response = await _httpClient.GetAsync(requestUrl, cancellationToken); response.EnsureSuccessStatusCode();
-                var quotes = await response.Content.ReadFromJsonAsync<List<FmpQuoteDto>>(cancellationToken: cancellationToken);
-                if (quotes == null || !quotes.Any()) { var rawJson = await response.Content.ReadAsStringAsync(cancellationToken); _logger.LogWarning("FMP API returned a successful (200 OK) response but the data array was null or empty for symbol {Symbol}. Raw JSON: {RawJson}", fmpSymbol, rawJson); return Result<FmpQuoteDto>.Failure($"FMP API returned no quote data for {fmpSymbol}."); }
-                return Result<FmpQuoteDto>.Success(quotes.First());
+                return await retryPolicy.ExecuteAsync(async () =>
+                {
+                    var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+                    response.EnsureSuccessStatusCode();
+                    var quotes = await response.Content.ReadFromJsonAsync<List<FmpQuoteDto>>(cancellationToken: cancellationToken);
+                    if (quotes == null || !quotes.Any())
+                    {
+                        var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                        _logger.LogWarning("FMP API returned a successful (200 OK) response but the data array was null or empty for symbol {Symbol}. Raw JSON: {RawJson}", fmpSymbol, rawJson);
+                        return Result<FmpQuoteDto>.Failure($"FMP API returned no quote data for {fmpSymbol}.");
+                    }
+                    return Result<FmpQuoteDto>.Success(quotes.First());
+                });
             }
-            catch (Exception ex) { _logger.LogError(ex, "An exception occurred while fetching a full quote for {Symbol} from FMP API.", fmpSymbol); return Result<FmpQuoteDto>.Failure($"FMP API error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An exception occurred while fetching a full quote for {Symbol} from FMP API.", fmpSymbol);
+                return Result<FmpQuoteDto>.Failure($"FMP API error: {ex.Message}");
+            }
         }
         public async Task<Result<List<FmpQuoteDto>>> GetFullCryptoQuoteListAsync(CancellationToken cancellationToken)
         {
