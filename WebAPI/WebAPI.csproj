@@ -11,6 +11,13 @@
     <!-- <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile> -->
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Remove="NewFolder\**" />
+    <Content Remove="NewFolder\**" />
+    <EmbeddedResource Remove="NewFolder\**" />
+    <None Remove="NewFolder\**" />
+  </ItemGroup>
+
   <!-- ==================================================================== -->
   <!-- ✅ CORRECTED SECTION FOR APPSETTINGS FILES -->
   <!-- ==================================================================== -->
@@ -22,6 +29,9 @@
     <!-- این فایل فقط زمانی کپی می‌شود که واقعاً وجود داشته باشد -->
     <!-- این دستور حیاتی است و مشکل شما را حل می‌کند -->
     <Content Update="appsettings.Production.json" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="redis-server\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <!-- ==================================================================== -->
 
@@ -35,7 +45,7 @@
     <PackageReference Include="Hangfire.SqlServer" Version="1.8.20" />
     <PackageReference Include="MediatR" Version="12.5.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.4" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.5">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.6">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -48,6 +58,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="8.1.1" />
     <PackageReference Include="Telegram.Bot" Version="22.5.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.5" />
+    <PackageReference Include="Testcontainers.Redis" Version="4.6.0" />
   </ItemGroup>
 
   <ItemGroup>

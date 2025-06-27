@@ -350,7 +350,7 @@ namespace Infrastructure.Services
             RssSource RssSource,
             HashSet<string> ExistingSourceItemIds,
             HashSet<string> ProcessedInThisBatch);
-        private readonly IConnectionMultiplexer _redis;
+        private readonly IConnectionMultiplexer? _redis;
 
         #endregion
 
@@ -368,13 +368,14 @@ namespace Infrastructure.Services
         /// <param name="backgroundJobClient">Hangfire client to enqueue background processing jobs.</param>
         /// <exception cref="ArgumentNullException">Thrown if any injected dependency is null.</exception>
         /// <exception cref="InvalidOperationException">Thrown if the required database connection string is not found.</exception>
-        public RssReaderService(IConnectionMultiplexer redis,
-            IHttpClientFactory httpClientFactory,
-            IConfiguration configuration,
-            IOptions<RssReaderServiceSettings> settingsOptions,
-            IMapper mapper,
-            ILogger<RssReaderService> logger,
-            IBackgroundJobClient backgroundJobClient)
+        public RssReaderService(
+        IConnectionMultiplexer? redis, // Correctly optional
+        IHttpClientFactory httpClientFactory,
+        IConfiguration configuration,
+        IOptions<RssReaderServiceSettings> settingsOptions,
+        IMapper mapper,
+        ILogger<RssReaderService> logger,
+        IBackgroundJobClient backgroundJobClient)
         {
             // --- Dependency Validation ---
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -382,24 +383,19 @@ namespace Infrastructure.Services
             _mapper = mapper ?? throw new ArgumentNullException(nameof(mapper));
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
-            _redis = redis ?? throw new ArgumentNullException(nameof(redis)); // ADD THIS LINE
+            _redis = redis;
             _connectionString = configuration.GetConnectionString("DefaultConnection")
                                 ?? throw new InvalidOperationException("The 'DefaultConnection' connection string was not found in the application configuration.");
 
             _logger.LogInformation("Initializing RssReaderService with UserAgent: {UserAgent}", _settings.UserAgent);
 
-            // --- Polly Policy Configuration ---
 
             // Fix for CS1929: Ensure the correct Polly namespace is used and the WaitAndRetryAsync method is properly invoked.  
             _httpRetryPolicy = Policy<HttpResponseMessage>
-               .Handle<HttpRequestException>(ex => ex.StatusCode != HttpStatusCode.UnsupportedMediaType) // DO NOT retry our specific validation error
-               .OrResult(response =>
-                   // Only retry server-side or transient errors
-                   response.StatusCode >= HttpStatusCode.InternalServerError || // 5xx errors
-                   response.StatusCode == HttpStatusCode.RequestTimeout ||     // 408
-                   response.StatusCode == HttpStatusCode.TooManyRequests)     // 429
-               .WaitAndRetryAsync(
-                   retryCount: _settings.HttpRetryCount,
+        .Handle<HttpRequestException>(ex => ex.StatusCode != HttpStatusCode.UnsupportedMediaType)
+        .OrResult(response => response.StatusCode >= HttpStatusCode.InternalServerError || response.StatusCode == HttpStatusCode.RequestTimeout || response.StatusCode == HttpStatusCode.TooManyRequests)
+        .WaitAndRetryAsync(
+                    retryCount: _settings.HttpRetryCount,
                    sleepDurationProvider: retryAttempt =>
                    {
                        var delay = TimeSpan.FromSeconds(Math.Pow(2, retryAttempt));
@@ -411,36 +407,32 @@ namespace Infrastructure.Services
 
 
             _dbRetryPolicy = Policy
-            .Handle<DbException>(ex =>
+        .Handle<DbException>(ex =>
+        {
+            // Check for specific PostgreSQL non-transient errors by their SQLSTATE code.
+            if (ex is PostgresException pgEx)
             {
-                // Check for PostgreSQL-specific non-transient errors.
-                if (ex is PostgresException pgEx)
+                if (pgEx.SqlState == "23505" || pgEx.SqlState == "23503")
                 {
-                    // '23505' is the SQLSTATE for unique_violation.
-                    if (pgEx.SqlState == "23505")
-                    {
-                        _logger.LogWarning(pgEx,
-                            "Polly DB Policy: Encountered non-transient PostgreSQL error (SqlState {SqlState}: Unique Constraint Violation). This indicates a data integrity issue. Will NOT retry.",
-                            pgEx.SqlState);
-                        return false; // Do NOT retry for unique key violations.
-                    }
+                    _logger.LogWarning(pgEx,
+                        "Polly DB Policy: Encountered non-transient PostgreSQL error (SqlState {SqlState}). This indicates a data integrity issue. Will NOT retry.",
+                        pgEx.SqlState);
+                    return false; // Do NOT retry for these specific data errors.
                 }
-                // For other DbExceptions, assume they might be transient and allow retries.
-                _logger.LogWarning(ex, "Polly DB Policy: Encountered a general or transient DbException. Assuming transient, will retry.");
-                return true;
-            })
-            .WaitAndRetryAsync(
-                retryCount: _settings.DbRetryCount,
-                sleepDurationProvider: retryAttempt =>
-                {
-                    var delay = TimeSpan.FromSeconds(Math.Pow(2, retryAttempt));
-                    _logger.LogWarning("Polly DB Retry: Database operation failed on attempt {RetryAttempt} of {MaxRetries}. Waiting {Delay} before next retry.",
-                        retryAttempt, _settings.DbRetryCount, delay);
-                    return delay;
-                });
-
-
-            _logger.LogInformation("RssReaderService initialized successfully.");
+            }
+            // For all other DbExceptions, assume they might be transient and allow retries.
+            _logger.LogWarning(ex, "Polly DB Policy: Encountered a transient-assumed DbException. Will retry.");
+            return true;
+        })
+        .WaitAndRetryAsync(
+            retryCount: _settings.DbRetryCount,
+            sleepDurationProvider: retryAttempt =>
+            {
+                var delay = TimeSpan.FromSeconds(Math.Pow(2, retryAttempt));
+                _logger.LogWarning("Polly DB Retry: Database operation failed on attempt {RetryAttempt} of {MaxRetries}. Waiting {Delay} before next retry.",
+                    retryAttempt, _settings.DbRetryCount, delay);
+                return delay;
+            });
         }
 
         /// <summary>

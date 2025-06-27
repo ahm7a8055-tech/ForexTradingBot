@@ -159,10 +159,20 @@ namespace Infrastructure.Services
                 }
             }
 
-            _client = new WTelegram.Client(ConfigProvider, startSessionLoader(), saveSessionAction);
+            try
+            {
+                _client = new WTelegram.Client(ConfigProvider, startSessionLoader(), saveSessionAction);
+            }
+            catch
+            {
+                _logger.LogError("Failed to create WTelegramClient. Check your API_ID and API_HASH in appsettings.json.");
+            }
+
 
             // Subscribe to WTelegramClient's OnUpdates event to process incoming updates.
-            _client.OnUpdates += async updates =>
+            try
+            {
+                _client.OnUpdates += async updates =>
             {
                 //      _logger.LogCritical("[USER_API_ON_UPDATES_TRIGGERED] Raw updates object of type: {UpdateType} from WTelegram.Client", updates.GetType().FullName);
                 if (updates is TL.UpdatesBase updatesBase) // Use TL.UpdatesBase
@@ -174,15 +184,27 @@ namespace Infrastructure.Services
                     //   _logger.LogWarning("[USER_API_ON_UPDATES_TRIGGERED] Received 'updates' that is NOT UpdatesBase. Type: {UpdateType}", updates.GetType().FullName);
                 }
             };
-
-            // Start a periodic timer for cache cleanup.
-            _cacheCleanupTimer = new System.Threading.Timer(
+            }
+            catch (Exception ex)
+            {
+_logger.LogError(ex, "Failed to subscribe to WTelegramClient's OnUpdates event.");
+            }
+            try
+            {
+                // Start a periodic timer for cache cleanup.
+                _cacheCleanupTimer = new System.Threading.Timer(
                       CacheCleanup,
                       null,
                       (int)_cacheCleanupInterval.TotalMilliseconds,
                       (int)_cacheCleanupInterval.TotalMilliseconds
                   );
-            _logger.LogInformation("Started cache cleanup timer with interval {IntervalMinutes} minutes.", _cacheCleanupInterval.TotalMinutes);
+                _logger.LogInformation("Started cache cleanup timer with interval {IntervalMinutes} minutes.", _cacheCleanupInterval.TotalMinutes);
+
+            }
+            catch
+            {
+                _logger.LogError("Failed to start cache cleanup timer.");
+            }
 
             // Configure Polly for resilience (retry policy for network and specific RPC errors).
             _resiliencePipeline = new ResiliencePipelineBuilder()

@@ -15,6 +15,7 @@ using Hangfire.Dashboard;                   // برای DashboardOptions, IDashb
 using Hangfire.MemoryStorage;
 using Hangfire.PostgreSql;
 using Hangfire.SqlServer;
+using Hangfire.Storage.SQLite;
 using Infrastructure.Data;
 
 // using Hangfire.SqlServer;              // اگر از SQL Server برای Hangfire استفاده می‌کنید
@@ -22,12 +23,15 @@ using Infrastructure.Data;
 using Infrastructure.Features.Forwarding.Extensions;
 using Infrastructure.Logging;
 using Infrastructure.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;             // برای OpenApiInfo
 using Serilog;                              // برای Log, LoggerConfiguration, UseSerilog
 using Serilog.Enrichers.WithCaller;
 using Shared.Helpers;
 using Shared.Maintenance;
 using Shared.Settings;                    // برای CryptoPaySettings (از پروژه Shared)
+using StackExchange.Redis;
+using System.Configuration;
 using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Services;
 using TL;
@@ -74,6 +78,7 @@ try
     // This is more reliable than GetValue<bool> for environment variables.
     string smokeTestFlag = builder.Configuration["IsSmokeTest"] ?? "false";
     bool isSmokeTest = "true".Equals(smokeTestFlag, StringComparison.OrdinalIgnoreCase);
+
     #region Configure Serilog Logging
     // ------------------- ۱. پیکربندی Serilog با تنظیمات از appsettings.json -------------------
     // این بخش Serilog را به عنوان سیستم لاگینگ اصلی برنامه تنظیم می‌کند.
@@ -115,12 +120,64 @@ try
       )
   );
 
+    #region Caching and External Services (Or a new "Infrastructure" region)
+
+    string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+
+    builder.Configuration.GetConnectionString("Redis");
+
+    if (string.IsNullOrWhiteSpace(redisConnectionString))
+    {
+        // If no external Redis is configured, start our own embedded one.
+        Log.Warning("⚠️ Redis connection string not found. Attempting to start embedded Redis server for this session.");
+
+        // 1. Register the IHostedService that will manage the redis-server.exe process.
+        builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
+
+        // 2. Set the connection string to the default for the local, embedded server.
+        redisConnectionString = "localhost:6379"; // Default port for Redis
+
+        // --- THIS IS THE FIX ---
+        // 3. Update the application's configuration in memory so all other services see the new value.
+        //    This ensures consistency across the entire application.
+        builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
+
+        Log.Information("Embedded Redis registered. Connection string set to '{RedisConnectionString}' for this session.", redisConnectionString);
+    }
+    else
+    {
+        Log.Information("✅ External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
+    }
+
+    try
+    {
+        // This registration is now guaranteed to work because redisConnectionString will always have a value.
+        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        {
+            // We re-read from the configuration to ensure we use the potentially updated value.
+            var finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
+            var options = ConfigurationOptions.Parse(finalConnectionString!);
+            options.AbortOnConnectFail = false;
+            return ConnectionMultiplexer.Connect(options);
+        });
+
+        Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Failed to configure Redis connection multiplexer. Distributed features may be unavailable.");
+        // Decide if this should be fatal. For now, we allow the app to continue,
+        // but services that require IConnectionMultiplexer will fail to resolve.
+    }
+    Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
+
+    #endregion
+
     builder.Services.AddAutoMapper(typeof(Program));
     builder.Services.AddSingleton<Application.Common.Interfaces.ILoggingSanitizer, Infrastructure.Security.PiiLoggingSanitizer>();
     #endregion
 
     #region Add Core ASP.NET Core Services
-    _ = builder.Services.AddHostedService<IdleNewsMonitorService>();
     _ = builder.Services.AddWindowsService(options =>
     {
         options.ServiceName = "ForexTradingBotAPI";
@@ -253,51 +310,65 @@ try
     // We check for the actual secrets required for this feature to run.
     string? apiId = builder.Configuration["TelegramUserApi:ApiId"];
     string? apiHash = builder.Configuration["TelegramUserApi:ApiHash"];
+    bool isAutoForwardingEnabled = !string.IsNullOrEmpty(apiId) && !string.IsNullOrEmpty(apiHash);
     try
     {
-        if (!string.IsNullOrEmpty(apiId) && !string.IsNullOrEmpty(apiHash))
+        if (Environment.UserInteractive)
         {
-            Log.Information("✅ Auto-Forwarding feature ENABLED (ApiId and ApiHash were found). Registering all related services...");
-
-            // 1. Configure the settings object
-            _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
-
-            // 2. Register the API client itself
-            _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
-
-            // 3. Register the background service that initializes the client
-            _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
-
-            // 4. Register all the other forwarding services from the other projects
-            _ = builder.Services.AddForwardingInfrastructure();
-            _ = builder.Services.AddForwardingServices();
-            _ = builder.Services.AddForwardingOrchestratorServices();
-
-            Log.Information("All Auto-Forwarding services have been successfully registered.");
-        }
-        else
-        {
-            // If the secrets are missing, we skip ALL related services.
-            Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
+            // This helper class is defined at the bottom of Program.cs
+            ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
         }
 
 
-        // --- Universal Conditional Feature: CryptoPay (Example) ---
-        // The same robust pattern is applied here.
-        string? cryptoPayToken = builder.Configuration["CryptoPay:ApiToken"];
-        string? cryptoPayApiKey = builder.Configuration["CryptoPay:ApiKey"]; // Assuming you have this key too
-
-        if (!string.IsNullOrEmpty(cryptoPayToken) && !string.IsNullOrEmpty(cryptoPayApiKey))
+        if (isAutoForwardingEnabled)
         {
-            // Here you would register your CryptoPay specific services.
-            // builder.Services.AddCryptoPayServices(builder.Configuration);
-            Log.Information("✅ CryptoPay feature ENABLED (ApiToken and ApiKey were found in configuration).");
-        }
-        else
-        {
-            Log.Information("ℹ️ CryptoPay feature DISABLED (CryptoPay secrets not found in configuration).");
-        }
+            string? sessionPath = builder.Configuration["TelegramUserApi:SessionPath"];
+            if (string.IsNullOrEmpty(sessionPath))
+            {
+                sessionPath = Path.Combine(AppContext.BaseDirectory, "telegram_user.session");
+                Log.Warning("TelegramUserApi:SessionPath not configured. Defaulting to {SessionPath}", sessionPath);
+            }
+          
 
+                // 1. Configure the settings object
+                _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
+
+                // 2. Register the API client itself
+                _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
+
+                // 3. Register the background service that initializes the client
+                _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
+
+                // 4. Register all the other forwarding services from the other projects
+                _ = builder.Services.AddForwardingInfrastructure();
+                _ = builder.Services.AddForwardingServices();
+                _ = builder.Services.AddForwardingOrchestratorServices();
+
+                Log.Information("All Auto-Forwarding services have been successfully registered.");
+            }
+            else
+            {
+                // If the secrets are missing, we skip ALL related services.
+                Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
+            }
+
+
+            // --- Universal Conditional Feature: CryptoPay (Example) ---
+            // The same robust pattern is applied here.
+            string? cryptoPayToken = builder.Configuration["CryptoPay:ApiToken"];
+            string? cryptoPayApiKey = builder.Configuration["CryptoPay:ApiKey"]; // Assuming you have this key too
+
+            if (!string.IsNullOrEmpty(cryptoPayToken) && !string.IsNullOrEmpty(cryptoPayApiKey))
+            {
+                // Here you would register your CryptoPay specific services.
+                // builder.Services.AddCryptoPayServices(builder.Configuration);
+                Log.Information("✅ CryptoPay feature ENABLED (ApiToken and ApiKey were found in configuration).");
+            }
+            else
+            {
+                Log.Information("ℹ️ CryptoPay feature DISABLED (CryptoPay secrets not found in configuration).");
+            }
+        
     }
     catch
     {
@@ -351,76 +422,83 @@ try
     // =========================================================================
     // ✅✅ CORRECTED HANGFIRE CONFIGURATION (PROVIDER-AWARE) ✅✅
     // =========================================================================
-
-    if (isSmokeTest)
+    builder.Services.AddHangfire(config =>
     {
-        // --- SMOKE TEST CONFIGURATION ---
-        Log.Information("✅ Smoke Test: Configuring Hangfire with In-Memory storage.");
+        // Apply the JSON serializer settings first, as they are needed regardless of storage.
+        config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+        {
+            TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
+        });
 
-        _ = builder.Services.AddHangfire(config => config
-            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-            .UseSimpleAssemblyNameTypeSerializer()
-            .UseRecommendedSerializerSettings()
-            .UseMemoryStorage());
-    }
-    else
-    {
+        // This check is for smoke tests, which should always use in-memory storage.
         if (isSmokeTest)
         {
-            Log.Information("Configuring Hangfire with In-Memory storage for Smoke Test.");
-            builder.Services.AddHangfire(config => config.UseMemoryStorage());
+            Log.Information("✅ Smoke Test: Configuring Hangfire with In-Memory storage.");
+            config.UseMemoryStorage();
+            return; // Exit the configuration lambda early.
         }
-        else
+
+        // --- Resilient Database Configuration with Fallback ---
+        try
         {
             string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
-            Log.Information("Configuring Hangfire using the '{DbProvider}' provider.", dbProvider ?? "UNDEFINED");
+            string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+
+            // Default to SQLite if the provider is not specified.
+            if (string.IsNullOrEmpty(dbProvider))
+            {
+                dbProvider = "sqlite";
+            }
+
+            // Default to a file-based DB if the connection string is missing for SQLite.
+            if (dbProvider == "sqlite" && string.IsNullOrEmpty(connectionString))
+            {
+                connectionString = "Data Source=local_forex_bot.db";
+            }
+
+            Log.Information("Attempting to configure Hangfire with '{DbProvider}' provider.", dbProvider);
+
+            // Fail fast if the connection string is still missing for a required provider.
+            if (string.IsNullOrEmpty(connectionString))
+            {
+                throw new InvalidOperationException($"Hangfire: ConnectionString is missing for provider '{dbProvider}'.");
+            }
 
             switch (dbProvider)
             {
-                case "sqlserver":
-                    builder.Services.AddHangfire(config => config
-                        .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection"), new SqlServerStorageOptions
-                        {
-                            SchemaName = "HangFire",
-                            QueuePollInterval = TimeSpan.FromSeconds(15)
-                        }));
-                    break;
-
                 case "postgres":
                 case "postgresql":
-                    builder.Services.AddHangfire(config =>
-                    {
-                        // Configure the storage provider (PostgreSQL in this case)
-                        // Ensure you are using the correct connection string for PostgreSQL here.
-                        string? postgresConnectionString = builder.Configuration.GetConnectionString("PostgresConnection") ?? builder.Configuration.GetConnectionString("DefaultConnection");
-                        if (string.IsNullOrEmpty(postgresConnectionString))
-                        {
-                            throw new InvalidOperationException("PostgreSQL connection string is missing. Ensure 'PostgresConnection' or 'DefaultConnection' is configured.");
-                        }
+                    config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString));
+                    Log.Information("✅ Hangfire successfully configured with PostgreSQL storage.");
+                    break;
 
-                        config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(postgresConnectionString));
+                case "sqlserver":
+                    config.UseSqlServerStorage(connectionString);
+                    Log.Information("✅ Hangfire successfully configured with SQL Server storage.");
+                    break;
 
-                        // --- THIS IS THE KEY FIX ---
-                        // Use UseSerializerSettings to configure the JSON serializer.
-                        // TypeNameHandling.All is essential for polymorphic types like ReplyMarkup.
-                        config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
-                        {
-                            TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All, // Ensures type information is preserved
-                            NullValueHandling = Newtonsoft.Json.NullValueHandling.Include // Good practice to include nulls
-                        });
-
-                        // You might also want to ensure recommended settings are applied if not using TypeNameHandling.All
-                        // config.UseRecommendedSerializerSettings(); 
-                    });
+                case "sqlite":
+                    config.UseSQLiteStorage(connectionString);
+                    Log.Information("✅ Hangfire successfully configured with SQLite storage.");
                     break;
 
                 default:
-                    throw new NotSupportedException($"Hangfire configuration failed: Unsupported or missing 'DatabaseSettings:DatabaseProvider': '{dbProvider}'.");
+                    throw new NotSupportedException($"Unsupported Hangfire DatabaseProvider: '{dbProvider}'.");
             }
         }
+        catch (Exception ex)
+        {
+            // --- THIS IS THE FALLBACK LOGIC ---
+            Log.Error(ex, "FAILED to configure Hangfire with the specified database storage. FALLING BACK TO IN-MEMORY STORAGE.");
+            Log.Warning("Hangfire jobs will NOT be persisted and will be lost if the application restarts.");
 
-    }
-       _ = builder.Services.AddHangfireCleaner();
+            // CORRECTED: Do NOT call AddHangfire again. Just configure the existing 'config' object.
+            config.UseMemoryStorage();
+        }
+    });
+
+
+    _ = builder.Services.AddHangfireCleaner();
     _ = builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Notifications";
@@ -615,6 +693,11 @@ try
     //        return Results.Problem($"An error occurred: {ex.Message}");
     //    }
     //});
+
+
+  
+
+
     _ = app.MapControllers(); //  مسیردهی درخواست‌ها به Action های کنترلرها
     programLogger.LogInformation("Application setup complete. Starting web host now...");
 
@@ -622,12 +705,16 @@ try
     string urls = builder.Configuration["Urls"] ?? "https://localhost:5001;http://localhost:5000";
     string firstUrl = urls.Split(';')[0].Trim();
 
-    using (IServiceScope scope = app.Services.CreateScope())
+    if (isAutoForwardingEnabled)
     {
-        UserApiForwardingOrchestrator orchestrator = scope.ServiceProvider.GetRequiredService<UserApiForwardingOrchestrator>();
-        // Use orchestrator if needed
+        using (IServiceScope scope = app.Services.CreateScope())
+        {
+            Log.Information("Auto-Forwarding is enabled, resolving the orchestrator service for startup tasks.");
+            // This code is now safe because we know the service was registered.
+            UserApiForwardingOrchestrator orchestrator = scope.ServiceProvider.GetRequiredService<UserApiForwardingOrchestrator>();
+            // You can now safely use the 'orchestrator' object here if needed for any startup logic.
+        }
     }
-
     // --- File: WebAPI/Program.cs ---
 
     // ... after app.UseSerilogRequestLogging() and other middleware ...
@@ -665,4 +752,85 @@ finally
     Log.Information("Application Shutting Down...");
     Log.CloseAndFlush();
     Log.Information("--------------------------------------------------");
+}
+
+public static class ConfigurationHelper
+{
+    private static void PromptForTelegramApiSecrets(IConfiguration configuration)
+    {
+        string? apiId = configuration["TelegramUserApi:ApiId"];
+        string? apiHash = configuration["TelegramUserApi:ApiHash"];
+
+        if (string.IsNullOrEmpty(apiId) || apiId == "0" || string.IsNullOrEmpty(apiHash))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("\n--- Telegram User API Setup (Optional) ---");
+            Console.WriteLine("Auto-Forwarding feature requires Telegram API credentials.");
+            Console.WriteLine("You can get these from my.telegram.org.");
+            Console.WriteLine("Enter 'skip' to disable this feature for this session.");
+            Console.ResetColor();
+
+            // Only prompt if the section is potentially needed.
+            if (string.IsNullOrEmpty(apiId) || apiId == "0")
+            {
+                Console.Write("Enter your ApiId (or 'skip'): ");
+                var inputApiId = Console.ReadLine();
+                if (string.Equals(inputApiId, "skip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(inputApiId))
+                {
+                    Log.Information("User skipped ApiId entry. Auto-Forwarding will be disabled.");
+                    return; // Exit this specific helper
+                }
+                configuration["TelegramUserApi:ApiId"] = inputApiId;
+            }
+
+            if (string.IsNullOrEmpty(apiHash))
+            {
+                Console.Write("Enter your ApiHash (or 'skip'): ");
+                var inputApiHash = Console.ReadLine();
+                if (string.Equals(inputApiHash, "skip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(inputApiHash))
+                {
+                    Log.Information("User skipped ApiHash entry. Auto-Forwarding will be disabled.");
+                    // Clear the ApiId as well to ensure the feature is fully disabled
+                    configuration["TelegramUserApi:ApiId"] = null;
+                    return;
+                }
+                configuration["TelegramUserApi:ApiHash"] = inputApiHash;
+            }
+        }
+    }
+
+    private static void PromptForTelegramPanelSecrets(IConfiguration configuration)
+    {
+        string? botToken = configuration["TelegramPanel:BotToken"];
+
+        if (string.IsNullOrWhiteSpace(botToken) || botToken.Contains("REPLACE"))
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("\n--- Telegram Bot Setup ---");
+            Console.WriteLine("The main Bot Token is required to run the application.");
+            Console.WriteLine("You can get this from @BotFather on Telegram.");
+            Console.ResetColor();
+
+            Console.Write("Enter your Bot Token: ");
+            var inputToken = Console.ReadLine();
+
+            if (string.IsNullOrWhiteSpace(inputToken))
+            {
+                // This is a critical failure, as the app can't run without it.
+                var errorMsg = "Bot Token cannot be empty. Application cannot start.";
+                Log.Fatal(errorMsg);
+                throw new InvalidOperationException(errorMsg);
+            }
+
+            configuration["TelegramPanel:BotToken"] = inputToken;
+            Log.Information("Bot Token configured from console input.");
+        }
+    }
+
+    public static void PromptForMissingSecrets(IConfiguration configuration)
+    {
+        PromptForTelegramPanelSecrets(configuration);
+        PromptForTelegramApiSecrets(configuration);
+        // Add calls for other secrets here, like CryptoPay
+    }
 }

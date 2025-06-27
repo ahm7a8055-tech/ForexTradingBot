@@ -96,21 +96,21 @@ namespace TelegramPanel.Extensions
                 }
             });
 
-            // 7. Register IConnectionMultiplexer for Redis
-            services.AddSingleton<IConnectionMultiplexer>(sp =>
-            {
-                var config = sp.GetRequiredService<IConfiguration>();
-                var connectionString = config.GetConnectionString("Redis");
+            //// 7. Register IConnectionMultiplexer for Redis
+            //services.AddSingleton<IConnectionMultiplexer>(sp =>
+            //{
+            //    var config = sp.GetRequiredService<IConfiguration>();
+            //    var connectionString = config.GetConnectionString("Redis");
 
-                if (string.IsNullOrWhiteSpace(connectionString))
-                {
-                    throw new InvalidOperationException("Redis connection string is not configured.");
-                }
+            //    if (string.IsNullOrWhiteSpace(connectionString))
+            //    {
+            //        throw new InvalidOperationException("Redis connection string is not configured.");
+            //    }
 
-                var options = ConfigurationOptions.Parse(connectionString);
-                options.AbortOnConnectFail = false; // For startup resiliency  
-                return ConnectionMultiplexer.Connect(options);
-            });
+            //    var options = ConfigurationOptions.Parse(connectionString);
+            //    options.AbortOnConnectFail = false; // For startup resiliency  
+            //    return ConnectionMultiplexer.Connect(options);
+            //});
 
 
             // 8. Register ITelegramUpdateJobService for Hangfire

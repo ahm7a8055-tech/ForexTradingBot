@@ -80,7 +80,9 @@ namespace TelegramPanel.Queue
 
             // Policy 2: Circuit Breaker - Protects against a faulty Redis connection.
             // It will only be triggered by actual Redis exceptions, not by timeouts.
-            var producerCircuitBreaker = Policy
+            if (_updateChannel is RedisUpdateChannel)
+            {
+                var producerCircuitBreaker = Policy
                 .Handle<RedisException>() // Only handle real connection errors
                 .Or<RedisConnectionException>()
                 .CircuitBreakerAsync(
@@ -103,13 +105,14 @@ namespace TelegramPanel.Queue
 
             // Wrap them together. Execution order is outside-in: Retry -> Circuit Breaker -> Timeout.
             _producerResiliencePolicy = Policy.WrapAsync(producerRetryPolicy, producerCircuitBreaker, producerTimeoutPolicy);
+            }
 
             _processingRetryPolicy = Policy
-                .Handle<Exception>(ex => ex is not OperationCanceledException)
-                .WaitAndRetryAsync(5,
-                    retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
-                    (ex, ts, attempt, ctx) => _logger.LogWarning(ex,
-                        "Processing failed. Retrying in {TimeSpan} (Attempt {Attempt})", ts, attempt));
+                  .Handle<Exception>(ex => ex is not OperationCanceledException)
+                  .WaitAndRetryAsync(5,
+                      retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                      (ex, ts, attempt, ctx) => _logger.LogWarning(ex,
+                          "Processing failed. Retrying in {TimeSpan} (Attempt {Attempt})", ts, attempt));
             #endregion
         }
         #endregion
@@ -164,15 +167,28 @@ namespace TelegramPanel.Queue
             {
                 try
                 {
-                    // SECURE-FIX: The resilience policy now correctly handles everything internally.
-                    // We just need to catch the specific exceptions Polly throws to control the loop.
-                    await _producerResiliencePolicy.ExecuteAsync(async token =>
+                    // --- THIS IS THE FIX (PART 2) ---
+                    // The producer's behavior depends on the type of channel injected.
+                    if (_producerResiliencePolicy != null && _updateChannel is RedisUpdateChannel)
                     {
-                        await foreach (var update in _updateChannel.ReadAllAsync(token).WithCancellation(token))
+                        // Use the full resilience pipeline for Redis
+                        await _producerResiliencePolicy.ExecuteAsync(async token =>
                         {
-                            if (update != null) _workQueue.Add(update, token);
+                            await foreach (var update in _updateChannel.ReadAllAsync(token).WithCancellation(token))
+                            {
+                                if (update != null) _workQueue.Add(update, token);
+                            }
+                        }, ct);
+                    }
+                    else
+                    {
+                        // For the in-memory channel, we don't need the complex Redis policies.
+                        // We just read directly. ReadAllAsync will block until an item is available or the channel closes.
+                        await foreach (var update in _updateChannel.ReadAllAsync(ct).WithCancellation(ct))
+                        {
+                            if (update != null) _workQueue.Add(update, ct);
                         }
-                    }, ct);
+                    } 
                 }
                 // SECURE-FIX: Handle specific, expected exceptions gracefully.
                 catch (TimeoutRejectedException)
@@ -308,17 +324,24 @@ namespace TelegramPanel.Queue
 
         private async Task MoveToDeadLetterQueueAsync(Update update, Exception lastException)
         {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var redisConnection = scope.ServiceProvider.GetService<IConnectionMultiplexer>();
+            if (redisConnection == null)
+            {
+                _logger.LogWarning("Redis is not configured. Cannot move failed Update {UpdateId} to a Dead-Letter Queue. The update will be lost.", update.Id);
+                return; // Exit gracefully
+            }
+
             try
             {
-                await using var scope = _scopeFactory.CreateAsyncScope();
-                var redis = scope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>().GetDatabase();
-                var payload = JsonSerializer.Serialize(new { FailedUpdate = update, LastException = lastException.Message, TimestampUtc = DateTime.UtcNow });
-                await redis.ListRightPushAsync(_options.DeadLetterQueueName, payload);
+                var redisDb = redisConnection.GetDatabase();
+                var payload = JsonSerializer.Serialize(new { FailedUpdate = update, LastException = lastException.ToString(), TimestampUtc = DateTime.UtcNow });
+                await redisDb.ListRightPushAsync(_options.DeadLetterQueueName, payload);
                 _metrics.IncrementDeadLettered();
             }
             catch (Exception dqlEx)
             {
-                _logger.LogCritical(dqlEx, "FATAL: Could not move poison message to DLQ.");
+                _logger.LogCritical(dqlEx, "FATAL: Could not move poison message to DLQ even though Redis seems to be configured.");
             }
         }
 
