@@ -39,6 +39,7 @@ using Shared.Results;
 using System.Xml.Linq;
 using StackExchange.Redis;
 using Npgsql;
+using System.Collections.Concurrent;
 
 #endregion
 
@@ -111,6 +112,15 @@ namespace Infrastructure.Services
         /// if not specified in configuration.
         /// </value>
         public string UserAgent { get; set; } = "ForexSignalBot/1.0 (RSSFetcher; Compatible; +https://yourbotdomain.com/contact)";
+
+        /// <summary>
+        /// Gets or sets the maximum number of news items to send per batch.
+        /// This setting controls the batch size for sending notifications.
+        /// </summary>
+        /// <value>
+        /// The number of news items to send per batch. Defaults to 10 if not specified in configuration.
+        /// </value>
+        public int MaxNewsPerBatch { get; set; } = 10; // Default batch limit
     }
 
     #endregion
@@ -349,7 +359,7 @@ namespace Infrastructure.Services
             SyndicationItem SyndicationItem,
             RssSource RssSource,
             HashSet<string> ExistingSourceItemIds,
-            HashSet<string> ProcessedInThisBatch);
+            ConcurrentDictionary<string, byte> ProcessedInThisBatch);
         private readonly IConnectionMultiplexer? _redis;
 
         #endregion
@@ -929,7 +939,7 @@ namespace Infrastructure.Services
                 SyndicationItem: null!,
                 RssSource: rssSource,
                 ExistingSourceItemIds: await GetExistingSourceItemIdsAsync(rssSource.Id, cancellationToken),
-                ProcessedInThisBatch: new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                ProcessedInThisBatch: new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase)
             );
 
             var newNewsEntitiesBag = new System.Collections.Concurrent.ConcurrentBag<NewsItem>();
@@ -1046,41 +1056,36 @@ namespace Infrastructure.Services
 
         private NewsItem? TryCreateNewsItemEntity(NewsItemCreationContext context)
         {
-            // 1. Unpack the context object to define local variables. This resolves all scope errors.
             var syndicationItem = context.SyndicationItem;
             var rssSource = context.RssSource;
-
-            // 2. Derive key variables needed for processing and validation.
             string? originalLink = syndicationItem.Links.FirstOrDefault(l => l.Uri != null)?.Uri?.ToString();
             string title = syndicationItem.Title?.Text?.Trim() ?? "Untitled News Item";
 
-            // Use the corrected, globally unique DetermineSourceItemId method
+            // --- Improved: Use robust fallback for SourceItemId ---
             string itemSourceId = DetermineSourceItemId(syndicationItem, originalLink, title, rssSource.Id);
-
-            // 3. Perform all validation and deduplication checks upfront.
             if (string.IsNullOrWhiteSpace(itemSourceId))
             {
-                _logger.LogWarning("Skipping item because a stable SourceItemId could not be determined. Title: '{Title}'", title.Truncate(50));
-                return null;
+                // Fallback: Use hash of title+pubDate+link
+                string fallback = $"{title}|{syndicationItem.PublishDate.UtcDateTime:o}|{originalLink}";
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                byte[] hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(fallback));
+                itemSourceId = Convert.ToHexString(hash).ToLowerInvariant().Truncate(NewsSourceItemIdMaxLenDb);
+                _logger.LogWarning("Fallback SourceItemId used (hash of title+pubDate+link) for item: '{Title}'", title.Truncate(50));
             }
 
-            // Check for duplicates within this specific feed's current processing batch.
-            if (!context.ProcessedInThisBatch.Add(itemSourceId))
+            // --- Detailed logging for all filter reasons ---
+            if (!context.ProcessedInThisBatch.TryAdd(itemSourceId, 0))
             {
-                _logger.LogTrace("Skipping duplicate item within this fetch batch. SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
+                _logger.LogInformation("Filtered: Duplicate in batch. SourceItemId: {SourceItemId}, Title: '{Title}'", itemSourceId.Truncate(50), title.Truncate(50));
                 return null;
             }
-
-            // Check for duplicates against items already in the database from this source.
             if (context.ExistingSourceItemIds.Contains(itemSourceId))
             {
-                _logger.LogTrace("Skipping existing item already found in database. SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
+                _logger.LogInformation("Filtered: Duplicate in DB. SourceItemId: {SourceItemId}, Title: '{Title}'", itemSourceId.Truncate(50), title.Truncate(50));
                 return null;
             }
 
-            // 4. Extract and perform GLOBAL deduplication for the image URL using Redis.
             string? imageUrl = ExtractImageUrlWithHtmlAgility(syndicationItem, syndicationItem.Summary?.Text, syndicationItem.Content?.ToString());
-
             if (!string.IsNullOrWhiteSpace(imageUrl))
             {
                 try
@@ -1088,8 +1093,8 @@ namespace Infrastructure.Services
                     IDatabase redisDb = _redis.GetDatabase();
                     if (redisDb.SetContains(RedisProcessedImageUrlsSetKey, imageUrl))
                     {
-                        _logger.LogInformation("Global Dedupe Hit: Image URL '{ImageUrl}' has already been processed (found in Redis). It will not be assigned to this new item.", imageUrl.Truncate(100));
-                        imageUrl = null; // Nullify the URL to prevent redundant storage.
+                        _logger.LogInformation("Filtered: Image URL already processed (Redis). SourceItemId: {SourceItemId}, ImageUrl: {ImageUrl}", itemSourceId.Truncate(50), imageUrl.Truncate(100));
+                        imageUrl = null;
                     }
                 }
                 catch (RedisException redisEx)
@@ -1097,18 +1102,16 @@ namespace Infrastructure.Services
                     _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis for image deduplication check. Processing will continue without deduplication for this item. Please check Redis server health.");
                 }
             }
-
-            // 5. If all checks pass, construct and return the new NewsItem entity.
             _logger.LogDebug("Validation passed. Creating new NewsItem entity for SourceItemId: {SourceItemId}", itemSourceId.Truncate(50));
             return new NewsItem
             {
                 Id = Guid.NewGuid(),
                 CreatedAt = DateTime.UtcNow,
                 Title = title.Truncate(NewsTitleMaxLenDb),
-                Link = (originalLink ?? itemSourceId).Truncate(NewsLinkMaxLenDb), // Corrected constant name
+                Link = (originalLink ?? itemSourceId).Truncate(NewsLinkMaxLenDb),
                 Summary = CleanHtmlWithHtmlAgility(syndicationItem.Summary?.Text),
                 FullContent = CleanHtmlWithHtmlAgility(syndicationItem.Content is TextSyndicationContent tc ? tc.Text : syndicationItem.Summary?.Text),
-                ImageUrl = imageUrl, // Use the final, potentially nullified image URL
+                ImageUrl = imageUrl,
                 PublishedDate = syndicationItem.PublishDate.UtcDateTime,
                 RssSourceId = rssSource.Id,
                 SourceName = rssSource.SourceName.Truncate(NewsSourceNameMaxLenDb),
@@ -1292,19 +1295,17 @@ namespace Infrastructure.Services
             const string methodName = nameof(DispatchNotificationsForImageItemsAsync);
             _logger.LogTrace("Entering {MethodName}", methodName);
 
-            // --- Business Logic: Dispatch ALL saved items. ---
-            // No longer filtering for items with images. All items are considered.
-            // The logic for using a default image will be handled when creating the NotificationJobPayload
-            // within the EnqueueDispatchTasks method.
-
+            // --- Apply per-batch send limit ---
+            int maxToSend = _settings.MaxNewsPerBatch > 0 ? _settings.MaxNewsPerBatch : 10;
             var itemsToDispatch = savedItems
-                .OrderByDescending(item => item.PublishedDate) // Order items by publication date
+                .OrderByDescending(item => item.PublishedDate)
+                .Take(maxToSend)
                 .ToList();
 
             int totalSavedCount = savedItems.Count;
             _logger.LogInformation(
-                "Dispatching notifications for all {TotalSaved} saved items. Items without images will use the default image.",
-                totalSavedCount);
+                "Dispatching notifications for {DispatchCount} of {TotalSaved} saved items (batch limit: {BatchLimit}). Items without images will use the default image.",
+                itemsToDispatch.Count, totalSavedCount, maxToSend);
 
             if (!itemsToDispatch.Any())
             {
@@ -1314,41 +1315,23 @@ namespace Infrastructure.Services
             }
 
             var dispatchedItemIds = new HashSet<Guid>();
-
-            _logger.LogInformation("Dispatching Batch: Enqueuing notification tasks for all {Count} items.", itemsToDispatch.Count);
-            // Call EnqueueDispatchTasks for all items. It must now handle the default image logic internally.
+            _logger.LogInformation("Dispatching Batch: Enqueuing notification tasks for {Count} items.", itemsToDispatch.Count);
             await EnqueueDispatchTasks(itemsToDispatch, "AllItemsBatch", dispatchedItemIds, cancellationToken);
 
-            // --- START of CHANGE: Add relevant image URLs to Redis for global deduplication ---
-            // This section processes URLs that *will actually be sent as an image*.
-            // This includes items with original images AND items that used the default image.
+            // Register image URLs in Redis for global deduplication
             if (itemsToDispatch.Any())
             {
                 _logger.LogInformation("Registering image URLs in Redis for global deduplication.");
                 try
                 {
                     IDatabase redisDb = _redis.GetDatabase();
-
-                    // Collect all image URLs that will be sent as part of a photo notification.
                     var imageUrlsToAdd = itemsToDispatch
-                        .Select(item =>
-                        {
-                            // Determine the image URL to be used for this notification.
-                            // If the item has an image, use it. Otherwise, fall back to the default image URL.
-                            string imageUrlForNotification = !string.IsNullOrWhiteSpace(item.ImageUrl) ? item.ImageUrl : DEFAULT_NEWS_IMAGE_URL;
-
-                            // Return the URL if it's valid, otherwise return null (which will be filtered out).
-                            // This ensures we don't add null/empty values to Redis.
-                            return !string.IsNullOrWhiteSpace(imageUrlForNotification) ? imageUrlForNotification : null;
-                        })
-                        .Where(url => url != null) // Filter out any nulls (e.g., if DEFAULT_NEWS_IMAGE_URL was also empty)
-                        .Select(url => new RedisValue(url)) // Convert to RedisValue for StackExchange.Redis
+                        .Select(item => !string.IsNullOrWhiteSpace(item.ImageUrl) ? item.ImageUrl : DEFAULT_NEWS_IMAGE_URL)
+                        .Where(url => !string.IsNullOrWhiteSpace(url))
+                        .Select(url => new RedisValue(url))
                         .ToArray();
-
                     if (imageUrlsToAdd.Any())
                     {
-                        // SADD is an atomic, idempotent operation.
-                        // It returns the number of elements that were actually added (i.e., didn't already exist).
                         long addedCount = await redisDb.SetAddAsync(RedisProcessedImageUrlsSetKey, imageUrlsToAdd);
                         _logger.LogInformation("Successfully registered images in Redis. New URLs added: {AddedCount} of {TotalCount}.", addedCount, imageUrlsToAdd.Length);
                     }
@@ -1359,16 +1342,10 @@ namespace Infrastructure.Services
                 }
                 catch (RedisException redisEx)
                 {
-                    // Log critical failure but do not throw. The main operation (dispatch) succeeded.
-                    // The only consequence is these images might be re-processed if Redis is down, which is acceptable degradation.
                     _logger.LogCritical(redisEx, "CRITICAL: Could not connect to Redis to register new image URLs. Future deduplication may be incomplete until Redis is restored.");
                 }
             }
-
             _logger.LogInformation("Completed all dispatch enqueueing. Total items queued for notification: {TotalDispatchedCount}", dispatchedItemIds.Count);
-
-            // Map the processed items back to DTOs for the return value.
-            // We need to ensure that only items whose notifications were *enqueued* (tracked by dispatchedItemIds) are mapped.
             var dispatchedDtos = _mapper.Map<IEnumerable<NewsItemDto>>(savedItems.Where(ni => dispatchedItemIds.Contains(ni.Id)));
             _logger.LogTrace("Exiting {MethodName}", methodName);
             return dispatchedDtos;

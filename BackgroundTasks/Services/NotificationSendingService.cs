@@ -213,6 +213,14 @@ namespace BackgroundTasks.Services
             return Task.CompletedTask;
         }
 
+        #region Hangfire Attributes and Performance
+        // These attributes ensure jobs are deleted after completion and optimize performance.
+        // [JobExpirationTimeout] ensures Hangfire deletes jobs after the specified time (default: 1 hour here).
+        // [AutomaticRetry(Attempts = 0)] disables retries for jobs where we want to fail fast.
+        // [DisableConcurrentExecution] prevents duplicate processing for the same job.
+        // [Queue("notifications")] routes jobs to the notifications queue.
+        #endregion
+
         /// <summary>
         /// Processes and sends a consolidated batch notification containing multiple news items to a single specified Telegram user.
         /// This Hangfire background job serves as a key delivery mechanism for aggregated AI-analyzed news.
@@ -236,7 +244,8 @@ namespace BackgroundTasks.Services
         ///     </description></item>
         /// </list>
         /// </returns>
-        [AutomaticRetry(Attempts = 0)]
+        [AutomaticRetry(Attempts = 0)] // No retries for batch notifications
+        [Queue("notifications")]
         [JobDisplayName("Send Batch of {1.Count} News Items to User: {0}")]
         public async Task ProcessBatchNotificationForUserAsync(long targetUserId, List<Guid> newsItemIds)
         {
@@ -368,8 +377,8 @@ namespace BackgroundTasks.Services
         /// </returns>
         [Queue("notifications")]
         [DisableConcurrentExecution(timeoutInSeconds: 600)]
-        [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
+        [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         public async Task ProcessNotificationFromCacheAsync(
                        Guid newsItemId,
                        string userListCacheKey,
@@ -929,8 +938,6 @@ namespace BackgroundTasks.Services
         /// </list>
         /// The quality of this output directly impacts the user's experience with the AI-provided news.
         /// </returns>
-        // In NotificationSendingService.cs, inside the NotificationSendingService class
-
         private string BuildMessageText(NewsItem newsItem)
         {
             var messageTextBuilder = new StringBuilder();
@@ -938,7 +945,10 @@ namespace BackgroundTasks.Services
             // Escape title, source, and summary as they are plain text within Markdown.
             string title = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
             string sourceName = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
-            string summary = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Summary?.Trim() ?? string.Empty);
+            // --- FIX: Remove all newlines from summary/description before escaping ---
+            string summaryRaw = newsItem.Summary?.Trim() ?? string.Empty;
+            string summaryNoNewlines = summaryRaw.Replace("\r", " ").Replace("\n", " ");
+            string summary = TelegramMessageFormatter.EscapeMarkdownV2(summaryNoNewlines);
             string? link = newsItem.Link?.Trim();
 
             messageTextBuilder.AppendLine($"*{title}*");
@@ -951,14 +961,7 @@ namespace BackgroundTasks.Services
 
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                // --- THE CRITICAL FIX ---
-                // DO NOT escape the link itself with MarkdownV2 escaping.
-                // Telegram MarkdownV2 parsing handles URLs correctly without extra escaping.
-                // If the URL contains characters that *could* break Markdown (like parentheses),
-                // it's safer to let Telegram's parser handle it or use a URL encoder if absolutely necessary,
-                // but standard Markdown link syntax is usually robust enough.
-                // We only escape the 'Read Full Article' text.
-                messageTextBuilder.Append($"\n\n[Read Full Article]({link})"); // <-- Removed EscapeMarkdownV2 from the link
+                messageTextBuilder.Append($"\n\n[Read Full Article]({link})");
             }
 
             return messageTextBuilder.ToString().Trim();

@@ -11,6 +11,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Formatters;
+using Hangfire;
 
 namespace TelegramPanel.Infrastructure
 {
@@ -144,6 +145,18 @@ namespace TelegramPanel.Infrastructure
                             operationName, chatId, apiErrorCode, timeSpan, retryAttempt, messagePreview, exception.Message);
                     });
         }
+
+        #region Hangfire Attributes and Performance
+        // These attributes ensure jobs are deleted after completion and optimize performance.
+        // [JobExpirationTimeout] ensures Hangfire deletes jobs after the specified time (default: 1 hour here).
+        // [AutomaticRetry(Attempts = 0)] disables retries for jobs where we want to fail fast.
+        // [DisableConcurrentExecution] prevents duplicate processing for the same job.
+        // [Queue("notifications")] routes jobs to the notifications queue.
+        #endregion
+
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task SendDocumentToTelegramAsync(
            long chatId,
            byte[] documentContents,
@@ -260,6 +273,9 @@ namespace TelegramPanel.Infrastructure
     
 
         // --- ✅ IMPLEMENT THE NEW METHOD ---
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task CopyMessageToTelegramAsync(long targetChatId, long sourceChatId, int messageId, CancellationToken cancellationToken)
         {
             _logger.LogDebug("Hangfire Job: Copying message {MessageId} to ChatID {TargetChatId}", messageId, targetChatId);
@@ -288,13 +304,15 @@ namespace TelegramPanel.Infrastructure
             }
         }
 
-        public Task DeleteMessageAsync(long chatId, int messageId, CancellationToken cancellationToken = default)
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
+        public async Task DeleteMessageAsync(long chatId, int messageId, CancellationToken cancellationToken = default)
         {
             _logger.LogDebug("Enqueueing DeleteMessageAsync for ChatID {ChatId}, MsgID {MessageId}", chatId, messageId);
             _ = _jobScheduler.Enqueue<IActualTelegramMessageActions>(
                 sender => sender.DeleteMessageAsync(chatId, messageId, CancellationToken.None)
             );
-            return Task.CompletedTask;
         }
         /// <summary>
         /// Robustly sanitizes a string to prevent PII/sensitive data exposure in logs.
@@ -337,6 +355,9 @@ namespace TelegramPanel.Infrastructure
 
 
 
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task SendTextMessageToTelegramAsync(
        long chatId,
        string text,
@@ -425,6 +446,9 @@ namespace TelegramPanel.Infrastructure
         /// fallback from text to caption and incorporates a centralized, robust error handling strategy
         /// to manage all possible API exceptions gracefully.
         /// </summary>
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task EditMessageTextInTelegramAsync(long chatId, int messageId, string text, ParseMode? parseMode, InlineKeyboardMarkup? replyMarkup, CancellationToken cancellationToken)
         {
             // <<< FIX: Use the correct V1 escaper for the V1 goal.
@@ -523,6 +547,9 @@ namespace TelegramPanel.Infrastructure
         }
 
 
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public Task EditMessageTextDirectAsync(long chatId, int messageId, string text, ParseMode? parseMode, InlineKeyboardMarkup? replyMarkup, CancellationToken cancellationToken)
         {
             // It calls the base method directly, bypassing Polly entirely.
@@ -547,6 +574,9 @@ namespace TelegramPanel.Infrastructure
         /// specialized `_answerCallbackQueryPolicy` that does not retry on "query is too old"
         /// errors, handling them gracefully instead.
         /// </summary>
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task AnswerCallbackQueryToTelegramAsync(string callbackQueryId, string? text, bool showAlert, string? url, int cacheTime, CancellationToken cancellationToken)
         {
             // Sanitize for logging purposes only. The 'text' parameter is not Markdown.
@@ -598,6 +628,9 @@ namespace TelegramPanel.Infrastructure
         // REWRITTEN METHOD
         private const int TelegramApiMaxCaptionLength = 1024;
 
+        [AutomaticRetry(Attempts = 0)]
+        [Queue("notifications")]
+        [DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task SendPhotoToTelegramAsync(
             long chatId,
             string photoUrlOrFileId,
@@ -650,11 +683,30 @@ namespace TelegramPanel.Infrastructure
             catch (ApiRequestException apiEx)
                 when ((apiEx.ErrorCode == 400 &&
                        (apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase) ||
-                        apiEx.Message.Contains("USER_DEACTIVATED", StringComparison.OrdinalIgnoreCase))) ||
+                        apiEx.Message.Contains("USER_DEACTIVATED", StringComparison.OrdinalIgnoreCase) ||
+                        apiEx.Message.Contains("user is deactivated", StringComparison.OrdinalIgnoreCase) ||
+                        apiEx.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))) ||
                       (apiEx.ErrorCode == 403 && apiEx.Message.Contains("bot was blocked by the user", StringComparison.OrdinalIgnoreCase)))
             {
+                #region User Removal on Deactivation
                 _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user deactivated/blocked (Code: {ApiErrorCode}) for ChatID {ChatId} while sending photo. Attempting user removal.", apiEx.ErrorCode, chatId);
-                // Attempt to remove user (logic omitted for brevity)
+                try
+                {
+                    Domain.Entities.User? userToDelete = await _userRepository.GetByTelegramIdAsync(chatId.ToString(), cancellationToken);
+                    if (userToDelete != null)
+                    {
+                        await _userRepository.DeleteAndSaveAsync(userToDelete, cancellationToken);
+                        _logger.LogInformation("Hangfire Job (ActualSend): Successfully removed user with Telegram ID {TelegramId} from database (photo send).", userToDelete.TelegramId);
+                    }
+                }
+                catch (Exception dbEx)
+                {
+                    var sanitizedApiExMessage = SanitizeSensitiveData(apiEx.Message);
+                    _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to remove user with ChatID {ChatId} from database after photo send. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
+                        chatId,
+                        sanitizedApiExMessage);
+                }
+                #endregion
             }
             catch (Exception ex)
             {

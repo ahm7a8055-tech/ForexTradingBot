@@ -321,6 +321,11 @@ namespace Application.Services
                 throw new ArgumentException("A pre-constructed User entity is required for registration.");
             }
 
+            if (await _userRepository.ExistsByEmailAsync(registerDto.Email, cancellationToken))
+            {
+                throw new InvalidOperationException($"A user with email '{registerDto.Email}' already exists.");
+            }
+
             var sanitizedTelegramId = _logSanitizer.Sanitize(registerDto.TelegramId);
             var sanitizedUsername = _logSanitizer.Sanitize(registerDto.Username);
             var sanitizedEmail = _logSanitizer.Sanitize(registerDto.Email);

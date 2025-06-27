@@ -17,6 +17,9 @@ using Hangfire.PostgreSql;
 using Hangfire.SqlServer;
 using Hangfire.Storage.SQLite;
 using Infrastructure.Data;
+using Infrastructure.ExternalServices;
+using Hangfire.Annotations;
+
 
 // using Hangfire.SqlServer;              // اگر از SQL Server برای Hangfire استفاده می‌کنید
 // using WebAPI.Filters; //  Namespace برای HangfireNoAuthFilter (اگر در این مسیر است و استفاده می‌کنید)
@@ -24,6 +27,7 @@ using Infrastructure.Features.Forwarding.Extensions;
 using Infrastructure.Logging;
 using Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;             // برای OpenApiInfo
 using Serilog;                              // برای Log, LoggerConfiguration, UseSerilog
 using Serilog.Enrichers.WithCaller;
@@ -36,8 +40,17 @@ using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Services;
 using TL;
 using WebAPI.Extensions;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Dapper;
+using System.Data;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 #endregion
+
+// Register the handler at app startup:
+SqlMapper.AddTypeHandler(new GuidTypeHandler());
 
 // ------------------- پیکربندی اولیه لاگر Serilog (Bootstrap Logger) -------------------
 // این لاگر قبل از خواندن کامل appsettings.json و ساخت هاست استفاده می‌شود
@@ -120,6 +133,9 @@ try
       )
   );
 
+
+
+
     #region Caching and External Services (Or a new "Infrastructure" region)
 
     string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
@@ -169,7 +185,7 @@ try
         // Decide if this should be fatal. For now, we allow the app to continue,
         // but services that require IConnectionMultiplexer will fail to resolve.
     }
-    Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
+
 
     #endregion
 
@@ -353,23 +369,34 @@ try
             }
 
 
-            // --- Universal Conditional Feature: CryptoPay (Example) ---
-            // The same robust pattern is applied here.
-            string? cryptoPayToken = builder.Configuration["CryptoPay:ApiToken"];
-            string? cryptoPayApiKey = builder.Configuration["CryptoPay:ApiKey"]; // Assuming you have this key too
+        // --- Universal Conditional Feature: CryptoPay (Example) ---
+        // The same robust pattern is applied here.
+        string? cryptoPayToken = builder.Configuration["CryptoPay:ApiToken"];
+        bool isCryptoPayEnabled = !string.IsNullOrWhiteSpace(cryptoPayToken) && !cryptoPayToken.Contains("REPLACE");
 
-            if (!string.IsNullOrEmpty(cryptoPayToken) && !string.IsNullOrEmpty(cryptoPayApiKey))
-            {
-                // Here you would register your CryptoPay specific services.
-                // builder.Services.AddCryptoPayServices(builder.Configuration);
-                Log.Information("✅ CryptoPay feature ENABLED (ApiToken and ApiKey were found in configuration).");
-            }
-            else
-            {
-                Log.Information("ℹ️ CryptoPay feature DISABLED (CryptoPay secrets not found in configuration).");
-            }
-        
+        if (isCryptoPayEnabled)
+        {
+            // The service is ONLY registered if the feature is enabled.
+            // This prevents the constructor from ever being called if the token is missing.
+            builder.Services.AddHttpClient<Application.Common.Interfaces.ICryptoPayApiClient, CryptoPayApiClient>()
+                .AddTypedClient((httpClient, serviceProvider) =>
+                {
+                    var options = serviceProvider.GetRequiredService<IOptions<CryptoPaySettings>>();
+                    var logger = serviceProvider.GetRequiredService<ILogger<CryptoPayApiClient>>();
+                    return new CryptoPayApiClient(httpClient, options, logger);
+                });
+
+            Log.Information("✅ CryptoPay feature ENABLED (ApiToken was found in configuration).");
+        }
+        else
+        {
+            // Register a disabled implementation to avoid DI errors
+            builder.Services.AddSingleton<Application.Common.Interfaces.ICryptoPayApiClient, Infrastructure.ExternalServices.DisabledCryptoPayApiClient>();
+            Log.Information("ℹ️ CryptoPay feature DISABLED (CryptoPay secrets not found or were skipped). Using DisabledCryptoPayApiClient.");
+        }
+
     }
+
     catch
     {
         // If the secrets are missing, we skip ALL related services.
@@ -441,7 +468,14 @@ try
         // --- Resilient Database Configuration with Fallback ---
         try
         {
+            // Force DefaultConnection to SQLite directly in code if provider is SQLite or not set
             string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
+            if (dbProvider == "sqlite" || string.IsNullOrEmpty(dbProvider))
+            {
+                builder.Configuration.GetSection("ConnectionStrings")["DefaultConnection"] = "Data Source=local_forex_bot.db";
+                Log.Information("DefaultConnection forcibly set to SQLite: Data Source=local_forex_bot.db");
+            }
+
             string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
             // Default to SQLite if the provider is not specified.
@@ -525,12 +559,27 @@ try
     _ = builder.Services.Configure<List<Infrastructure.Settings.ForwardingRule>>( // <<< Fully qualified
     builder.Configuration.GetSection("ForwardingRules"));
 
-
     #endregion
 
     // ------------------- ساخت WebApplication instance -------------------
     WebApplication app = builder.Build(); //  ساخت برنامه با تمام سرویس‌های پیکربندی شده
     Log.Information("Application host built. Performing mandatory startup tasks...");
+
+    // Automatically apply EF Core migrations at startup
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
+        try
+        {
+            db.Database.Migrate();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
+        {
+            // Fallback: try to create the database if migrations fail due to pending model changes
+            db.Database.EnsureCreated();
+            // Optionally log a warning here
+        }
+    }
 
     // The application will now start INSTANTLY.
     #region Queue Startup Maintenance Jobs to Hangfire
@@ -827,10 +876,102 @@ public static class ConfigurationHelper
         }
     }
 
+    private static void PromptForCryptoPaySecrets(IConfiguration configuration)
+    {
+        string? apiToken = configuration["CryptoPay:ApiToken"];
+
+        if (string.IsNullOrWhiteSpace(apiToken) || apiToken.Contains("REPLACE"))
+        {
+            Console.ForegroundColor = ConsoleColor.Magenta;
+            Console.WriteLine("\n--- CryptoPay Setup (Optional) ---");
+            Console.WriteLine("Payment processing requires a CryptoPay API Token.");
+            Console.WriteLine("Enter 'skip' to disable this feature for this session.");
+            Console.ResetColor();
+
+            Console.Write("Enter your CryptoPay API Token (or 'skip'): ");
+            var inputToken = Console.ReadLine();
+
+            if (string.Equals(inputToken, "skip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(inputToken))
+            {
+                Log.Information("User skipped CryptoPay API Token entry. Payment features will be disabled.");
+                // Explicitly set to null to ensure the feature check fails
+                configuration["CryptoPay:ApiToken"] = null;
+                return;
+            }
+
+            // Update the in-memory configuration with the user-provided token.
+            configuration["CryptoPay:ApiToken"] = inputToken;
+            Log.Information("CryptoPay API Token configured from console input.");
+        }
+    }
     public static void PromptForMissingSecrets(IConfiguration configuration)
     {
         PromptForTelegramPanelSecrets(configuration);
         PromptForTelegramApiSecrets(configuration);
-        // Add calls for other secrets here, like CryptoPay
+        PromptForCryptoPaySecrets(configuration);
+    }
+}
+
+public class GuidTypeHandler : SqlMapper.TypeHandler<Guid>
+{
+    public override void SetValue(IDbDataParameter parameter, Guid value)
+    {
+        parameter.Value = value.ToString();
+    }
+
+    public override Guid Parse(object value)
+    {
+        return Guid.Parse(value.ToString());
+    }
+}
+
+public class IntToBoolJsonConverter : JsonConverter<bool>
+{
+    public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            return reader.GetInt32() != 0;
+        }
+        if (reader.TokenType == JsonTokenType.True) return true;
+        if (reader.TokenType == JsonTokenType.False) return false;
+        throw new JsonException();
+    }
+
+    public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
+    {
+        writer.WriteNumberValue(value ? 1 : 0);
+    }
+}
+
+public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
+{
+    private static readonly string[] Formats = new[]
+    {
+        "yyyy-MM-dd HH:mm:ss.FFFFFFF",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ss.FFFFFFFK",
+        "yyyy-MM-ddTHH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ssZ",
+        "yyyy-MM-ddTHH:mm:ss.fffZ"
+    };
+
+    public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var str = reader.GetString();
+            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dt))
+                return dt;
+            if (DateTime.TryParse(str, out dt))
+                return dt;
+            throw new JsonException($"Could not parse DateTime: {str}");
+        }
+        return reader.GetDateTime();
+    }
+
+    public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value.ToString("O")); // ISO 8601
     }
 }

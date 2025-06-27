@@ -194,6 +194,7 @@ namespace Application.Features.Forwarding.Services
         [AutomaticRetry(Attempts = HangfireMaxJobRetries, DelaysInSeconds = new int[] {
             0, 1, 3, 5, 10, 20, 30, 60, 120, 180, 300, 420, 540, 660, 780, 900, 1020, 1140, 1260, 1380
         })]
+
         public async Task ProcessAndRelayMessageAsync( // Matches IForwardingJobActions signature
             int sourceMessageId,
             long rawSourcePeerId,

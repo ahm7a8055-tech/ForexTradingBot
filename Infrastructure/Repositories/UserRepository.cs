@@ -7,7 +7,9 @@ using Application.Common.Interfaces; // For IUserRepository
 using Dapper; // Dapper for micro-ORM operations
 using Domain.Entities;             // For User, Subscription, TokenWallet, UserSignalPreference entities
 using Domain.Enums; // For UserLevel enum (stored as string in DB)
+using Infrastructure.Data;
 using Microsoft.Data.SqlClient; // SQL Server specific connection
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration; // To access connection strings
 using Microsoft.Extensions.Logging; // For logging
 using Npgsql;
@@ -20,7 +22,61 @@ using System.Data.Common; // For DbException (base class for database exceptions
 using System.Linq.Expressions;
 using System.Text;
 using System.Text.Json; // Still included, but will throw NotSupportedException
+using System.Text.Json.Serialization; // Added for IntToBoolJsonConverter
 #endregion
+
+// --- Add IntToBoolJsonConverter for local use ---
+public class IntToBoolJsonConverter : JsonConverter<bool>
+{
+    public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            return reader.GetInt32() != 0;
+        }
+        if (reader.TokenType == JsonTokenType.True) return true;
+        if (reader.TokenType == JsonTokenType.False) return false;
+        throw new JsonException();
+    }
+
+    public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
+    {
+        writer.WriteNumberValue(value ? 1 : 0);
+    }
+}
+
+// --- Add FlexibleDateTimeJsonConverter for local use ---
+public class FlexibleDateTimeJsonConverter : System.Text.Json.Serialization.JsonConverter<DateTime>
+{
+    private static readonly string[] Formats = new[]
+    {
+        "yyyy-MM-dd HH:mm:ss.FFFFFFF",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ss.FFFFFFFK",
+        "yyyy-MM-ddTHH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ssZ",
+        "yyyy-MM-ddTHH:mm:ss.fffZ"
+    };
+
+    public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var str = reader.GetString();
+            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dt))
+                return dt;
+            if (DateTime.TryParse(str, out dt))
+                return dt;
+            throw new JsonException($"Could not parse DateTime: {str}");
+        }
+        return reader.GetDateTime();
+    }
+
+    public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value.ToString("O")); // ISO 8601
+    }
+}
 
 namespace Infrastructure.Repositories
 {
@@ -33,6 +89,9 @@ namespace Infrastructure.Repositories
         private readonly string _connectionString;
         private readonly ILogger<UserRepository> _logger;
         private readonly AsyncRetryPolicy _retryPolicy; // Polly policy for DB operations
+        private readonly UserSqlProvider _sql;
+        private readonly DbProviderService _dbProvider;
+        private readonly IDbConnectionFactory _dbConnectionFactory;
         private class UserWithRelatedDataDto
         {
             // --- User Properties (from Users table) ---
@@ -180,8 +239,11 @@ namespace Infrastructure.Repositories
             public Guid Id { get; set; }
             public Guid UserId { get; set; }
             public decimal Balance { get; set; }
+            [System.Text.Json.Serialization.JsonConverter(typeof(IntToBoolJsonConverter))]
             public bool IsActive { get; set; }
+            [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleDateTimeJsonConverter))]
             public DateTime CreatedAt { get; set; }
+            [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleDateTimeJsonConverter))]
             public DateTime UpdatedAt { get; set; }
 
             public TokenWallet ToDomainEntity()
@@ -239,48 +301,85 @@ namespace Infrastructure.Repositories
         private readonly AsyncTimeoutPolicy _timeoutPolicy;
         private readonly ILoggingSanitizer _logSanitizer;
         // --- Constructor ---
-        public UserRepository(IConfiguration configuration, ILogger<UserRepository> logger, ILoggingSanitizer logSanitizer)
+        public UserRepository(IDbConnectionFactory dbConnectionFactory,
+        IConfiguration configuration,
+        ILogger<UserRepository> logger,
+        ILoggingSanitizer logSanitizer,
+        DbProviderService dbProviderService, // <<< INJECTED: Provides the database provider context.
+        UserSqlProvider userSqlProvider)     // <<< INJECTED: Provides SQL statements tailored to the database.
         {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            #region Constructor Initialization
+            _dbConnectionFactory = dbConnectionFactory;
+            // --- Assign Injected Dependencies ---
+            _logger = logger;
+            _logSanitizer = logSanitizer;
 
-            _connectionString = configuration.GetConnectionString("DefaultConnection")
-                                ?? throw new ArgumentNullException("DefaultConnection", "DefaultConnection string not found.");
+            // Assign the injected database provider service and SQL provider to internal fields.
+            _dbProvider = dbProviderService;
+            _sql = userSqlProvider;
 
+            #endregion
+
+            #region Resilience Policies Configuration
+
+            // --- Timeout Policy ---
+            // Configures a pessimistic timeout for asynchronous operations.
+            // Operations exceeding 5 minutes will be cancelled.
             _timeoutPolicy = Policy.TimeoutAsync(TimeSpan.FromMinutes(5), TimeoutStrategy.Pessimistic);
-            // Polly configuration for transient errors (e.g., network issues, temporary DB unavailability)
-            // Excludes primary key violation errors (e.g., trying to add a user with an existing ID/email/telegramId)
-            _retryPolicy = Policy
-                .Handle<DbException>(ex => !(ex is SqlException sqlEx && (sqlEx.Number == 2627 || sqlEx.Number == 2601))) // SQL Server PK/Unique constraint violation
-                .WaitAndRetryAsync(
-                    retryCount: 3, // Max 3 retries
-                    sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), // Exponential backoff: 2s, 4s, 8s
-                    onRetry: (exception, timeSpan, retryAttempt, context) =>
-                    {
-                        _logger.LogWarning(exception,
-                            "UserRepository: Transient database error encountered. Retrying in {TimeSpan} for attempt {RetryAttempt}. Error: {Message}",
-                            timeSpan, retryAttempt, exception.Message);
-                    });
 
-            // --- THIS IS THE LINE TO CORRECT ---
-            // It should assign the 'logSanitizer' parameter to the '_logSanitizer' class field.
-            _logSanitizer = logSanitizer ?? throw new ArgumentNullException(nameof(logSanitizer));
-            // --- END OF CORRECTION ---
+            // --- Dynamic Retry Policy ---
+            // Configures a retry policy that adapts based on the database provider and exception type.
+            // This policy defines specific retry conditions and wait strategies for different database exceptions.
+            _retryPolicy = Policy
+                .Handle<DbException>(ex => // Target generic database exceptions.
+                {
+                    // --- Provider-Specific Retry Logic ---
+                    // Customize retry behavior based on the database provider to avoid retrying
+                    // non-transient errors like constraint violations that are unlikely to succeed on retry.
+
+                    // SQLite specific handling:
+                    if (_dbProvider.Provider == DatabaseProvider.SQLite && ex is SqliteException sqliteEx)
+                    {
+                        // SQLITE_CONSTRAINT error code (19) typically indicates a constraint violation (e.g., unique key, foreign key).
+                        // We choose NOT to retry on these specific constraint violations as they are usually data-related and won't resolve on retry.
+                        // All other SqliteExceptions will be retried.
+                        return sqliteEx.SqliteErrorCode != 19;
+                    }
+
+                    // PostgreSQL specific handling:
+                    if (_dbProvider.Provider == DatabaseProvider.Postgres && ex is Npgsql.NpgsqlException pgEx)
+                    {
+                        // PostgreSQL error state '23505' indicates a unique_violation.
+                        // Similar to SQLite, we choose NOT to retry on unique constraint violations.
+                        // All other NpgsqlExceptions will be retried.
+                        return pgEx.SqlState != "23505";
+                    }
+
+                    // For any other database provider or DbException subclass not specifically handled above,
+                    // we default to retrying the operation, assuming these might be transient network issues or similar.
+                    return true;
+                })
+             // --- Wait and Retry Strategy ---
+             .WaitAndRetryAsync(
+                retryCount: 3, // Max 3 retries
+                sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), // Exponential backoff: 2s, 4s, 8s
+                onRetry: (exception, timeSpan, retryAttempt, context) =>
+                {
+                    _logger.LogWarning(exception,
+                        "UserRepository: Transient database error encountered. Retrying in {TimeSpan} for attempt {RetryAttempt}. Error: {Message}",
+                        timeSpan, retryAttempt, exception.Message);
+                });
+
+            #endregion
         }
 
         // --- Helper to create a new SqlConnection ---
-        private NpgsqlConnection CreateConnection()
+        private IDbConnection CreateConnection()
         {
-            try
-            {
-                // --- CHANGE: Returning NpgsqlConnection ---
-                return new NpgsqlConnection(_connectionString);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "UserRepository: Error creating PostgreSQL database connection. ConnectionString: {ConnectionString}", _connectionString);
-                throw;
-            }
+            // The repository now asks the factory for a connection, it doesn't build it itself.
+            return _dbConnectionFactory.CreateConnection();
         }
+
         private const string UserWithRelatedDataSqlFragment = @"
             SELECT
                 u.""Id"", u.""Username"", u.""TelegramId"", u.""Email"", u.""Level"", u.""CreatedAt"", u.""UpdatedAt"",
@@ -306,106 +405,133 @@ namespace Infrastructure.Repositories
                 ) AS PreferencesJson
             FROM public.""Users"" u";
 
-        // --- Read Operations ---
 
-        /// <inheritdoc />
+
+        // In Infrastructure/Persistence/Repositories/UserRepository.cs
+
+        /// <summary>
+        /// Asynchronously retrieves users who are eligible to receive news notifications.
+        /// The eligibility is determined by their notification preferences and subscription status.
+        /// </summary>
+        /// <param name="newsItemSignalCategoryId">Optional. The ID of the signal category for the news item. If provided, only users interested in this category (or no specific category) will be included.</param>
+        /// <param name="isNewsItemVipOnly">A flag indicating whether the news item is restricted to VIP users.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>An enumerable collection of eligible <see cref="User"/> domain entities.</returns>
+        /// <exception cref="RepositoryException">Thrown if any error occurs during the data retrieval process.</exception>
         public async Task<IEnumerable<User>> GetUsersForNewsNotificationAsync(
-        Guid? newsItemSignalCategoryId,
-        bool isNewsItemVipOnly,
-        CancellationToken cancellationToken = default)
+            Guid? newsItemSignalCategoryId,
+            bool isNewsItemVipOnly,
+            CancellationToken cancellationToken = default)
         {
+            // --- 1. Log the request details for diagnostic purposes ---
             _logger.LogInformation(
                 "UserRepository: Fetching users for news notification. CategoryId: {CategoryId}, IsVipOnly: {IsVip}",
                 newsItemSignalCategoryId, isNewsItemVipOnly);
 
-            // --- 1. BUILD A LIGHTWEIGHT AND TARGETED SQL QUERY ---
-            // We only select the columns needed to construct a minimal User object for notifications.
-            // This avoids the overhead of JSON aggregation for related data we don't need here.
-            var sqlBuilder = new StringBuilder(@"
-        SELECT
-            u.""Id"",
-            u.""Username"",
-            u.""TelegramId"",
-            u.""Email"",
-            u.""Level"",
-            u.""CreatedAt"",
-            u.""UpdatedAt"",
-            u.""EnableGeneralNotifications"",
-            u.""EnableVipSignalNotifications"",
-            u.""EnableRssNewsNotifications"",
-            u.""PreferredLanguage""
-        FROM public.""Users"" u
-        WHERE u.""EnableRssNewsNotifications"" = true
-    ");
+            #region SQL Query Construction
 
+            // --- Build the SQL Query Dynamically ---
+            // CORRECTED: Use the new 'GetUsersForNewsNotificationBaseSql' property from the upgraded UserSqlProvider.
+            // This property provides a complete and syntactically correct base query, including the initial WHERE clause.
+            var sqlBuilder = new StringBuilder(_sql.GetUsersForNewsNotificationBaseSql);
+
+            // Initialize Dapper parameters. This object will hold any dynamic values needed for the query.
             var parameters = new DynamicParameters();
 
-            // Clause for VIP-only news
+            // Conditionally append the clause for VIP-only news notifications.
+            // This clause safely adds an 'AND' condition to the existing WHERE clause.
             if (isNewsItemVipOnly)
             {
-                // This EXISTS subquery is efficient and correctly uses PostgreSQL syntax.
-                sqlBuilder.AppendLine(@"
-            AND u.""Level"" IN ('Premium', 'Vip') 
-            AND EXISTS (
-                SELECT 1 FROM public.""Subscriptions"" s_sub 
-                WHERE s_sub.""UserId"" = u.""Id"" 
-                  AND s_sub.""StartDate"" <= NOW() 
-                  AND s_sub.""EndDate"" >= NOW() 
-                  AND s_sub.""Status"" = 'Active'
-            )");
+                sqlBuilder.Append(_sql.VipSubscriptionCheckClause);
             }
 
-            // Clause for specific news categories
+            // Conditionally append the clause for filtering by specific news category preferences.
             if (newsItemSignalCategoryId.HasValue)
             {
-                // This logic correctly finds users with no preferences OR a matching preference.
-                sqlBuilder.AppendLine(@"
-            AND (
-                NOT EXISTS (SELECT 1 FROM public.""UserSignalPreferences"" usp_pref WHERE usp_pref.""UserId"" = u.""Id"") 
-                OR EXISTS (
-                    SELECT 1 FROM public.""UserSignalPreferences"" usp_pref 
-                    WHERE usp_pref.""UserId"" = u.""Id"" AND usp_pref.""CategoryId"" = @NewsItemSignalCategoryId
-                )
-            )");
+                sqlBuilder.Append(_sql.CategoryPreferenceCheckClause);
+                // Add the category ID to the parameters, ensuring it's correctly passed to the query.
                 parameters.Add("NewsItemSignalCategoryId", newsItemSignalCategoryId.Value);
             }
 
+            // Finalize the SQL query string.
             var finalSql = sqlBuilder.ToString();
+            // Log the constructed SQL query at a trace level for debugging purposes.
+            _logger.LogTrace("Executing SQL for GetUsersForNewsNotificationAsync: {Sql}", finalSql);
+
+            #endregion
 
             try
             {
+                // --- 2. Execute the Query with Resilience Policies ---
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
-                return await combinedPolicy.ExecuteAsync(async (ct) =>
+                var eligibleUsers = await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     using var connection = CreateConnection();
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
-                    // --- 2. EXECUTE THE LIGHTWEIGHT QUERY ---
-                    // We map the results to the simpler UserDbDto, as we are not fetching related JSON.
-                    var userDtos = await connection.QueryAsync<UserDbDto>(
-                        new CommandDefinition(finalSql, parameters, cancellationToken: ct)
+                    // --- UPGRADE: Use a dictionary for robust multi-mapping ---
+                    // This prevents issues if a user has multiple subscriptions or preferences, ensuring each user appears only once.
+                    var userMap = new Dictionary<Guid, User>();
+
+                    // The DTOs are defined in the repository, this mapping assumes their existence.
+                    await connection.QueryAsync<UserDbDto, TokenWalletDbDto, SubscriptionDbDto, UserSignalPreferenceDbDto, User>(
+                        new CommandDefinition(finalSql, parameters, cancellationToken: ct),
+                        (userDto, walletDto, subscriptionDto, preferenceDto) =>
+                        {
+                            // Find or create the main User entity
+                            if (!userMap.TryGetValue(userDto.Id, out var user))
+                            {
+                                user = userDto.ToDomainEntity(); // This creates the User with empty collections
+                                userMap.Add(user.Id, user);
+                            }
+
+                            // Hydrate the related entities.
+                            // The ToDomainEntity() methods in your DTOs should handle the mapping.
+                            if (walletDto != null && user.TokenWallet == null)
+                            {
+                                user.TokenWallet = walletDto.ToDomainEntity();
+                            }
+
+                            if (subscriptionDto != null && !user.Subscriptions.Any(s => s.Id == subscriptionDto.Id))
+                            {
+                                user.Subscriptions.Add(subscriptionDto.ToDomainEntity());
+                            }
+
+                            if (preferenceDto != null && !user.Preferences.Any(p => p.Id == preferenceDto.Id))
+
+                            {
+                                user.Preferences.Add(preferenceDto.ToDomainEntity());
+                            }
+
+                            return user; // Return the user for Dapper's internal processing
+                        },
+                        // The splitOn parameter tells Dapper where to split the data for each new object type.
+                        splitOn: "TokenWallet_Id,Subscription_Id,Preference_Id"
                     );
 
-                    // --- 3. MAP TO DOMAIN ENTITIES ---
-                    // Convert the list of DTOs to a list of domain User entities.
-                    // The ToDomainEntity method will initialize related collections as empty, which is correct for this use case.
-                    var eligibleUsers = userDtos
-                        .Select(dto => dto.ToDomainEntity()) // No longer needs to pass the logger for JSON parsing
-                        .ToList();
+                    // Ensure every user has a non-null wallet, even if it's a default/empty one.
+                    foreach (var user in userMap.Values)
+                    {
+                        user.TokenWallet ??= TokenWallet.Create(user.Id);
+                    }
 
-                    _logger.LogInformation("UserRepository: Found {UserCount} eligible users for news notification.", eligibleUsers.Count);
-                    return eligibleUsers;
+                    var eligibleUsersList = userMap.Values.ToList();
+
+                    _logger.LogInformation("UserRepository: Found {UserCount} eligible users for news notification.", eligibleUsersList.Count);
+                    return eligibleUsersList;
 
                 }, cancellationToken);
+
+                return eligibleUsers;
             }
             catch (Exception ex)
             {
+                // --- 4. Exception Handling ---
                 _logger.LogError(ex, "UserRepository: Error fetching users for news notification.");
                 throw new RepositoryException("Failed to fetch users for news notification.", ex);
             }
         }
-
-
         /// <inheritdoc />
         // Make sure the UserWithRelatedDataDto class is defined within your UserRepository class
         // as shown in the previous example for GetByTelegramIdAsync.
@@ -496,110 +622,56 @@ namespace Infrastructure.Repositories
         /// <inheritdoc />
         public async Task<User?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-            _logger.LogTrace("UserRepository: Fetching user by ID: {UserId} using PostgreSQL JSON aggregation.", id);
+            // The logging message is now more generic and accurate.
+            _logger.LogTrace("UserRepository: Fetching user by ID: {UserId} using provider-specific JSON aggregation.", id);
 
-            // --- OPTIMIZED SQL USING PostgreSQL JSON AGGREGATION WITH PROPER IDENTIFIERS ---
-            // CRITICAL: All column and table references MUST match the DDL casing and quotes.
-            const string sql = @"
-                SELECT
-                    u.""Id"",
-                    u.""Username"",
-                    u.""TelegramId"",
-                    u.""Email"",
-                    u.""Level"",
-                    u.""CreatedAt"",
-                    u.""UpdatedAt"",
-                    u.""EnableGeneralNotifications"",
-                    u.""EnableVipSignalNotifications"",
-                    u.""EnableRssNewsNotifications"",
-                    u.""PreferredLanguage"",
-                    ( -- Aggregate TokenWallets into a JSON array
-                        SELECT COALESCE(json_agg(json_build_object(
-                            'Id', tw.""Id"",
-                            'UserId', tw.""UserId"",
-                            'Balance', tw.Balance, -- Assuming Balance was created without quotes, otherwise quote it.
-                            'IsActive', tw.IsActive, -- Assuming IsActive was created without quotes, otherwise quote it.
-                            'CreatedAt', tw.""CreatedAt"",
-                            'UpdatedAt', tw.""UpdatedAt""
-                        )), '[]'::json)
-                        FROM public.""TokenWallets"" tw
-                        WHERE tw.""UserId"" = u.""Id""
-                    ) AS TokenWalletJson,
-                    ( -- Aggregate Subscriptions into a JSON array
-                        SELECT COALESCE(json_agg(json_build_object(
-                            'Id', s.""Id"",
-                            'UserId', s.""UserId"",
-                            'StartDate', s.StartDate, -- Assuming StartDate was created without quotes
-                            'EndDate', s.EndDate,     -- Assuming EndDate was created without quotes
-                            'Status', s.Status,       -- Assuming Status was created without quotes
-                            'ActivatingTransactionId', s.ActivatingTransactionId, -- Assuming this was created without quotes
-                            'CreatedAt', s.""CreatedAt"",
-                            'UpdatedAt', s.""UpdatedAt""
-                        )), '[]'::json)
-                        FROM public.""Subscriptions"" s
-                        WHERE s.""UserId"" = u.""Id""
-                    ) AS SubscriptionsJson,
-                    ( -- Aggregate UserSignalPreferences into a JSON array
-                        SELECT COALESCE(json_agg(json_build_object(
-                            'Id', usp.""Id"",
-                            'UserId', usp.""UserId"",
-                            'CategoryId', usp.CategoryId, -- Assuming CategoryId was created without quotes
-                            'CreatedAt', usp.""CreatedAt""
-                        )), '[]'::json)
-                        FROM public.""UserSignalPreferences"" usp
-                        WHERE usp.""UserId"" = u.""Id""
-                    ) AS PreferencesJson
-                FROM public.""Users"" u
-                WHERE u.""Id"" = @Id;";
-       
+            // --- REMOVED THE LARGE, HARDCODED 'const string sql' ---
+            // Instead, we get the correct, provider-specific SQL from our SQL provider.
+            var sql = _sql.GetByIdSql;
+
             try
             {
-                // Apply the combined resilience policy (timeout wrapping retry)
+                // This entire block of C# logic remains UNCHANGED. It's already database-agnostic.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
-                // Execute the database operation within the policy
                 return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
-                    using var connection = CreateConnection(); // Ensure this returns NpgsqlConnection
-                    await connection.OpenAsync(ct); // Pass the policy-managed cancellation token
+                    // CreateConnection() already handles switching between database connections.
+                    using var connection = CreateConnection();
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
-                    // Execute the single, complex SQL query and map directly to our UserWithRelatedDataDto.
-                    // Dapper's CommandDefinition ensures the cancellation token is respected.
                     var userWithRelatedDataDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
-                        new CommandDefinition(sql, new { Id = id }, cancellationToken: ct) // Parameter name is 'Id' matching @Id
+                        new CommandDefinition(sql, new { Id = id }, cancellationToken: ct)
                     );
 
-                    // If no user was found with the given ID
                     if (userWithRelatedDataDto == null)
                     {
                         _logger.LogTrace("User with ID {UserId} not found.", id);
                         return null;
                     }
 
-                    // Convert the DTO (which includes JSON deserialization) into the domain entity.
-                    // Pass the logger to the DTO's method for handling potential JSON deserialization errors.
                     var user = userWithRelatedDataDto.ToDomainEntity(_logger);
 
                     _logger.LogDebug("Successfully fetched user {UserId} with all related entities.", id);
                     return user;
 
-                }, cancellationToken); // Pass the original cancellationToken to the policy execution
+                }, cancellationToken);
             }
             catch (TimeoutRejectedException ex)
             {
-                // Catch specific timeout exceptions from Polly
-                _logger.LogError(ex, "UserRepository: Operation timed out after {TimeoutDuration} while fetching user by ID {UserId}.", 30, id);
-                // Rethrow as a more specific domain/application exception for better error handling upstream.
+                _logger.LogError(ex, "UserRepository: Operation timed out while fetching user by ID {UserId}.", 30, id);
                 throw new RepositoryException($"The operation to fetch user by ID {id} timed out.", ex);
             }
             catch (Exception ex)
             {
-                // Catch other exceptions that might occur during query execution or retries
                 _logger.LogError(ex, "Failed to get user by ID {UserId} after retries and within timeout.", id);
-                // Rethrow as a more specific domain/application exception.
                 throw new RepositoryException($"An error occurred while fetching user by ID: {id}", ex);
             }
         }
+
+
+        // File: Infrastructure/Persistence/Repositories/UserRepository.cs
+
         /// <inheritdoc />
         /// <summary>
         /// Fetches a user and their complete related entity graph by their Telegram ID in a single,
@@ -614,15 +686,18 @@ namespace Infrastructure.Repositories
 
             _logger.LogTrace("UserRepository: Fetching user by TelegramID: {TelegramId}", telegramId);
 
-            var sql = $"{UserWithRelatedDataSqlFragment} WHERE u.\"TelegramId\" = @TelegramId;";
+            // --- MODIFIED LINE ---
+            // The SQL is now fetched from the provider, which returns the correct dialect.
+            var sql = _sql.GetByTelegramIdSql;
 
             try
             {
+                // The rest of this method's logic is already database-agnostic and requires no changes.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
                 return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(ct);
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
                     var userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
                         new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct));
 
@@ -639,12 +714,6 @@ namespace Infrastructure.Repositories
         }
 
 
-        /// <summary>
-        /// Fetches a user and their complete related entity graph by their email address.
-        /// This method is optimized to prevent duplicate code by finding the user's ID and
-        /// then delegating the full entity fetch to GetByIdAsync.
-        /// </summary>
-        /// <inheritdoc />
         public async Task<User?> GetByEmailAsync(string email, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(email))
@@ -655,7 +724,6 @@ namespace Infrastructure.Repositories
 
             string lowerEmail = email.ToLowerInvariant();
 
-            // REFACTOR: Injected ILoggingSanitizer is used for all sanitization, adhering to SRP & DIP.
             var sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
             _logger.LogTrace("UserRepository: Fetching user by Email: {SanitizedEmail}.", sanitizedEmail);
 
@@ -664,10 +732,11 @@ namespace Infrastructure.Repositories
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
-                    // OPTIMIZATION (EFFICIENCY): Perform a single, lightweight query to get only the ID.
-                    var userIdQuery = "SELECT Id FROM Users WHERE LOWER(Email) = LOWER(@Email);";
+                    // --- MODIFIED LINE ---
+                    // The query is now fetched from the provider, ensuring correct syntax.
+                    var userIdQuery = _sql.GetUserIdByEmailSql;
                     var userId = await connection.ExecuteScalarAsync<Guid?>(userIdQuery, new { Email = lowerEmail });
 
                     if (!userId.HasValue)
@@ -676,18 +745,15 @@ namespace Infrastructure.Repositories
                         return null;
                     }
 
-                    // REFACTOR (DRY): Re-use GetByIdAsync to avoid duplicating the complex data hydration logic.
-                    // This makes the repository significantly more maintainable.
+                    // This part is perfect and requires no changes as GetByIdAsync is already refactored.
                     return await GetByIdAsync(userId.Value, cancellationToken);
                 });
             }
             catch (Exception ex)
             {
-                // HARDENING: The raw exception message is now sanitized before being logged to prevent PII leakage.
                 _logger.LogError(ex, "UserRepository: Error fetching user by email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
 
-                // The re-thrown exception also uses the sanitized email.
                 throw new RepositoryException($"Failed to fetch user by email '{sanitizedEmail}'.", ex);
             }
         }
@@ -699,22 +765,22 @@ namespace Infrastructure.Repositories
             return await _retryPolicy.ExecuteAsync(async () =>
             {
                 using var connection = CreateConnection();
-                await connection.OpenAsync(cancellationToken);
+                await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
-                // Fetch all users first
-                var users = (await connection.QueryAsync<UserDbDto>("SELECT Id, Username, TelegramId, Email, Level, CreatedAt, UpdatedAt, EnableGeneralNotifications, EnableVipSignalNotifications, EnableRssNewsNotifications, PreferredLanguage FROM Users ORDER BY Username;")).Select(dto => dto.ToDomainEntity()).ToList();
+                // --- MODIFIED: Fetch all users first using the provider's SQL ---
+                var users = (await connection.QueryAsync<UserDbDto>(_sql.GetAllUsersSql))
+                    .Select(dto => dto.ToDomainEntity()).ToList();
 
                 if (users.Any())
                 {
                     var userIds = users.Select(u => u.Id).ToList();
 
-                    // Batch fetch all related data for all users in one go
-                    // This is more efficient for N-many users than individual QueryMultiple calls
-                    var wallets = (await connection.QueryAsync<TokenWalletDbDto>("SELECT Id, UserId, Balance, IsActive, CreatedAt, UpdatedAt FROM TokenWallets WHERE UserId IN @UserIds;", new { UserIds = userIds })).ToList();
-                    var subscriptions = (await connection.QueryAsync<SubscriptionDbDto>("SELECT Id, UserId, StartDate, EndDate, Status, ActivatingTransactionId, CreatedAt, UpdatedAt FROM Subscriptions WHERE UserId IN @UserIds;", new { UserIds = userIds })).ToList();
-                    var preferences = (await connection.QueryAsync<UserSignalPreferenceDbDto>("SELECT Id, UserId, CategoryId, CreatedAt FROM UserSignalPreferences WHERE UserId IN @UserIds;", new { UserIds = userIds })).ToList();
+                    // --- MODIFIED: Batch fetch all related data using the provider's SQL ---
+                    var wallets = (await connection.QueryAsync<TokenWalletDbDto>(_sql.GetWalletsForUsersSql, new { UserIds = userIds })).ToList();
+                    var subscriptions = (await connection.QueryAsync<SubscriptionDbDto>(_sql.GetSubscriptionsForUsersSql, new { UserIds = userIds })).ToList();
+                    var preferences = (await connection.QueryAsync<UserSignalPreferenceDbDto>(_sql.GetPreferencesForUsersSql, new { UserIds = userIds })).ToList();
 
-                    // Manually map collections back to the parent users
+                    // This mapping logic is unchanged as it's pure C#
                     foreach (var user in users)
                     {
                         user.TokenWallet = wallets.FirstOrDefault(tw => tw.UserId == user.Id)?.ToDomainEntity() ?? TokenWallet.Create(user.Id);
@@ -727,7 +793,6 @@ namespace Infrastructure.Repositories
                 return users;
             });
         }
-
         /// <summary>
         /// This method cannot directly translate an arbitrary LINQ Expression to SQL with Dapper.
         /// It's a fundamental difference between an ORM like EF Core and a micro-ORM like Dapper.
@@ -756,77 +821,72 @@ namespace Infrastructure.Repositories
 
         // In Infrastructure/Persistence/Repositories/UserRepository.cs
 
-        /// <summary>
-        /// Atomically adds a new user and their associated token wallet to the database using a single,
-        /// efficient, and resilient Dapper transaction. This method is designed for high performance
-        /// and data integrity, with comprehensive, sanitized logging.
-        /// </summary>
-        // ... (rest of your UserRepository class including ILoggingSanitizer, _logger, _retryPolicy, _timeoutPolicy, CreateConnection, UserDbDto, TokenWalletDbDto, etc.) ...
-
         public async Task AddAsync(User user, CancellationToken cancellationToken = default)
         {
-            // --- 1. Input Validation & Security (This part is fine) ---
-            if (user == null)
-            {
-                _logger.LogError("UserRepository: Attempted to add a null User object.");
-                throw new ArgumentNullException(nameof(user));
-            }
-            if (user.TokenWallet == null)
-            {
-                _logger.LogError("UserRepository: Attempted to add a User with a null TokenWallet. UserID for logging: {UserId}", user.Id);
-                throw new InvalidOperationException("A User entity must have an associated TokenWallet for registration.");
-            }
-            if (user.Id != user.TokenWallet.UserId)
-            {
-                _logger.LogError("Data integrity violation: User.Id ({UserId}) does not match TokenWallet.UserId ({WalletUserId}).", user.Id, user.TokenWallet.UserId);
-                throw new InvalidOperationException("User ID and TokenWallet User ID must match for a new user.");
-            }
+            #region Pre-operation Validation and Logging
 
+            // --- Input Validation ---
+            // Ensure the user object provided is not null.
+            if (user == null) throw new ArgumentNullException(nameof(user));
+            // Further validation for user and tokenWallet properties could be added here.
+
+            // --- Prepare for Logging ---
+            // Sanitize sensitive information like usernames before logging.
             var sanitizedUsername = _logSanitizer.Sanitize(user.Username);
-            var sanitizedEmail = _logSanitizer.Sanitize(user.Email);
+            // Log the intent to add a new user, including the sanitized username for traceability.
+            _logger.LogInformation("UserRepository: Preparing to add new user '{SanitizedUsername}'.", sanitizedUsername);
 
-            _logger.LogInformation("UserRepository: Preparing to add new user '{SanitizedUsername}' with Email '{SanitizedEmail}'.",
-                                   sanitizedUsername, sanitizedEmail);
+            #endregion
 
-            // --- 2. Corrected SQL with Quoted Identifiers ---
-            // All table and column names that were created with quotes must be quoted here.
-            const string insertSql = @"
-        -- Statement 1: Insert the User
-        INSERT INTO public.""Users"" (""Id"", ""Username"", ""TelegramId"", ""Email"", ""Level"", ""CreatedAt"", ""UpdatedAt"", ""EnableGeneralNotifications"", ""EnableVipSignalNotifications"", ""EnableRssNewsNotifications"", ""PreferredLanguage"")
-        VALUES (@UserId, @Username, @TelegramId, @Email, @Level, @CreatedAt, @UpdatedAt, @EnableGeneralNotifications, @EnableVipSignalNotifications, @EnableRssNewsNotifications, @PreferredLanguage);
+            #region SQL Construction for Atomic Operation
 
-        -- Statement 2: Insert the TokenWallet
-        INSERT INTO public.""TokenWallets"" (""Id"", ""UserId"", ""Balance"", ""IsActive"", ""CreatedAt"", ""UpdatedAt"")
-        VALUES (@TokenWalletId, @UserId, @Balance, @IsActive, @TokenWalletCreatedAt, @TokenWalletUpdatedAt);
-    ";
+            // --- Construct the Combined SQL Statement ---
+            // Concatenate the SQL statements for adding a user and their wallet.
+            // The _sql provider ensures that AddUserSql and AddWalletSql use the correct syntax for the target database.
+            var insertSql = $"{_sql.AddUserSql} {_sql.AddWalletSql}";
+
+            #endregion
 
             try
             {
-                // --- 3. Polly Resilience Policy (This part is fine) ---
+                // --- Apply Resilience Policies ---
+                // Combine the timeout and retry policies for execution.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
+                // Execute the core logic within the resilience policies.
                 await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
-                    await using var connection = CreateConnection();
-                    await connection.OpenAsync(ct);
-                    await using var transaction = await connection.BeginTransactionAsync(ct);
+                    // --- Database Connection and Transaction Management ---
+                    // Obtain a database connection using the factory method, which is provider-aware.
+                    // Use synchronous 'using' for IDbConnection as it's only IDisposable, not IAsyncDisposable.
+                    using var connection = CreateConnection();
+                    // Asynchronously open the connection. Cast is safe if CreateConnection returns DbConnection.
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
+
+                    // Begin a database transaction.
+                    // Use 'await using' for the transaction because DbTransaction implements IAsyncDisposable.
+                    // This ensures the transaction is properly managed (committed or rolled back).
+                    await using var transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
 
                     try
                     {
-                        // --- 4. Parameterization (This part is fine) ---
+                        // --- Prepare Dapper Parameters ---
+                        // Create an anonymous object to hold all necessary parameters for the SQL execution.
+                        // This maps domain object properties to SQL parameter names, ensuring correct data types and values are passed.
                         var parameters = new
                         {
                             UserId = user.Id,
                             user.Username,
                             user.TelegramId,
                             user.Email,
-                            Level = user.Level.ToString(),
+                            Level = user.Level.ToString(), // Ensure Enum is converted to string if necessary for DB
                             user.CreatedAt,
                             user.UpdatedAt,
                             user.EnableGeneralNotifications,
                             user.EnableVipSignalNotifications,
                             user.EnableRssNewsNotifications,
                             user.PreferredLanguage,
+                            // Parameters for the associated TokenWallet
                             TokenWalletId = user.TokenWallet.Id,
                             user.TokenWallet.Balance,
                             user.TokenWallet.IsActive,
@@ -834,217 +894,330 @@ namespace Infrastructure.Repositories
                             TokenWalletUpdatedAt = user.TokenWallet.UpdatedAt
                         };
 
-                        // --- 5. Atomic Execution (This part is fine) ---
+                        // --- Execute SQL within the Transaction ---
+                        // Execute the combined SQL statement (AddUserSql + AddWalletSql) using Dapper.
+                        // The parameters are passed, and the transaction is specified to ensure atomicity.
                         await connection.ExecuteAsync(insertSql, parameters, transaction: transaction);
+
+                        // --- Commit the Transaction ---
+                        // If ExecuteAsync completes without exceptions, commit the transaction to make changes permanent.
                         await transaction.CommitAsync(ct);
                     }
                     catch (Exception ex)
                     {
+                        // --- Rollback on Failure ---
+                        // If any part of the transaction fails (e.g., constraint violation, data error),
+                        // roll back the entire transaction to maintain data integrity.
                         await transaction.RollbackAsync(ct);
+                        // Log the failure and the rollback action, including the sanitized username.
                         _logger.LogError(ex, "Transaction failed for user '{SanitizedUsername}'. Rolling back.", sanitizedUsername);
+                        // Re-throw a specific RepositoryException to indicate the transaction failure.
                         throw new RepositoryException($"Dapper transaction failed for user '{sanitizedUsername}'.", ex);
                     }
-                }, cancellationToken);
+                }, cancellationToken); // Pass the cancellation token to the execution policy.
 
+                #region Post-Operation Logging
+
+                // --- Success Logging ---
+                // Log a success message if the entire operation, including resilience policies, completes successfully.
                 _logger.LogInformation("UserRepository: Successfully added user '{SanitizedUsername}' and their wallet.", sanitizedUsername);
+
+                #endregion
             }
-            catch (RepositoryException dbEx) // This part is fine
+            catch (Exception ex)
             {
-                _logger.LogError(dbEx, "UserRepository: A database error occurred while adding user '{SanitizedUsername}' after retries. Exception (Sanitized): {SanitizedException}",
-                    sanitizedUsername, _logSanitizer.Sanitize(dbEx.GetBaseException().Message));
-                throw;
-            }
-            catch (Exception ex) // This part is fine
-            {
-                _logger.LogCritical(ex, "UserRepository: An unexpected critical error occurred while adding user '{SanitizedUsername}'. Exception (Sanitized): {SanitizedException}",
-                    sanitizedUsername, _logSanitizer.Sanitize(ex.Message));
+                // --- Global Exception Handling ---
+                // Catch any exceptions that might have propagated from the combined policy or the initial validation.
+                // Log the error, providing context about the user that failed to be added.
+                _logger.LogError(ex, "An error occurred while adding user '{SanitizedUsername}'.", sanitizedUsername);
+                // Re-throw the exception to allow upstream layers to handle it appropriately.
                 throw;
             }
         }
 
         // In Infrastructure/Repositories/UserRepository.cs
 
+        /// <summary>
+        /// Asynchronously updates an existing user and their associated token wallet in the database.
+        /// This operation is performed atomically within a transaction and uses resilience policies
+        /// for handling transient errors. It also includes logic to detect potential concurrency issues
+        /// or missing records during the update.
+        /// </summary>
+        /// <param name="user">The <see cref="User"/> entity with updated information.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+        /// <exception cref="ArgumentNullException">Thrown if the provided <paramref name="user"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">Thrown if the user record specified by <paramref name="user.Id"/> is not found in the database, indicating a potential concurrency issue or that the record no longer exists.</exception>
+        /// <exception cref="RepositoryException">Thrown if any other database-related error occurs during the update process.</exception>
         public async Task UpdateAsync(User user, CancellationToken cancellationToken = default)
         {
+            #region Input Validation and Initial Logging
+
+            // --- Validate User Input ---
+            // Ensure that the user object provided for update is not null.
             if (user == null)
             {
+                // Log an error message detailing the invalid input before throwing.
                 _logger.LogError("UserRepository: Attempted to update with a null User object.");
                 throw new ArgumentNullException(nameof(user));
             }
+
+            // --- Log Update Operation Start ---
+            // Log the user ID and username for traceability. The username is logged directly as it's not sensitive in this context for a public method.
             _logger.LogInformation("UserRepository: Updating user. UserID: {UserId}, Username: {Username}.", user.Id, user.Username);
 
-            // --- 1. SQL STATEMENTS WITH QUOTED IDENTIFIERS AND PG-SYNTAX ---
-
-            // SQL to update the main User record. All identifiers are quoted.
-            const string updateUserSql = @"
-        UPDATE public.""Users"" SET
-            ""Username"" = @Username,
-            ""TelegramId"" = @TelegramId,
-            ""Email"" = @Email,
-            ""Level"" = @Level,
-            ""UpdatedAt"" = @UpdatedAt,
-            ""EnableGeneralNotifications"" = @EnableGeneralNotifications,
-            ""EnableVipSignalNotifications"" = @EnableVipSignalNotifications,
-            ""EnableRssNewsNotifications"" = @EnableRssNewsNotifications,
-            ""PreferredLanguage"" = @PreferredLanguage
-        WHERE ""Id"" = @Id;";
-
-            // SQL for PostgreSQL UPSERT (INSERT ... ON CONFLICT).
-            // This atomically inserts a TokenWallet or updates it if it already exists.
-            // We specify the unique constraint on ""UserId"" as the conflict target.
-            const string upsertWalletSql = @"
-        INSERT INTO public.""TokenWallets"" (""Id"", ""UserId"", ""Balance"", ""IsActive"", ""CreatedAt"", ""UpdatedAt"")
-        VALUES (@Id, @UserId, @Balance, @IsActive, @CreatedAt, @UpdatedAt)
-        ON CONFLICT (""UserId"") DO UPDATE SET
-            ""Balance"" = EXCLUDED.""Balance"",
-            ""IsActive"" = EXCLUDED.""IsActive"",
-            ""UpdatedAt"" = EXCLUDED.""UpdatedAt"";";
+            #endregion
 
             try
             {
-                // Use the combined Polly policy for resilience
+                // --- Apply Resilience Policies ---
+                // Combine timeout and retry policies to execute the database operation robustly.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
+                // Execute the core database update logic within the resilience policies.
                 await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
-                    await using var connection = CreateConnection();
-                    await connection.OpenAsync(ct);
+                    // --- Database Connection and Transaction Setup ---
+                    // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
+                    // Use synchronous 'using' for IDbConnection as it is only IDisposable.
+                    using var connection = CreateConnection();
+                    // Asynchronously open the database connection.
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
-                    // It's crucial that all operations happen within a single transaction for atomicity.
-                    await using var transaction = await connection.BeginTransactionAsync(ct);
+                    // Begin a new database transaction to ensure atomicity of the update operations.
+                    // Use 'await using' for DbTransaction as it implements IAsyncDisposable.
+                    await using var transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
+
                     try
                     {
-                        // --- 2. PARAMETER PREPARATION ---
+                        // --- Retrieve Provider-Specific SQL Statements ---
+                        // Get the appropriate SQL strings for updating a user and upserting a wallet
+                        // from the injected UserSqlProvider, which accounts for database dialect differences.
+                        var updateUserSql = _sql.UpdateUserSql;
+                        var upsertWalletSql = _sql.UpsertWalletSql;
 
-                        // Prepare parameters for the User update
+                        #region Prepare User Update Parameters
+
+                        // --- Prepare Parameters for User Update ---
+                        // Create an anonymous object containing the user's data mapped to the SQL parameters.
+                        // Note: DateTime.UtcNow is used for the 'UpdatedAt' timestamp to ensure consistency.
                         var userParams = new
                         {
                             user.Id,
                             user.Username,
                             user.TelegramId,
                             user.Email,
-                            Level = user.Level.ToString(),
-                            UpdatedAt = DateTime.UtcNow, // Always set UpdatedAt on modification
+                            Level = user.Level.ToString(), // Convert enum to string for database storage.
+                            UpdatedAt = DateTime.UtcNow,
                             user.EnableGeneralNotifications,
                             user.EnableVipSignalNotifications,
                             user.EnableRssNewsNotifications,
                             user.PreferredLanguage
                         };
 
-                        // Execute the User update
+                        #endregion
+
+                        #region Execute User Update
+
+                        // --- Execute User Update SQL ---
+                        // Execute the user update command against the database within the current transaction.
                         var rowsAffected = await connection.ExecuteAsync(updateUserSql, userParams, transaction: transaction);
 
+                        // --- Check if User Was Found and Updated ---
+                        // If zero rows were affected, it means the user ID did not exist in the database.
+                        // This could indicate a concurrency issue (e.g., user deleted concurrently) or a logic error.
+                        // Throw an InvalidOperationException to signal this critical state.
                         if (rowsAffected == 0)
                         {
-                            // This is a valid concurrency check. If the user doesn't exist, we throw.
                             throw new InvalidOperationException($"User with ID '{user.Id}' not found for update. Concurrency conflict or record does not exist.");
                         }
 
-                        // Prepare and execute the TokenWallet UPSERT
+                        #endregion
+
+                        #region Execute Token Wallet Upsert (Conditional)
+
+                        // --- Update Token Wallet if Present ---
+                        // Check if the user object includes associated token wallet data.
                         if (user.TokenWallet != null)
                         {
+                            // Prepare parameters for the wallet upsert operation.
                             var walletParams = new
                             {
                                 user.TokenWallet.Id,
-                                user.TokenWallet.UserId,
+                                user.TokenWallet.UserId, // This might be redundant if Id implies UserId relationship, but included as per original code.
                                 user.TokenWallet.Balance,
                                 user.TokenWallet.IsActive,
-                                user.TokenWallet.CreatedAt, // Pass the original creation time for the INSERT part
-                                UpdatedAt = DateTime.UtcNow  // Set a new UpdatedAt for both INSERT and UPDATE parts
+                                user.TokenWallet.CreatedAt,
+                                UpdatedAt = DateTime.UtcNow // Update the timestamp for the wallet record.
                             };
-
+                            // Execute the upsert command for the token wallet.
                             await connection.ExecuteAsync(upsertWalletSql, walletParams, transaction: transaction);
                         }
                         else
                         {
+                            // Log a warning if no token wallet data is provided for the user, as this update will be skipped.
                             _logger.LogWarning("UserRepository: User {UserId} has no TokenWallet object for update. Skipping wallet update.", user.Id);
                         }
 
-                        // If all operations succeed, commit the transaction.
+                        #endregion
+
+                        #region Commit Transaction
+
+                        // --- Commit the Transaction ---
+                        // If all operations within the try block were successful, commit the transaction.
                         await transaction.CommitAsync(ct);
+
+                        #endregion
                     }
                     catch (Exception)
                     {
-                        // If any error occurs (e.g., the concurrency exception or a DB error),
-                        // roll back the entire transaction.
+                        // --- Rollback Transaction on Error ---
+                        // If any exception occurred during the SQL execution or parameter preparation,
+                        // roll back the transaction to ensure data consistency.
                         await transaction.RollbackAsync();
-                        throw; // Re-throw the original exception to be handled by the outer catch blocks.
+                        // Re-throw the exception to be caught by the outer handler for further processing.
+                        throw;
                     }
-                }, cancellationToken);
+                }, cancellationToken); // Pass the cancellation token to the executed action.
 
+                #region Success Logging
+
+                // --- Log Successful Update ---
+                // Log a success message after the operation, including the username.
                 _logger.LogInformation("UserRepository: Successfully updated user: {Username}", user.Username);
+
+                #endregion
             }
-            catch (InvalidOperationException concEx) // Catch the specific concurrency exception
+            #region Exception Handling
+
+            // --- Handle Specific Concurrency/Not Found Exception ---
+            catch (InvalidOperationException concEx)
             {
+                // Log a specific error for concurrency conflicts or if the user wasn't found.
                 _logger.LogError(concEx, "UserRepository: Concurrency conflict or user not found while updating user {Username}.", user.Username);
+                // Re-throw the exception to propagate the error to the caller.
                 throw;
             }
-            catch (Exception ex) // Catch any other exceptions, including wrapped ones from Polly
+            // --- Handle General Exceptions ---
+            catch (Exception ex)
             {
+                // Log any other general exceptions that occurred during the update process.
                 _logger.LogError(ex, "UserRepository: An error occurred while updating user {Username}.", user.Username);
-                // Wrap in a custom RepositoryException if it isn't one already.
+                // Wrap the exception in a RepositoryException if it's not already one, providing a common error type.
                 if (ex is not RepositoryException)
                 {
                     throw new RepositoryException($"Failed to update user '{user.Username}'.", ex);
                 }
+                // If it's already a RepositoryException, just re-throw it.
                 throw;
             }
+
+            #endregion
         }
 
+
+        /// <summary>
+        /// Asynchronously retrieves a user by their Telegram ID, including related notification data (token wallets, subscriptions, preferences).
+        /// This method uses provider-specific SQL for JSON aggregation and applies resilience policies (timeout and retry)
+        /// to database operations.
+        /// </summary>
+        /// <param name="telegramId">The Telegram ID of the user to retrieve.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A <see cref="Task{User?}" /> representing the asynchronous operation. Returns the found <see cref="User"/> domain entity, or <c>null</c> if no user is found or if the input is invalid.</returns>
         public async Task<User?> GetByTelegramIdWithNotificationsAsync(string telegramId, CancellationToken cancellationToken = default)
         {
+            #region Input Validation and Initial Logging
+
+            // --- Validate Input Parameter ---
+            // Check if the provided Telegram ID is null, empty, or whitespace.
             if (string.IsNullOrWhiteSpace(telegramId))
             {
+                // Log a warning for invalid input, as it prevents a meaningful database query.
                 _logger.LogWarning("UserRepository: GetByTelegramIdWithNotificationsAsync called with null or empty telegramId.");
+                // Return null as no user can be found with invalid criteria.
                 return null;
             }
 
+            // --- Log Operation Details ---
+            // Log the Telegram ID being queried and mention that JSON aggregation is used,
+            // which implies fetching related data in a single query.
             _logger.LogTrace("UserRepository: Fetching user with notifications by TelegramID: {TelegramId} using JSON aggregation.", telegramId);
 
-            // --- USE THE OPTIMIZED SQL FRAGMENT ---
-            // This query is identical to the one in GetByTelegramIdAsync.
-            var sql = $"{UserWithRelatedDataSqlFragment} WHERE u.\"TelegramId\" = @TelegramId;";
+            #endregion
+
+            #region SQL Query Retrieval
+
+            // --- Retrieve Provider-Specific SQL ---
+            // Fetch the SQL statement for retrieving user data by Telegram ID.
+            // The UserSqlProvider ensures that the correct SQL dialect (e.g., syntax for JSON functions, quoting) is used.
+            var sql = _sql.GetByTelegramIdSql;
+
+            #endregion
 
             try
             {
+                // --- Apply Resilience Policies ---
+                // Combine timeout and retry policies to manage potential transient issues during database access.
                 var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
-                return await combinedPolicy.ExecuteAsync(async (ct) =>
+                // Execute the database retrieval logic within the defined resilience policies.
+                var user = await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
+                    // --- Database Connection and Query Execution ---
+                    // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
+                    // Use synchronous 'using' for IDbConnection as it is only IDisposable.
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(ct);
+                    // Asynchronously open the database connection.
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
-                    // Use QueryFirstOrDefaultAsync with the DTO designed for this query.
+                    // Execute the query to fetch the user data, including related entities aggregated as JSON.
+                    // Dapper's QueryFirstOrDefaultAsync returns the first matching record or null if none is found.
                     var userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                        // CommandDefinition encapsulates the SQL, parameters, and cancellation token for Dapper.
                         new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct)
                     );
 
+                    // --- Handle Query Results ---
+                    // If no user DTO was returned, log and return null.
                     if (userDto == null)
                     {
                         _logger.LogTrace("User with TelegramID {TelegramId} not found.", telegramId);
                         return null;
                     }
 
-                    // The DTO handles all the complex mapping and JSON deserialization.
-                    var user = userDto.ToDomainEntity(_logger);
+                    // Convert the fetched DTO into a domain entity, potentially parsing JSON fields.
+                    var userDomainEntity = userDto.ToDomainEntity(_logger);
 
-                    _logger.LogDebug("Successfully fetched user {UserId} (TelegramID: {TelegramId}) with all related entities.", user.Id, telegramId);
-                    return user;
+                    // Log successful retrieval of the user and their related data.
+                    _logger.LogDebug("Successfully fetched user {UserId} (TelegramID: {TelegramId}) with all related entities.", userDomainEntity.Id, telegramId);
+                    return userDomainEntity;
 
-                }, cancellationToken);
+                }, cancellationToken); // Pass the cancellation token to the executed action.
+
+                return user; // Return the fetched user domain entity or null.
             }
+            #region Exception Handling
+
+            // --- Handle Timeout Specific Exception ---
             catch (TimeoutRejectedException ex)
             {
+                // Log a specific error when the operation times out.
                 _logger.LogError(ex, "UserRepository: Operation timed out while fetching user by TelegramID {TelegramId}.", telegramId);
+                // Wrap the timeout exception in a RepositoryException for consistent error handling.
                 throw new RepositoryException($"The operation to fetch user by TelegramID {telegramId} timed out.", ex);
             }
+            // --- Handle General Exceptions ---
             catch (Exception ex)
             {
+                // Log any other exceptions that occurred during the operation after retries.
                 _logger.LogError(ex, "Failed to get user by TelegramID {TelegramId} after retries.", telegramId);
+                // Wrap the exception in a RepositoryException, providing context about the failed operation.
                 throw new RepositoryException($"An error occurred while fetching user by TelegramID: {telegramId}", ex);
             }
-        }
 
+            #endregion
+        }
+    
         /// <inheritdoc />
         public async Task DeleteAsync(User user, CancellationToken cancellationToken = default)
         {
@@ -1067,62 +1240,151 @@ namespace Infrastructure.Repositories
         /// <inheritdoc />
         // In Infrastructure/Repositories/UserRepository.cs
 
+        /// <summary>
+        /// Asynchronously checks if a user with the specified email address exists in the database.
+        /// The email comparison is performed case-insensitively. The operation is executed with a retry policy
+        /// to handle transient database errors.
+        /// </summary>
+        /// <param name="email">The email address to check for existence.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A <see cref="Task{bool}"/> representing the asynchronous operation. Returns <c>true</c> if a user with the email exists, <c>false</c> otherwise.</returns>
+        /// <exception cref="RepositoryException">Thrown if any database error occurs during the check, after retries.</exception>
         public async Task<bool> ExistsByEmailAsync(string email, CancellationToken cancellationToken = default)
         {
+            #region Input Validation and Preparation
+
+            // --- Validate Email Input ---
+            // If the provided email is null, empty, or only whitespace, it cannot exist in the database.
             if (string.IsNullOrWhiteSpace(email))
             {
+                // Return false immediately as no valid email was provided.
                 return false;
             }
 
+            // --- Prepare Email for Database Query and Logging ---
+            // Convert the email to lowercase for a case-insensitive database comparison.
             string lowerEmail = email.ToLowerInvariant();
+            // Sanitize the email for safe logging, preventing potential data leakage.
             var sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
+            // Log the intent to check for user existence, including the sanitized email for traceability.
             _logger.LogTrace("UserRepository: Checking existence by Email: {SanitizedEmail}.", sanitizedEmail);
+
+            #endregion
 
             try
             {
+                // --- Apply Retry Policy ---
+                // Execute the database check operation using the configured retry policy to handle transient failures.
+                // The policy will retry the operation up to a specified limit if certain exceptions occur.
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
+                    // --- Database Connection and Query Execution ---
+                    // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
+                    // Use synchronous 'using' for IDbConnection as it is only IDisposable.
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
-                    var count = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM Users WHERE LOWER(Email) = LOWER(@Email);", new { Email = lowerEmail });
+                    // Asynchronously open the database connection.
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
+
+                    // --- Retrieve Provider-Specific SQL ---
+                    // Fetch the SQL statement for checking email existence from the UserSqlProvider.
+                    // This ensures that the query uses the correct syntax and parameter naming conventions for the target database.
+                    var sql = _sql.CheckExistsByEmailSql;
+
+                    // --- Execute Scalar Query ---
+                    // Execute the SQL query which is expected to return a single scalar value (the count of matching emails).
+                    // Dapper's ExecuteScalarAsync is used for this purpose.
+                    // The lowercased email is passed as a parameter to the query.
+                    var count = await connection.ExecuteScalarAsync<int>(sql, new { Email = lowerEmail });
+
+                    // --- Determine Existence ---
+                    // The user exists if the count of matching emails returned from the database is greater than zero.
                     return count > 0;
                 });
             }
+            #region Exception Handling
+
+            // --- Handle General Exceptions During Operation ---
             catch (Exception ex)
             {
-                // HARDENING: Sanitize the raw exception message before logging.
+                // Log the error, including both the sanitized original email and a sanitized version of the exception message for security.
                 _logger.LogError(ex, "UserRepository: Error checking existence for email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
 
-                // The re-thrown exception also uses the sanitized email to prevent leaks up the call stack.
+                // Wrap the original exception in a RepositoryException for consistent error reporting.
+                // This provides a common exception type for repository-level failures.
                 throw new RepositoryException($"Failed to check existence for email '{sanitizedEmail}'.", ex);
             }
+
+            #endregion
         }
 
         /// <inheritdoc />
         public async Task<bool> ExistsByTelegramIdAsync(string telegramId, CancellationToken cancellationToken = default)
         {
+            #region Input Validation and Preparation
+
+            // --- Validate Telegram ID Input ---
+            // Check if the provided Telegram ID is null, empty, or consists only of whitespace characters.
             if (string.IsNullOrWhiteSpace(telegramId))
             {
+                // Log a warning for invalid input, as an empty/null ID cannot match any user.
+                _logger.LogWarning("UserRepository: Checking existence by TelegramID: {TelegramId}. Input is invalid.", telegramId);
+                // Return false immediately since no user can exist with invalid criteria.
                 return false;
             }
 
+            // --- Log Operation Details ---
+            // Log the Telegram ID being checked at a trace level for detailed operational diagnostics.
             _logger.LogTrace("UserRepository: Checking existence by TelegramID: {TelegramId}.", telegramId);
+
+            #endregion
+
             try
             {
+                // --- Apply Resilience Policy ---
+                // Execute the core database operation within the retry policy.
+                // This makes the operation resilient to transient issues like temporary network disruptions or database load.
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
+                    // --- Database Connection and Query Execution ---
+                    // Obtain a database connection instance using the helper method.
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
-                    var count = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM Users WHERE TelegramId = @TelegramId;", new { TelegramId = telegramId });
+                    // Asynchronously open the database connection to the data source.
+                    // Using System.Data.Common.DbConnection for generality.
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
+
+                    // --- MODIFIED LINE: Retrieve SQL from Provider ---
+                    // Fetch the SQL statement for checking user existence by Telegram ID from the UserSqlProvider.
+                    // This ensures that the query uses the correct syntax and parameter naming conventions for the target database.
+                    var sql = _sql.CheckExistsByTelegramIdSql;
+
+                    // --- Execute Scalar Query ---
+                    // Use Dapper's ExecuteScalarAsync to run the SQL query and retrieve a single scalar value (the count).
+                    // The TelegramId parameter is passed to the query, ensuring safe parameterization.
+                    var count = await connection.ExecuteScalarAsync<int>(sql, new { TelegramId = telegramId });
+
+                    // --- Determine Existence Based on Count ---
+                    // The user is considered to exist if the count returned from the database is greater than zero.
                     return count > 0;
                 });
             }
+            #region Exception Handling
+
+            // --- Handle General Exceptions ---
+            // Catch any exceptions that occur during the execution of the retry policy or the database operation itself.
             catch (Exception ex)
             {
-                _logger.LogError(ex, "UserRepository: Error checking existence by TelegramID {TelegramId}.", telegramId);
+                // Log the error, including the problematic Telegram ID and a sanitized version of the exception message for security.
+                // Sanitizing the exception message helps prevent accidental leakage of sensitive information.
+                _logger.LogError(ex, "UserRepository: Error checking existence by TelegramID {TelegramId}. Exception (Sanitized): {SanitizedException}",
+                    telegramId, _logSanitizer.Sanitize(ex.Message));
+
+                // Wrap the original exception in a custom RepositoryException.
+                // This provides a consistent error type for consumers of the repository and abstracts away the underlying data access details.
                 throw new RepositoryException($"Failed to check existence by TelegramID '{telegramId}'.", ex);
             }
+
+            #endregion
         }
 
         /// <inheritdoc />
@@ -1154,71 +1416,117 @@ namespace Infrastructure.Repositories
         }
 
         // --- Private Helper Method for Deletion (to encapsulate transaction and retry logic) ---
+        /// <summary>
+        /// Asynchronously deletes a user and their related data from the database.
+        /// This operation is performed atomically within a transaction, uses database-specific SQL queries
+        /// fetched from <see cref="UserSqlProvider"/>, and employs resilience patterns like retries.
+        /// It includes checks for user existence and proper transaction management (commit/rollback).
+        /// </summary>
+        /// <param name="userId">The unique identifier of the user to delete.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+        /// <exception cref="InvalidOperationException">Thrown if the user is not found for deletion, indicating a potential concurrency issue.</exception>
+        /// <exception cref="RepositoryException">Thrown if any database error occurs during the deletion process, after applying retry attempts.</exception>
         private async Task DeleteUserAndRelatedData(Guid userId, CancellationToken cancellationToken)
         {
             try
             {
-                await _retryPolicy.ExecuteAsync(async () =>
+                // --- Apply Resilience Policy for Database Operations ---
+                // Execute the entire deletion logic within the retry policy. This handles transient database errors.
+                await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
+                    // --- Establish Database Connection and Transaction ---
+                    // Obtain a database connection instance using the helper method.
                     using var connection = CreateConnection();
-                    await connection.OpenAsync(cancellationToken);
+                    // Asynchronously open the database connection. Cast to DbConnection is for accessing async methods.
+                    await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
-                    using var transaction = connection.BeginTransaction();
+                    // Start an asynchronous database transaction. This ensures that all operations within the transaction
+                    // are treated as a single atomic unit – either all succeed, or all are rolled back.
+                    // Using 'await using' ensures the transaction is properly disposed of (committed or rolled back).
+                    await using var transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
                     try
                     {
-                        // Check if the user exists before attempting to delete
-                        var userExists = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM Users WHERE Id = @Id;", new { Id = userId }, transaction: transaction);
-                        if (userExists == 0)
+                        // --- MODIFIED: Fetch Provider-Specific SQL for Existence Check ---
+                        // Retrieve the SQL query to check if the user exists from the UserSqlProvider.
+                        // This ensures the query uses the correct syntax for the target database.
+                        var userExistsCount = await connection.ExecuteScalarAsync<int>(_sql.CheckUserExistsSql, new { Id = userId }, transaction: transaction);
+
+                        // --- Check User Existence ---
+                        // If the count returned is 0, the user does not exist in the database.
+                        if (userExistsCount == 0)
                         {
+                            // Log a warning indicating that the user was not found for deletion.
                             _logger.LogWarning("UserRepository: User with ID {UserId} not found for deletion in DeleteUserAndRelatedData.", userId);
-                            transaction.Rollback(); // Rollback empty transaction
-                            return; // Return silently if not found
+                            // Roll back the transaction to ensure no partial state is left, although no operations have been performed yet.
+                            await transaction.RollbackAsync(ct); // Ensure rollback is awaited.
+                            // Exit the current execution scope within the retry policy.
+                            return;
                         }
 
-                        // Due to ON DELETE CASCADE foreign key constraints configured in your EF Core model:
-                        // Deleting the parent 'Users' record will automatically delete related records
-                        // in 'TokenWallets', 'Subscriptions', 'Transactions', and 'UserSignalPreferences'.
-                        // If you did NOT have ON DELETE CASCADE, you would need explicit DELETE statements
-                        // for child tables BEFORE deleting from the Users table, respecting foreign key order.
-                        var rowsAffected = await connection.ExecuteAsync("DELETE FROM Users WHERE Id = @Id;", new { Id = userId }, transaction: transaction);
+                        // --- Data Deletion Logic ---
+                        // The comment about ON DELETE CASCADE remains valid for both DBs, assuming schemas are consistent.
+                        // This implies that related data (like wallets, subscriptions) might be automatically deleted
+                        // by the database if foreign key constraints with CASCADE ON DELETE are set up.
+                        // However, this repository explicitly handles user deletion via its own SQL.
 
+                        // --- MODIFIED: Fetch Provider-Specific SQL for User Deletion ---
+                        // Retrieve the SQL query for deleting the user record from the UserSqlProvider.
+                        var rowsAffected = await connection.ExecuteAsync(_sql.DeleteUserSql, new { Id = userId }, transaction: transaction);
+
+                        // --- Verify Deletion Success ---
+                        // Check if the delete operation affected any rows. If not, it indicates a concurrency issue
+                        // or that the user was deleted by another process between the existence check and the delete command.
                         if (rowsAffected == 0)
                         {
-                            // This might indicate a concurrency issue where the user was deleted by another process
-                            // between the initial existence check and this actual delete.
+                            // Throw an InvalidOperationException to signal this specific error condition.
                             throw new InvalidOperationException($"User with ID '{userId}' was not found for deletion or was deleted by another process. Concurrency conflict suspected.");
                         }
 
-                        transaction.Commit();
+                        // --- Commit Transaction ---
+                        // If all operations within the try block were successful (user existed, delete succeeded), commit the transaction.
+                        await transaction.CommitAsync(ct); // Ensure commit is awaited.
                     }
-                    catch (InvalidOperationException) // Catch the custom concurrency exception
+                    catch (InvalidOperationException) // Catch specific concurrency/not-found exceptions.
                     {
-                        transaction.Rollback();
+                        // If an InvalidOperationException occurred (e.g., user not found for deletion), rollback the transaction.
+                        await transaction.RollbackAsync(ct);
+                        // Re-throw the exception to propagate it upwards.
                         throw;
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) // Catch any other exceptions during the transaction.
                     {
-                        transaction.Rollback();
-                        // Wrap the exception in a RepositoryException for consistency
+                        // Roll back the transaction if any other error occurs.
+                        await transaction.RollbackAsync(ct);
+                        // Wrap the exception in a RepositoryException for standardized error handling.
                         throw new RepositoryException($"Failed to delete user with ID '{userId}' with Dapper transaction.", ex);
                     }
-                });
+                }, cancellationToken); // Pass the cancellation token to the ExecuteAsync method of the retry policy.
+
+                // --- Log Successful Deletion ---
+                // Log information that the user deletion process completed successfully.
                 _logger.LogInformation("UserRepository: Successfully deleted user with ID: {UserId}", userId);
             }
+            // --- Outer Exception Handling ---
+            // Catch specific exceptions that might be thrown by the retry policy or the operation itself.
+
+            // Handle concurrency issues or user-not-found scenarios specifically.
             catch (InvalidOperationException concEx)
             {
                 _logger.LogError(concEx, "UserRepository: Concurrency conflict or user not found while deleting user with ID {UserId}.", userId);
-                throw;
+                throw; // Re-throw the original exception.
             }
+            // Handle repository-specific errors that might have already been wrapped by the inner catch block.
             catch (RepositoryException dbEx)
             {
                 _logger.LogError(dbEx, "UserRepository: Error deleting user with ID {UserId} from the database after retries.", userId);
-                throw;
+                throw; // Re-throw the RepositoryException.
             }
+            // Catch any other unexpected exceptions.
             catch (Exception ex)
             {
-                _logger.LogError(ex, "UserRepository: An unexpected error occurred while deleting user with ID {UserId}.", ex);
-                throw;
+                _logger.LogError(ex, "UserRepository: An unexpected error occurred while deleting user with ID {UserId}.", userId);
+                throw; // Re-throw the original exception.
             }
         }
     }

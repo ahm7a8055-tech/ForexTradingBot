@@ -59,37 +59,41 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
         while (!cancellationToken.IsCancellationRequested)
         {
             Update? update = null;
+            RedisValue redisValue = default;
             await _redisRetryPolicy.ExecuteAsync(async () =>
             {
-                // BRPOP is the blocking pop command. It waits for 5 seconds for an item.
-                // This is much more efficient than a tight loop with a manual delay.
-                var redisValue = await _redisDb.ListRightPopAsync(UpdateQueueKey);
-
+                redisValue = await _redisDb.ListRightPopAsync(UpdateQueueKey);
                 if (redisValue.HasValue)
                 {
                     try
                     {
-                        // Deserialize the JSON string back to an Update object
+                        // Defensive: catch KeyNotFoundException for missing polymorphic keys
                         update = JsonSerializer.Deserialize<Update>(redisValue!);
+                    }
+                    catch (KeyNotFoundException knfEx)
+                    {
+                        _logger.LogError(knfEx, "KeyNotFoundException during Update deserialization. JSON: {Json}", redisValue.ToString());
+                        // Move to dead-letter queue for inspection
+                        await _redisDb.ListLeftPushAsync($"{UpdateQueueKey}:deadletter", redisValue);
+                        update = null;
                     }
                     catch (JsonException jsonEx)
                     {
-                        _logger.LogError(jsonEx, "Failed to deserialize update from Redis. Value: '{RedisValue}'. Moving to dead-letter queue.", redisValue);
+                        _logger.LogError(jsonEx, "JsonException during Update deserialization. JSON: {Json}", redisValue.ToString());
                         // Move malformed message to a dead-letter queue for inspection
                         await _redisDb.ListLeftPushAsync($"{UpdateQueueKey}:deadletter", redisValue);
+                        update = null;
                     }
                 }
             });
 
             if (update != null)
             {
-                // Yield the successfully deserialized update to the consumer
                 yield return update;
             }
             else
             {
                 // If BRPOP times out (queue is empty), wait a short moment before trying again
-                // to prevent a tight loop in case of continuous Redis failures.
                 await Task.Delay(100, cancellationToken);
             }
         }

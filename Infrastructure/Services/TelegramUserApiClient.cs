@@ -901,7 +901,7 @@ _logger.LogError(ex, "Failed to subscribe to WTelegramClient's OnUpdates event."
             {
                 // Log this as a WARNING, not an error. This acknowledges the issue but treats it as
                 // a recoverable, transient problem that Polly will handle by retrying.
-                _logger.LogWarning(nre, "ConnectAndLoginAsync: A transient NullReferenceException occurred inside WTelegram.Client, likely due to a temporary network issue. The resilience policy will now attempt to retry.");
+                _logger.LogDebug(nre, "(Suppressed) ConnectAndLoginAsync: A transient NullReferenceException occurred inside WTelegram.Client, likely due to a temporary network issue. The resilience policy will now attempt to retry.");
                 IsConnected = false;
 
                 // CRITICAL: Re-throw the exception. This is what allows your outer Polly
@@ -1415,95 +1415,113 @@ _logger.LogError(ex, "Failed to subscribe to WTelegramClient's OnUpdates event."
 
                 UpdatesBase updatesBase;
 
-                // Level 5: Conditionally call Messages_SendMessage or Messages_SendMedia
-                if (media is null)
+
+                try
                 {
-                    _logger.LogDebug("SendMessageAsync: Calling _client.Messages_SendMessage (text-only) for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
-                        peerTypeForLog, peerIdForLog);
+                    // Level 5: Conditionally call Messages_SendMessage or Messages_SendMedia
+                    if (media is null)
+                    {
+                        _logger.LogDebug("SendMessageAsync: Calling _client.Messages_SendMessage (text-only) for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
+                            peerTypeForLog, peerIdForLog);
 
-                    updatesBase = await _resiliencePipeline.ExecuteAsync(
-                        async (context, token) => await _client!.Messages_SendMessage(
-                            peer: peer,
-                            message: message!, // Message is guaranteed not null here due to early exit check
-                            random_id: random_id,
-                            reply_to: inputReplyTo,
-                            reply_markup: replyMarkup,
-                            entities: entitiesArray, // Pass the array here
-                            no_webpage: noWebpage,
-                            background: background,
-                            clear_draft: clearDraft,
-                            schedule_date: schedule_date
-                        ).ConfigureAwait(false),
-                        new Polly.Context(nameof(SendMessageAsync) + "_Text"),
-                        cancellationToken
-                    ).ConfigureAwait(false);
+                        updatesBase = await _resiliencePipeline.ExecuteAsync(
+                            async (context, token) => await _client!.Messages_SendMessage(
+                                peer: peer,
+                                message: message!, // Message is guaranteed not null here due to early exit check
+                                random_id: random_id,
+                                reply_to: inputReplyTo,
+                                reply_markup: replyMarkup,
+                                entities: entitiesArray, // Pass the array here
+                                no_webpage: noWebpage,
+                                background: background,
+                                clear_draft: clearDraft,
+                                schedule_date: schedule_date
+                            ).ConfigureAwait(false),
+                            new Polly.Context(nameof(SendMessageAsync) + "_Text"),
+                            cancellationToken
+                        ).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("SendMessageAsync: Calling _client.Messages_SendMedia for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
+                            peerTypeForLog, peerIdForLog);
+
+                        updatesBase = await _resiliencePipeline.ExecuteAsync(
+                            async (context, token) => await _client!.Messages_SendMedia(
+                                peer: peer,
+                                media: media,
+                                random_id: random_id,
+                                message: message, // Message acts as caption here, can be null
+                                reply_to: inputReplyTo,
+                                reply_markup: replyMarkup,
+                                entities: entitiesArray, // Pass the array here (for caption entities)
+                                background: background,
+                                clear_draft: clearDraft,
+                                schedule_date: schedule_date
+                            // no_webpage parameter is NOT available for Messages_SendMedia
+                            ).ConfigureAwait(false),
+                            new Polly.Context(nameof(SendMessageAsync) + "_Media"),
+                            cancellationToken
+                        ).ConfigureAwait(false);
+                    }
+
+                    // Level 1: Post-API call validation
+                    if (updatesBase is null)
+                    {
+                        // Level 1: Post-API call validation
+                        if (updatesBase is null)
+                        {
+                            _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, truncatedMessage);
+                            throw new InvalidOperationException("Telegram API call to SendMessage/SendMedia unexpectedly returned null after all retries.");
+                        }
+
+                        // Level 2: Informational logging for success
+                        _logger.LogInformation(
+                            "SendMessageAsync: Message sent successfully via API. Response Type: {ResponseType}. " +
+                            "Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{TruncatedMessage}'",
+                            updatesBase.GetType().Name,
+                            peerTypeForLog, peerIdForLog,
+                            truncatedMessage);
+
+                        return updatesBase;
+                    }
                 }
-                else
+                // Level 6: Consistent Error Handling and Logging
+                catch (OperationCanceledException oce) // Handle explicit cancellation first
                 {
-                    _logger.LogDebug("SendMessageAsync: Calling _client.Messages_SendMedia for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
-                        peerTypeForLog, peerIdForLog);
-
-                    updatesBase = await _resiliencePipeline.ExecuteAsync(
-                        async (context, token) => await _client!.Messages_SendMedia(
-                            peer: peer,
-                            media: media,
-                            random_id: random_id,
-                            message: message, // Message acts as caption here, can be null
-                            reply_to: inputReplyTo,
-                            reply_markup: replyMarkup,
-                            entities: entitiesArray, // Pass the array here (for caption entities)
-                            background: background,
-                            clear_draft: clearDraft,
-                            schedule_date: schedule_date
-                        // no_webpage parameter is NOT available for Messages_SendMedia
-                        ).ConfigureAwait(false),
-                        new Polly.Context(nameof(SendMessageAsync) + "_Media"),
-                        cancellationToken
-                    ).ConfigureAwait(false);
+                    _logger.LogInformation(oce, "SendMessageAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Message (partial): '{MessageContent}'.",
+                        peerTypeForLog, peerIdForLog, truncatedMessage);
+                    throw; // Re-throw to propagate cancellation.
                 }
-
-                // Level 1: Post-API call validation
-                if (updatesBase is null)
+                catch (RpcException rpcEx) // Handle Telegram API specific errors
                 {
-                    _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, truncatedMessage);
-                    throw new InvalidOperationException("Telegram API call to SendMessage/SendMedia unexpectedly returned null after all retries.");
+                    _logger.LogError(rpcEx, "SendMessageAsync: Telegram API (RPC) exception occurred after Polly retries exhausted (or error was not retryable) for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}. Message (partial): '{MessageContent}'",
+                        peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code, truncatedMessage);
+                    throw; // Re-throw to propagate the exception.
                 }
-
-                // Level 2: Informational logging for success
-                _logger.LogInformation(
-                    "SendMessageAsync: Message sent successfully via API. Response Type: {ResponseType}. " +
-                    "Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{TruncatedMessage}'",
-                    updatesBase.GetType().Name,
-                    peerTypeForLog, peerIdForLog,
-                    truncatedMessage);
-
-                return updatesBase;
+                catch (Exception ex) // Catch any other unexpected exceptions
+                {
+                    _logger.LogError(ex, "SendMessageAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{MessageContent}'",
+                        peerTypeForLog, peerIdForLog, truncatedMessage);
+                    throw;
+                }
+                finally
+                {
+                    // Level 2: Trace logging for lock release
+                    _logger.LogTrace("SendMessageAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
+                }
             }
-            // Level 6: Consistent Error Handling and Logging
-            catch (OperationCanceledException oce) // Handle explicit cancellation first
-            {
-                _logger.LogInformation(oce, "SendMessageAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Message (partial): '{MessageContent}'.",
-                    peerTypeForLog, peerIdForLog, truncatedMessage);
-                throw; // Re-throw to propagate cancellation.
-            }
-            catch (RpcException rpcEx) // Handle Telegram API specific errors
-            {
-                _logger.LogError(rpcEx, "SendMessageAsync: Telegram API (RPC) exception occurred after Polly retries exhausted (or error was not retryable) for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}. Message (partial): '{MessageContent}'",
-                    peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code, truncatedMessage);
-                throw; // Re-throw to propagate the exception.
-            }
-            catch (Exception ex) // Catch any other unexpected exceptions
-            {
-                _logger.LogError(ex, "SendMessageAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{MessageContent}'",
-                    peerTypeForLog, peerIdForLog, truncatedMessage);
-                throw;
-            }
-            finally
+            catch
             {
                 // Level 2: Trace logging for lock release
                 _logger.LogTrace("SendMessageAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
+                throw;
             }
+            // If we reach here, something went wrong and no value was returned or exception thrown.
+            throw new InvalidOperationException("SendMessageAsync: Unexpected code path reached. No UpdatesBase was returned and no exception was thrown.");
         }
+            
+            
         /// <summary>
         /// Sends a group of media items as an album to a specified peer.
         /// Uses resilience policies.
@@ -2209,6 +2227,11 @@ _logger.LogError(ex, "Failed to subscribe to WTelegramClient's OnUpdates event."
             // For positive IDs (users), Math.Abs changes nothing.
             return Math.Abs(peerId);
         }
+        #endregion
+
+        #region ForwardingRules Cache Integration
+        // Add a delegate property to allow cache removal from outside (e.g., injected from ForwardingService)
+        public Action<long>? RemoveForwardingRulesCacheForChannel { get; set; }
         #endregion
     }
 }

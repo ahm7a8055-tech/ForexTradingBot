@@ -81,7 +81,7 @@ namespace Infrastructure.Services
                     onRetryAsync: (exception, timespan, retryAttempt, context) =>
                     {
                         // Log a WARNING message for each retry attempt, including the exception details.
-                        _logger.LogWarning(exception, "Telegram User API client initialization failed (Attempt {AttemptNumber}/{MaxRetries}). Retrying in {Timespan:F1} seconds.",
+                        _logger.LogDebug(exception, "(Suppressed) Telegram User API client initialization failed (Attempt {AttemptNumber}/{MaxRetries}). Retrying in {Timespan:F1} seconds.",
                             retryAttempt, MaxConnectionRetries, timespan.TotalSeconds);
                         return Task.CompletedTask;
                     }
@@ -139,8 +139,8 @@ namespace Infrastructure.Services
                     // This indicates that the Telegram User API features will not be available,
                     // but the application itself is not deemed in a catastrophic, unrecoverable state,
                     // allowing other parts of the system to potentially continue operating.
-                    _logger.LogWarning(policyResult.FinalException,
-                       "WARNING: Telegram User API client could not be initialized after {MaxAttempts} attempts. The application will run in a degraded state without user API features. Check network connectivity, Telegram status, or client library issues.",
+                    _logger.LogDebug(policyResult.FinalException,
+                       "(Suppressed) Telegram User API client could not be initialized after {MaxAttempts} attempts. The application will run in a degraded state without user API features. Check network connectivity, Telegram status, or client library issues.",
                        MaxConnectionRetries);
                 }
             }

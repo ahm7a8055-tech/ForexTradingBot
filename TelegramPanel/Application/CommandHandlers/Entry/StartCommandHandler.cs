@@ -124,8 +124,10 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         {
             long userId = telegramUser.Id;
 
-            using var scope = _scopeFactory.CreateScope();
+            // We create a new scope for this background task to ensure all services have the correct lifetime.
+            await using var scope = _scopeFactory.CreateAsyncScope();
             var userService = scope.ServiceProvider.GetRequiredService<IUserService>();
+            var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
             var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
             var messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
             var scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<StartCommandHandler>>();
@@ -133,58 +135,68 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
 
             try
             {
-                // The logic inside this method is now correct and uses scoped services or the main injected _userRepository
-                var userCacheKey = $"user:telegram_id:{userId}";
-                var cachedUserDto = await cacheService.GetAsync<UserDto>(userCacheKey);
+                DomainUser? userEntity = null;
+                bool isNewUser = false;
 
-                string finalUsername;
-                bool isNewUser;
+                // --- FIX APPLIED HERE: Robust Two-Step User Fetch ---
+                // STEP 1: Use the service layer to perform a safe check. This can hit a cache
+                // and its DTO handles type conversion correctly.
+                var userDto = await userService.GetUserByTelegramIdAsync(userId.ToString(), cancellationToken);
 
-                if (cachedUserDto != null)
+                if (userDto != null)
                 {
-                    scopedLogger.LogInformation("User {UserId} ({SanitizedUsername}) found in Redis cache. Skipping database checks.", userId, sanitizedUsernameForLogs);
-                    finalUsername = cachedUserDto.Username;
-                    isNewUser = false;
+                    // The user exists. Fetch the full entity using the type-safe GetByIdAsync to avoid the SQLite bug.
+                    scopedLogger.LogInformation("Existing user DTO found for {UserId}. Fetching full entity by ID: {DbId}", userId, userDto.Id);
+                    userEntity = await userRepository.GetByIdAsync(userDto.Id, cancellationToken);
+                }
+
+                if (userEntity == null)
+                {
+                    // This block executes if the user is genuinely new, OR if there was a data inconsistency (DTO existed, but entity didn't).
+                    // In either case, the correct action is to register them.
+                    scopedLogger.LogInformation("User {UserId} ({SanitizedUsername}) is confirmed new or inconsistent. Proceeding with registration.", userId, sanitizedUsernameForLogs);
+
+                    var newUserEntity = CreateNewUserEntity(telegramUser);
+
+                    // The RegisterUserAsync should handle the repository AddAsync call.
+                    await userService.RegisterUserAsync(
+                        new RegisterUserDto { Username = newUserEntity.Username, TelegramId = newUserEntity.TelegramId, Email = newUserEntity.Email },
+                        cancellationToken,
+                        userEntityToRegister: newUserEntity
+                    );
+
+                    userEntity = newUserEntity; // The newly created entity is our user.
+                    isNewUser = true;
+                    scopedLogger.LogInformation("User {UserId} ({SanitizedUsername}) registered and cached successfully.", userId, _logSanitizer.Sanitize(userEntity.Username));
                 }
                 else
                 {
-                    // Use the repository injected into the class constructor for the DB check
-                    var userFromDb = await _userRepository.GetByTelegramIdAsync(userId.ToString(), cancellationToken);
-
-                    if (userFromDb == null)
-                    {
-                        scopedLogger.LogInformation("User {UserId} ({SanitizedUsername}) is confirmed new. Proceeding with registration.", userId, sanitizedUsernameForLogs);
-                        var newUserEntity = CreateNewUserEntity(telegramUser);
-
-                        await userService.RegisterUserAsync(
-                            new RegisterUserDto { Username = newUserEntity.Username, TelegramId = newUserEntity.TelegramId, Email = newUserEntity.Email },
-                            cancellationToken,
-                            userEntityToRegister: newUserEntity
-                        );
-
-                        finalUsername = newUserEntity.Username;
-                        isNewUser = true;
-                        scopedLogger.LogInformation("User {UserId} ({SanitizedUsername}) registered and cached successfully.", userId, _logSanitizer.Sanitize(finalUsername));
-                    }
-                    else
-                    {
-                        finalUsername = userFromDb.Username;
-                        isNewUser = false;
-                        scopedLogger.LogInformation("Existing user {UserId} ({SanitizedUsername}) found in database. Cache will be populated by UserService.", userId, _logSanitizer.Sanitize(finalUsername));
-                    }
+                    // This block executes only if the user was found successfully in the database.
+                    isNewUser = false;
+                    scopedLogger.LogInformation("Existing user {UserId} ({SanitizedUsername}) found in database.", userId, _logSanitizer.Sanitize(userEntity.Username));
                 }
 
+                // Clear any previous state for existing users.
                 if (!isNewUser && _stateMachine != null)
                 {
                     await _stateMachine.ClearStateAsync(telegramUser.Id, cancellationToken);
                 }
 
-                await EditWelcomeMessageWithDetailsAsync(userId, messageId, finalUsername, !isNewUser, messageSender, cancellationToken);
+                // Update the welcome message with the final details.
+                await EditWelcomeMessageWithDetailsAsync(userId, messageId, userEntity.Username, !isNewUser, messageSender, cancellationToken);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("already exists"))
+            {
+                scopedLogger.LogWarning(ex, "Registration attempted for already existing user {UserId}. Showing main menu.", userId);
+                // Try to fetch the user entity again
+                var existingUserDto = await userService.GetUserByTelegramIdAsync(userId.ToString(), cancellationToken);
+                string username = existingUserDto?.Username ?? "User";
+                await EditWelcomeMessageWithDetailsAsync(userId, messageId, username, true, messageSender, cancellationToken);
             }
             catch (Exception ex)
             {
                 scopedLogger.LogCritical(ex, "A critical, unhandled error occurred during the background registration process for UserID {UserId}.", userId);
-                await messageSender.EditMessageTextAsync(userId, messageId, "An internal server error occurred. Please try again later.", cancellationToken: CancellationToken.None);
+                await messageSender.EditMessageTextAsync(userId, messageId, "An internal server error occurred. Our team has been notified. Please try again later.", cancellationToken: CancellationToken.None);
             }
             finally
             {

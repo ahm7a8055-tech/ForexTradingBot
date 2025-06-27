@@ -55,7 +55,8 @@ namespace Infrastructure.Data
             // --- 1. DATABASE AND HANGFIRE CONFIGURATION ---
             // =================================================================
             #region Database and Hangfire Setup
-
+            services.AddSingleton<DbProviderService>();
+            services.AddSingleton<UserSqlProvider>();
             if (isSmokeTest)
             {
                 // For smoke tests, use a fast, in-memory database
@@ -176,7 +177,7 @@ namespace Infrastructure.Data
             // will be used by the DI container instead of the Transient one above for new resolutions.
             services.AddScoped<IHangfireCleaner, HangfireCleaner>();
 
-
+            services.AddSingleton<UserSqlProvider>();
             // Register the Scoped DbContext interface.
             services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
 
@@ -232,7 +233,7 @@ namespace Infrastructure.Data
                .OrResult(msg => msg.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)));
 
-            services.AddHttpClient<ICryptoPayApiClient, CryptoPayApiClient>();
+          
             services.Configure<RssReaderServiceSettings>(configuration.GetSection(RssReaderServiceSettings.ConfigurationSectionName));
             services.AddHttpClient(RssReaderService.HttpClientNamedClient, (serviceProvider, client) =>
             {
