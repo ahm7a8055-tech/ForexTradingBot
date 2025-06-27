@@ -35,5 +35,10 @@ namespace Application.Interfaces
 
         Task<string> ExecuteRawSqlQueryAsync(string sqlQuery, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Gets dashboard statistics, including total user and news item counts, and user join stats for the last 7 days.
+        /// </summary>
+        Task<(int UserCount, int NewsItemCount, List<(DateTime Date, int Count)> UserJoinStats)> GetDashboardStatsWithUserJoinsAsync(CancellationToken cancellationToken = default);
+
     }
 }

@@ -18,6 +18,7 @@ namespace Infrastructure.Services.Admin
     {
         private readonly string _connectionString;
         private readonly ILogger<AdminService> _logger;
+        private const int CommandTimeoutSeconds = 180; // Increased timeout for admin queries
 
         public AdminService(IConfiguration configuration, ILogger<AdminService> logger)
         {
@@ -34,7 +35,7 @@ namespace Infrastructure.Services.Admin
 
             const string sql = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
 
-            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(sql, cancellationToken: cancellationToken));
+            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(sql, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
             return (await multi.ReadSingleAsync<int>(), await multi.ReadSingleAsync<int>());
         }
 
@@ -112,7 +113,7 @@ namespace Infrastructure.Services.Admin
 
             try
             {
-                var command = new CommandDefinition(sqlQuery, commandTimeout: 60, cancellationToken: cancellationToken);
+                var command = new CommandDefinition(sqlQuery, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken);
                 using var multi = await connection.QueryMultipleAsync(command);
 
                 int resultSetIndex = 1;
@@ -239,6 +240,38 @@ namespace Infrastructure.Services.Admin
             public string? WalletJson { get; set; }
             public string? SubscriptionsJson { get; set; }
             public string? TransactionsJson { get; set; }
+        }
+
+        public async Task<(int UserCount, int NewsItemCount, List<(DateTime Date, int Count)> UserJoinStats)> GetDashboardStatsWithUserJoinsAsync(CancellationToken cancellationToken = default)
+        {
+            await using var connection = CreateConnection();
+            // Get total user count and news item count
+            const string sqlCounts = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
+            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(sqlCounts, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
+            int userCount = await multi.ReadSingleAsync<int>();
+            int newsItemCount = await multi.ReadSingleAsync<int>();
+
+            // Get user join stats for the last 7 days
+            const string sqlJoins = @"
+                SELECT date_trunc('day', ""CreatedAt"") AS join_date, COUNT(*) AS count
+                FROM public.""Users""
+                WHERE ""CreatedAt"" >= (CURRENT_DATE - INTERVAL '6 days')
+                GROUP BY join_date
+                ORDER BY join_date;
+            ";
+            var joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
+
+            // Fill missing days with 0
+            var userJoinStats = new List<(DateTime Date, int Count)>();
+            var today = DateTime.UtcNow.Date;
+            for (int i = 6; i >= 0; i--)
+            {
+                var day = today.AddDays(-i);
+                var stat = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
+                userJoinStats.Add((day, stat.count));
+            }
+
+            return (userCount, newsItemCount, userJoinStats);
         }
     }
 }

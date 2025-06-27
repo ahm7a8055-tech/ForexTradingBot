@@ -133,18 +133,44 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         private async Task HandleServerStatsAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
-            await _messageSender.EditMessageTextAsync(chatId, messageId, "📊 Fetching server stats...", cancellationToken: cancellationToken);
+            await _messageSender.EditMessageTextAsync(chatId, messageId, "\ud83d\udcca Fetching server stats...", cancellationToken: cancellationToken);
 
-            (int userCount, int newsItemCount) = await _adminService.GetDashboardStatsAsync(cancellationToken);
+            (int userCount, int newsItemCount, List<(DateTime Date, int Count)> userJoinStats) = await _adminService.GetDashboardStatsWithUserJoinsAsync(cancellationToken);
 
             var stats = new StringBuilder();
-            _ = stats.AppendLine(TelegramMessageFormatter.Bold("📊 Server & Bot Status"));
-            _ = stats.AppendLine("`------------------------------`");
-            _ = stats.AppendLine($"👥 Total Users: `{userCount:N0}`");
-            _ = stats.AppendLine($"📰 News Items Indexed: `{newsItemCount:N0}`");
-            _ = stats.AppendLine("`------------------------------`");
-            _ = stats.AppendLine($"• Environment: `{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")}`");
-            _ = stats.AppendLine($"• Server Time (UTC): `{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}`");
+            _ = stats.AppendLine("\ud83d\udcca *Server & Bot Status*\n────────────────────────────");
+            _ = stats.AppendLine($"👥 Users: {userCount:N0}");
+            _ = stats.AppendLine($"📰 News: {newsItemCount:N0}");
+            _ = stats.AppendLine($"🌐 Env: {Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")}");
+            _ = stats.AppendLine($"🕔 UTC: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
+            _ = stats.AppendLine("────────────────────────────\n");
+
+            #region User Join Chart (Ultra-Polished)
+            if (userJoinStats != null && userJoinStats.Count > 0)
+            {
+                int max = userJoinStats.Max(x => x.Count);
+                int barMax = 8;
+                int total = userJoinStats.Sum(x => x.Count);
+                double avg = userJoinStats.Count > 0 ? userJoinStats.Average(x => x.Count) : 0;
+                var today = DateTime.UtcNow.Date;
+                _ = stats.AppendLine("👤 *User Joins (Last 7 Days)*\n");
+                _ = stats.AppendLine("` Date   | Users |`");
+                foreach (var (date, count) in userJoinStats)
+                {
+                    string bar;
+                    if (max == 0)
+                        bar = "▏";
+                    else if (count == 0)
+                        bar = "▏";
+                    else
+                        bar = new string('█', Math.Max(1, (int)Math.Round((double)count / max * barMax)));
+                    string dayMark = date == today ? "➡️" : "  ";
+                    _ = stats.AppendLine($"{dayMark}{date:MM-dd} {bar.PadRight(barMax)} {count}");
+                }
+                _ = stats.AppendLine($"\n📈 *7d Total:* {total}   *Avg/day:* {avg:0.0}\n");
+                _ = stats.AppendLine("Legend: ▏=0, █=max");
+            }
+            #endregion
 
             await _messageSender.EditMessageTextAsync(chatId, messageId, stats.ToString(), ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken);
         }

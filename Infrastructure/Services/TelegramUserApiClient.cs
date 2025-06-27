@@ -1468,23 +1468,19 @@ _logger.LogError(ex, "Failed to subscribe to WTelegramClient's OnUpdates event."
                     // Level 1: Post-API call validation
                     if (updatesBase is null)
                     {
-                        // Level 1: Post-API call validation
-                        if (updatesBase is null)
-                        {
-                            _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, truncatedMessage);
-                            throw new InvalidOperationException("Telegram API call to SendMessage/SendMedia unexpectedly returned null after all retries.");
-                        }
-
-                        // Level 2: Informational logging for success
-                        _logger.LogInformation(
-                            "SendMessageAsync: Message sent successfully via API. Response Type: {ResponseType}. " +
-                            "Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{TruncatedMessage}'",
-                            updatesBase.GetType().Name,
-                            peerTypeForLog, peerIdForLog,
-                            truncatedMessage);
-
-                        return updatesBase;
+                        _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, truncatedMessage);
+                        throw new InvalidOperationException("Telegram API call to SendMessage/SendMedia unexpectedly returned null after all retries.");
                     }
+
+                    // Level 2: Informational logging for success
+                    _logger.LogInformation(
+                        "SendMessageAsync: Message sent successfully via API. Response Type: {ResponseType}. " +
+                        "Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{TruncatedMessage}'",
+                        updatesBase.GetType().Name,
+                        peerTypeForLog, peerIdForLog,
+                        truncatedMessage);
+
+                    return updatesBase;
                 }
                 // Level 6: Consistent Error Handling and Logging
                 catch (OperationCanceledException oce) // Handle explicit cancellation first
