@@ -20,28 +20,19 @@ namespace Infrastructure.Persistence
         {
             _providerService = providerService;
 
-            // --- FIX APPLIED HERE: Centralized connection string logic ---
+            // --- IMPROVED: Don't auto-default to SQLite, require proper configuration ---
             // Get the connection string from configuration.
             var connectionStringFromConfig = configuration.GetConnectionString("DefaultConnection");
 
-            // If it's missing, apply the same fallback logic your app uses at startup.
+            // If it's missing, throw an exception instead of auto-defaulting
             if (string.IsNullOrEmpty(connectionStringFromConfig))
             {
-                Log.Warning("DbConnectionFactory: DefaultConnection not found in configuration. Applying default SQLite connection string.");
-                _connectionString = "Data Source=local_forex_bot.db";
-
-                // Ensure the provider service reflects this default if it was also not configured.
-                if (_providerService.Provider == DatabaseProvider.Unsupported)
-                {
-                    // This is a safeguard. Normally the DbProviderService constructor handles this.
-                    // But we ensure consistency here.
-                }
+                throw new InvalidOperationException(
+                    "DbConnectionFactory: DefaultConnection not found in configuration. " +
+                    "The application should prompt the user for database connection details in Program.cs before reaching this point.");
             }
-            else
-            {
 
-                _connectionString = connectionStringFromConfig;
-            }
+            _connectionString = connectionStringFromConfig;
         }
 
         public IDbConnection CreateConnection()

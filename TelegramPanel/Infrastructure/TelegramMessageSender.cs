@@ -67,6 +67,8 @@ namespace TelegramPanel.Infrastructure
         private readonly AsyncRetryPolicy _sendMessagePolicy;
         private readonly AsyncRetryPolicy _answerCallbackQueryPolicy;
         private readonly IUserService _userService;
+        private static readonly int[] RetryDelaysMinutes = { 1, 5, 10 };
+
         public ActualTelegramMessageActions(ILoggingSanitizer logSanitizer,
             ITelegramBotClient botClient,
             ILogger<ActualTelegramMessageActions> logger,
@@ -685,16 +687,14 @@ namespace TelegramPanel.Infrastructure
             CancellationToken cancellationToken,
             int retryCount)
         {
-            // Apply robust sanitization immediately for logging.
             string sanitizedLogCaption = SanitizeSensitiveData(caption);
-
-            _logger.LogDebug("Hangfire Job (ActualSend): Sending photo. ChatID: {ChatId}, Photo: {PhotoIdOrUrl}, Caption (Sanitized): '{SanitizedLogCaption}'", chatId, photoUrlOrFileId, sanitizedLogCaption);
+            _logger.LogDebug("Sending photo. ChatID: {ChatId}, Photo: {PhotoIdOrUrl}, Caption: {Caption}", chatId, photoUrlOrFileId, sanitizedLogCaption);
 
             var pollyContext = new Polly.Context($"SendPhoto_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
     {
         { "ChatId", chatId },
         { "PhotoIdOrUrl", photoUrlOrFileId },
-        { "CaptionPreview", sanitizedLogCaption } // Always use the sanitized version.
+        { "CaptionPreview", sanitizedLogCaption }
     });
 
             try
@@ -703,72 +703,90 @@ namespace TelegramPanel.Infrastructure
 
                 await _telegramApiRetryPolicy.ExecuteAsync(async (context, ct) =>
                 {
-                    // --- THE FIX IS APPLIED HERE ---
                     string processedCaption = caption;
                     if (!string.IsNullOrWhiteSpace(caption) && caption.Length > TelegramApiMaxCaptionLength)
                     {
-                        // Truncate the caption if it's too long.
-                        // Add an ellipsis to indicate truncation, but be mindful that the ellipsis itself counts towards the length.
-                        // For simplicity, we'll just truncate. If you want to be precise, you might need to truncate to `MaxCaptionLength - 3` and append "...".
                         processedCaption = caption.Substring(0, TelegramApiMaxCaptionLength);
-                        _logger.LogWarning("Caption was truncated for ChatID {ChatId}. Original length: {OriginalLength}, Max allowed: {MaxCaptionLength}.", chatId, caption.Length, TelegramApiMaxCaptionLength);
+                        _logger.LogWarning("Caption truncated for ChatID {ChatId}. Original length: {OriginalLength}, Max allowed: {MaxCaptionLength}.", chatId, caption.Length, TelegramApiMaxCaptionLength);
                     }
-                    // --- END OF FIX ---
 
                     await _botClient.SendPhoto(
                         chatId: new ChatId(chatId),
                         photo: photoInput,
-                        caption: processedCaption, // Use the potentially truncated caption
-                        parseMode: ParseMode.Markdown, // Assuming Markdown is always the desired parse mode here
+                        caption: processedCaption,
+                        parseMode: ParseMode.Markdown,
                         replyMarkup: replyMarkup,
                         cancellationToken: ct);
                 }, pollyContext, cancellationToken);
 
-                _logger.LogInformation("Hangfire Job (ActualSend): Successfully sent photo to ChatID {ChatId}", chatId);
-            }
-            catch (ApiRequestException apiEx)
-                when ((apiEx.ErrorCode == 400 &&
-                       (apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase) ||
-                        apiEx.Message.Contains("USER_DEACTIVATED", StringComparison.OrdinalIgnoreCase) ||
-                        apiEx.Message.Contains("user is deactivated", StringComparison.OrdinalIgnoreCase) ||
-                        apiEx.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))) ||
-                      (apiEx.ErrorCode == 403 && apiEx.Message.Contains("bot was blocked by the user", StringComparison.OrdinalIgnoreCase)))
-            {
-                #region Progressive Retry Logic
-                if (retryCount < 3)
-                {
-                    int[] delays = { 3, 5, 10 }; // minutes
-                    int delayMinutes = delays[Math.Min(retryCount, delays.Length - 1)];
-                    _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API error for ChatID {ChatId} (Attempt {RetryCount}/3). Scheduling retry in {DelayMinutes} minutes.", chatId, retryCount + 1, delayMinutes);
-                    _jobScheduler.Schedule<IActualTelegramMessageActions>(
-                        sender => sender.RetryableSendPhotoToTelegramAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, CancellationToken.None, retryCount + 1),
-                        TimeSpan.FromMinutes(delayMinutes));
-                    return;
-                }
-                #endregion
-                #region User Removal on Deactivation
-                _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API reported chat not found or user deactivated/blocked (Code: {ApiErrorCode}) for ChatID {ChatId} after {RetryCount} retries. Marking user as unreachable.", apiEx.ErrorCode, chatId, retryCount);
-                try
-                {
-                    await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", cancellationToken);
-                    _logger.LogInformation("Hangfire Job (ActualSend): Successfully marked user with Telegram ID {TelegramId} as unreachable (photo send).", chatId);
-                }
-                catch (Exception dbEx)
-                {
-                    var sanitizedApiExMessage = SanitizeSensitiveData(apiEx.Message);
-                    _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to mark user with ChatID {ChatId} as unreachable after photo send. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
-                        chatId,
-                        sanitizedApiExMessage);
-                }
-                _logger.LogInformation("Hangfire Job (ActualSend): User {ChatId} is already unreachable or deactivated. No further action required.", chatId);
-                return;
-                #endregion
+                _logger.LogInformation("Successfully sent photo to ChatID {ChatId}", chatId);
             }
             catch (Exception ex)
             {
-                // HARDENED: Log sanitized caption, not raw exception message which might contain it.
-                _logger.LogError(ex, "Hangfire Job (ActualSend): Unexpected error sending photo to ChatID {ChatId} after retries. Caption (Sanitized): '{SanitizedLogCaption}'", chatId, sanitizedLogCaption);
-                throw; // Re-throw to ensure the calling policy retries.
+                // Unwrap Polly or AggregateException to get the real Telegram error
+                var apiEx = ex as ApiRequestException
+                    ?? (ex as AggregateException)?.InnerExceptions.OfType<ApiRequestException>().FirstOrDefault()
+                    ?? ex.InnerException as ApiRequestException;
+
+                if (apiEx != null)
+                {
+                    _logger.LogError(apiEx,
+                        "Telegram API error sending photo to ChatID {ChatId} after {RetryCount} retries. " +
+                        "ErrorCode: {ErrorCode}, Message: {ApiMessage}, Photo: {PhotoIdOrUrl}, Caption: {Caption}",
+                        chatId, retryCount, apiEx.ErrorCode, apiEx.Message, photoUrlOrFileId, sanitizedLogCaption);
+
+                    // Handle permanent errors (do not retry)
+                    if (
+                        apiEx.ErrorCode == 403 ||
+                        (apiEx.ErrorCode == 400 && (
+                            apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase) ||
+                            apiEx.Message.Contains("USER_DEACTIVATED", StringComparison.OrdinalIgnoreCase) ||
+                            apiEx.Message.Contains("user is deactivated", StringComparison.OrdinalIgnoreCase) ||
+                            apiEx.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase)))
+                    )
+                    {
+                        try
+                        {
+                            await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", cancellationToken);
+                            _logger.LogInformation("Marked user {ChatId} as unreachable.", chatId);
+                        }
+                        catch (Exception dbEx)
+                        {
+                            _logger.LogError(dbEx, "Failed to mark user {ChatId} as unreachable after photo send.", chatId);
+                        }
+                        return; // Do not retry for these errors
+                    }
+
+                    // Handle progressive retry for transient errors
+                    if (retryCount < RetryDelaysMinutes.Length)
+                    {
+                        int delayMinutes = RetryDelaysMinutes[retryCount];
+                        _logger.LogWarning("Retrying photo send to ChatID {ChatId} in {DelayMinutes} minutes (attempt {RetryAttempt}/{MaxAttempts})", chatId, delayMinutes, retryCount + 1, RetryDelaysMinutes.Length);
+                        _jobScheduler.Schedule<IActualTelegramMessageActions>(
+                            sender => sender.RetryableSendPhotoToTelegramAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, CancellationToken.None, retryCount + 1),
+                            TimeSpan.FromMinutes(delayMinutes));
+                        return;
+                    }
+
+                    // Log specific Telegram errors for admin awareness
+                    if (apiEx.ErrorCode == 400 && apiEx.Message.Contains("caption is too long", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogCritical("Caption too long for ChatID {ChatId}.", chatId);
+                    }
+                    else if (apiEx.ErrorCode == 400 && apiEx.Message.Contains("wrong file identifier", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogCritical("Wrong file identifier for ChatID {ChatId}.", chatId);
+                    }
+                    else if (apiEx.ErrorCode == 400 && apiEx.Message.Contains("file is too big", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogCritical("File too big for ChatID {ChatId}.", chatId);
+                    }
+                }
+                else
+                {
+                    _logger.LogError(ex, "Unexpected error sending photo to ChatID {ChatId} after {RetryCount} retries. Caption: {Caption}", chatId, retryCount, sanitizedLogCaption);
+                }
+                throw;
             }
         }
 

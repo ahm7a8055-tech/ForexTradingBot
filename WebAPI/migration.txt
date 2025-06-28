@@ -45,6 +45,7 @@ Get-Service | Where-Object { $_.Name -like "*SQL*" -or $_.DisplayName -like "*SQ
     }
 }
 
-
+docker start redis-cache
+docker run --name redis-cache -p 6379:6379 -v redis-data:/data -d redis:7-alpine redis-server --appendonly yes     
 PS C:\Users\Capsizer> Set-Location "C:\Users\Capsizer\source\repos\ForexTradingBot"
 PS C:\Users\Capsizer\source\repos\ForexTradingBot> .\GenerateProjectTree.ps1

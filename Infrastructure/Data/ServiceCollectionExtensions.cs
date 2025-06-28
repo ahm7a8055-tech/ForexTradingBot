@@ -70,11 +70,25 @@ namespace Infrastructure.Data
                 string? dbProvider = configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
                 string? connectionString = configuration.GetConnectionString("DefaultConnection");
 
-                if (string.IsNullOrEmpty(dbProvider) || string.IsNullOrEmpty(connectionString))
+                // --- IMPROVED: Don't auto-default to SQLite, let Program.cs handle user prompt ---
+                if (string.IsNullOrEmpty(connectionString))
                 {
-                    Log.Warning("DatabaseProvider or DefaultConnection not found. Defaulting to local SQLite database.");
-                    dbProvider = "sqlite";
-                    connectionString = "Data Source=local_forex_bot.db";
+                    throw new InvalidOperationException(
+                        "DefaultConnection string not found in configuration. " +
+                        "The application should prompt the user for database connection details in Program.cs before reaching this point.");
+                }
+
+                if (string.IsNullOrEmpty(dbProvider))
+                {
+                    // Try to detect provider from connection string
+                    if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                        dbProvider = "postgres";
+                    else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                        dbProvider = "sqlserver";
+                    else
+                        dbProvider = "sqlite"; // Default fallback only if we can't detect
+                    
+                    Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
                 }
 
                 // --- 1. Configure the Main DbContext First ---

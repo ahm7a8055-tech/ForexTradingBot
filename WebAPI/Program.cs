@@ -122,6 +122,7 @@ try
           rollOnFileSizeLimit: true,
           fileSizeLimitBytes: 10 * 1024 * 1024,
           shared: true,
+          restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Error, // Only write Error and above to file
           outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}"
       // --------------------
       )
@@ -174,6 +175,8 @@ try
             var finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
             var options = ConfigurationOptions.Parse(finalConnectionString!);
             options.AbortOnConnectFail = false;
+            options.ConnectTimeout = 5000;
+            options.SyncTimeout = 5000;
             return ConnectionMultiplexer.Connect(options);
         });
 
@@ -181,11 +184,19 @@ try
     }
     catch (Exception ex)
     {
-        Log.Error(ex, "Failed to configure Redis connection multiplexer. Distributed features may be unavailable.");
-        // Decide if this should be fatal. For now, we allow the app to continue,
-        // but services that require IConnectionMultiplexer will fail to resolve.
+        Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
+        
+        // Register the fallback in-memory Redis service
+        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+            return new Infrastructure.Services.FallbackRedisService(logger);
+        });
     }
 
+    // --- NEW: Test Redis connectivity and fallback to local if needed ---
+    // Note: We'll test Redis connectivity after the application starts, not during configuration
+    // This allows the EmbeddedRedisService to start the Redis server first if needed.
 
     #endregion
 
@@ -308,6 +319,96 @@ try
 
     _ = builder.Services.AddApplicationServices();
     Log.Information("Application services registered.");
+
+    // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
+    if (!isSmokeTest)
+    {
+        string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+        string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
+
+        Log.Information("Database configuration check - ConnectionString: {HasConnectionString}, Provider: {Provider}", 
+            !string.IsNullOrEmpty(connectionString), dbProvider ?? "null");
+
+        if (string.IsNullOrEmpty(connectionString))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("\n--- Database Connection Setup ---");
+            Console.WriteLine("No database connection string found. Please choose:");
+            Console.WriteLine("1. Press Enter to use LocalDB (SQL Server Express)");
+            Console.WriteLine("2. Type '2' or 'sqlite' to use SQLite file database");
+            Console.WriteLine("3. Enter a custom connection string (SQL Server, PostgreSQL, etc.)");
+            Console.ResetColor();
+
+            Console.Write("Enter your choice: ");
+            var userInput = Console.ReadLine()?.Trim();
+
+            Log.Information("User input received: '{UserInput}'", userInput ?? "null");
+
+            if (string.IsNullOrWhiteSpace(userInput))
+            {
+                connectionString = @"Server=(localdb)\MSSQLLocalDB;Database=ForexTradingBot;Trusted_Connection=true;MultipleActiveResultSets=true";
+                dbProvider = "sqlserver";
+                Log.Information("User chose LocalDB. Connection string set to LocalDB.");
+            }
+            else if (userInput.Equals("1"))
+            {
+                connectionString = @"Server=(localdb)\MSSQLLocalDB;Database=ForexTradingBot;Trusted_Connection=true;MultipleActiveResultSets=true";
+                dbProvider = "sqlserver";
+                Log.Information("User chose LocalDB (option 1). Connection string set to LocalDB.");
+            }
+            else if (userInput.Equals("sqlite", StringComparison.OrdinalIgnoreCase) || userInput.Equals("2"))
+            {
+                connectionString = "Data Source=local_forex_bot.db";
+                dbProvider = "sqlite";
+                Log.Information("User chose SQLite. Connection string set to SQLite file database.");
+            }
+            else
+            {
+                connectionString = userInput;
+                if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                    dbProvider = "postgres";
+                else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                    dbProvider = "sqlserver";
+                else
+                    dbProvider = "sqlite";
+                Log.Information("User provided custom connection string. Provider detected: {Provider}", dbProvider);
+            }
+
+            Log.Information("Setting configuration - ConnectionString: {ConnectionString}, Provider: {Provider}", 
+                connectionString?.Replace("Password=", "Password=***"), dbProvider);
+
+            builder.Configuration.GetSection("ConnectionStrings")["DefaultConnection"] = connectionString;
+            builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
+        }
+        else if (string.IsNullOrEmpty(dbProvider))
+        {
+            if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                dbProvider = "postgres";
+            else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                dbProvider = "sqlserver";
+            else
+                dbProvider = "sqlite";
+            builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
+            Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
+        }
+    }
+
+    // --- FINAL VALIDATION: Ensure connection string is valid before infrastructure registration ---
+    if (!isSmokeTest)
+    {
+        string? finalConnectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+        if (string.IsNullOrWhiteSpace(finalConnectionString))
+        {
+            throw new InvalidOperationException(
+                "No valid database connection string was provided. " +
+                "The application should have prompted for database connection details, but no valid connection string was set. " +
+                "Please ensure you provided a valid connection string when prompted.");
+        }
+        
+        Log.Information("Database connection validated. Using provider: {Provider}, Connection: {ConnectionString}", 
+            builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider"), 
+            finalConnectionString.Replace("Password=", "Password=***")); // Hide password in logs
+    }
 
     _ = builder.Services.AddInfrastructureServices(builder.Configuration, isSmokeTest);
     Log.Information("Infrastructure services registered.");
@@ -468,26 +569,28 @@ try
         // --- Resilient Database Configuration with Fallback ---
         try
         {
-            // Force DefaultConnection to SQLite directly in code if provider is SQLite or not set
+            // Get the current database provider and connection string
             string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
-            if (dbProvider == "sqlite" || string.IsNullOrEmpty(dbProvider))
-            {
-                builder.Configuration.GetSection("ConnectionStrings")["DefaultConnection"] = "Data Source=local_forex_bot.db";
-                Log.Information("DefaultConnection forcibly set to SQLite: Data Source=local_forex_bot.db");
-            }
-
             string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
-            // Default to SQLite if the provider is not specified.
-            if (string.IsNullOrEmpty(dbProvider))
+            // Connection string should already be configured by this point
+            if (string.IsNullOrEmpty(connectionString))
             {
-                dbProvider = "sqlite";
+                throw new InvalidOperationException("DefaultConnection string not found. Database connection should be configured before Hangfire setup.");
             }
 
-            // Default to a file-based DB if the connection string is missing for SQLite.
-            if (dbProvider == "sqlite" && string.IsNullOrEmpty(connectionString))
+            if (string.IsNullOrEmpty(dbProvider))
             {
-                connectionString = "Data Source=local_forex_bot.db";
+                // Try to detect provider from existing connection string
+                if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                    dbProvider = "postgres";
+                else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                    dbProvider = "sqlserver";
+                else
+                    dbProvider = "sqlite"; // Default fallback
+                
+                builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
+                Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
             }
 
             Log.Information("Attempting to configure Hangfire with '{DbProvider}' provider.", dbProvider);
@@ -571,13 +674,36 @@ try
         var db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
         try
         {
+            // Validate connection string before attempting database operations
+            string? connectionString = app.Services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection");
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
+            }
+
+            Log.Information("Attempting to apply database migrations...");
             db.Database.Migrate();
+            Log.Information("Database migrations applied successfully.");
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
         {
             // Fallback: try to create the database if migrations fail due to pending model changes
-            db.Database.EnsureCreated();
-            // Optionally log a warning here
+            Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
+            try
+            {
+                db.Database.EnsureCreated();
+                Log.Information("Database created successfully using EnsureCreated().");
+            }
+            catch (Exception createEx)
+            {
+                Log.Error(createEx, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
+                throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to apply database migrations or create database. Connection string may be invalid.");
+            throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
         }
     }
 
@@ -613,6 +739,53 @@ try
         catch (Exception ex)
         {
             Log.Error(ex, "An error occurred while trying to enqueue startup maintenance jobs.");
+        }
+    });
+
+    // --- NEW: Test Redis connectivity after application starts ---
+    _ = app.Lifetime.ApplicationStarted.Register(async () =>
+    {
+        Log.Information("Testing Redis connectivity after application startup...");
+        
+        try
+        {
+            // Wait a bit for the EmbeddedRedisService to start Redis if needed
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            
+            var redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
+            var redisDb = redisConnection.GetDatabase();
+            
+            // Test basic operations
+            var testKey = $"test_connection_{Guid.NewGuid():N}";
+            var testValue = DateTime.UtcNow.ToString();
+            
+            await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10));
+            var retrievedValue = await redisDb.StringGetAsync(testKey);
+            
+            if (retrievedValue == testValue)
+            {
+                Log.Information("✅ Redis connectivity test successful. Redis is working properly.");
+            }
+            else
+            {
+                Log.Warning("⚠️ Redis test failed: Retrieved value doesn't match expected value.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
+            
+            // In release mode, prompt user for options
+            if (!app.Environment.IsDevelopment())
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("\n--- Redis Connection Issue ---");
+                Console.WriteLine("Redis connection failed after startup. You can:");
+                Console.WriteLine("1. Restart the application");
+                Console.WriteLine("2. Check if Redis server is running on localhost:6379");
+                Console.WriteLine("3. Continue without Redis (some features may not work)");
+                Console.ResetColor();
+            }
         }
     });
 

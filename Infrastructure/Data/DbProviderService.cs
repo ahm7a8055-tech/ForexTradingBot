@@ -1,6 +1,7 @@
 ﻿// File: Infrastructure/Data/DbProviderService.cs
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System;
 
 namespace Infrastructure.Data
 {
@@ -25,11 +26,28 @@ namespace Infrastructure.Data
             // Retrieves the database provider name from the configuration, converting it to lowercase for case-insensitive comparison.
             string? providerName = configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
 
-            // If the provider name is not specified in the configuration, log a warning and default to SQLite.
+            // --- IMPROVED: Don't auto-default to SQLite, require proper configuration ---
             if (string.IsNullOrEmpty(providerName))
             {
-                logger.LogWarning("DatabaseSettings:DatabaseProvider not specified in configuration. Defaulting to SQLite.");
-                providerName = "sqlite";
+                // Try to detect provider from connection string
+                string? connectionString = configuration.GetConnectionString("DefaultConnection");
+                if (!string.IsNullOrEmpty(connectionString))
+                {
+                    if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                        providerName = "postgres";
+                    else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                        providerName = "sqlserver";
+                    else
+                        providerName = "sqlite"; // Only default if we can't detect from connection string
+                    
+                    logger.LogInformation("Database provider auto-detected from connection string as: {Provider}", providerName);
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        "DatabaseSettings:DatabaseProvider not specified in configuration and no DefaultConnection string found. " +
+                        "The application should prompt the user for database connection details in Program.cs before reaching this point.");
+                }
             }
 
             // Determines the DatabaseProvider enum value based on the provider name.
