@@ -1,102 +1,145 @@
-﻿// In a new file, e.g., Infrastructure/Queue/RedisUpdateChannel.cs
-using StackExchange.Redis;
-using System.Text.Json;
+﻿// --- START OF FULLY CORRECTED FILE: RedisUpdateChannel.cs ---
+
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Newtonsoft.Json;
 using Polly;
 using Polly.Retry;
-using Microsoft.Extensions.Logging;
+using StackExchange.Redis;
 using System.Runtime.CompilerServices;
-using TelegramPanel.Queue;
 using Telegram.Bot.Types;
+using TelegramPanel.Queue;
+using TelegramPanel.Queue.Models;
 
 public class RedisUpdateChannel : ITelegramUpdateChannel
 {
     private readonly ILogger<RedisUpdateChannel> _logger;
     private readonly IDatabase _redisDb;
     private readonly AsyncRetryPolicy _redisRetryPolicy;
-    private const string UpdateQueueKey = "queue:telegram:updates";
+    private readonly string _mainQueueKey;
+    private readonly string _processingQueueKey;
+    private readonly string _deadLetterQueueKey;
+    private readonly string _consumerId = Guid.NewGuid().ToString("N");
 
-    public RedisUpdateChannel(IConnectionMultiplexer redis, ILogger<RedisUpdateChannel> logger)
+    public RedisUpdateChannel(
+        IConnectionMultiplexer redis,
+        ILogger<RedisUpdateChannel> logger,
+        IOptions<UpdateQueueOptions> options)
     {
         _logger = logger;
         _redisDb = redis.GetDatabase();
 
-        // Polly policy for handling transient Redis connection issues
+        var queueOptions = options.Value;
+        _mainQueueKey = queueOptions.QueueName;
+        _processingQueueKey = $"{queueOptions.QueueName}:processing:{_consumerId}";
+        _deadLetterQueueKey = queueOptions.DeadLetterQueueName;
+
         _redisRetryPolicy = Policy
-            .Handle<RedisConnectionException>()
-            .Or<RedisTimeoutException>()
+            .Handle<RedisConnectionException>().Or<RedisTimeoutException>()
             .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
                 (exception, timeSpan, retryCount, context) =>
                 {
-                    _logger.LogWarning(exception, "Redis operation failed. Retrying in {TimeSpan}s. Attempt {RetryCount}/3.", timeSpan, retryCount);
+                    _logger.LogWarning(exception, "Redis operation failed. Retrying in {TimeSpan}s. Attempt {RetryCount}/3.", timeSpan.TotalSeconds, retryCount);
                 });
+
+        _logger.LogInformation("RedisUpdateChannel initialized for consumer '{ConsumerId}'. MainQueue: '{MainQueue}', ProcessingQueue: '{ProcessingQueue}'",
+            _consumerId, _mainQueueKey, _processingQueueKey);
     }
 
     public async ValueTask WriteAsync(Update update, CancellationToken cancellationToken = default)
     {
-        await _redisRetryPolicy.ExecuteAsync(async () =>
+        await _redisRetryPolicy.ExecuteAsync(async token =>
         {
             try
             {
-                // Serialize the Update object to JSON
-                var jsonUpdate = JsonSerializer.Serialize(update);
-
-                // LPUSH the JSON string to the head of the Redis List
-                await _redisDb.ListLeftPushAsync(UpdateQueueKey, jsonUpdate);
-
-                _logger.LogTrace("Enqueued update {UpdateId} to Redis queue '{QueueKey}'.", update.Id, UpdateQueueKey);
+                var jsonUpdate = JsonConvert.SerializeObject(update);
+                await _redisDb.ListLeftPushAsync(_mainQueueKey, jsonUpdate);
             }
             catch (JsonException jsonEx)
             {
                 _logger.LogError(jsonEx, "Failed to serialize Telegram update {UpdateId}.", update.Id);
-                // Do not re-throw; we don't want to retry a serialization error.
             }
-        });
+        }, cancellationToken);
     }
 
-    public async IAsyncEnumerable<Update> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+
+    public async IAsyncEnumerable<QueueMessage> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting to consume from Redis queue '{QueueKey}'.", UpdateQueueKey);
+        _logger.LogInformation("Starting reliable consumer on Redis queue '{QueueKey}'.", _mainQueueKey);
+
         while (!cancellationToken.IsCancellationRequested)
         {
-            Update? update = null;
             RedisValue redisValue = default;
-            await _redisRetryPolicy.ExecuteAsync(async () =>
+            try
             {
-                redisValue = await _redisDb.ListRightPopAsync(UpdateQueueKey);
-                if (redisValue.HasValue)
-                {
-                    try
-                    {
-                        // Defensive: catch KeyNotFoundException for missing polymorphic keys
-                        update = JsonSerializer.Deserialize<Update>(redisValue!);
-                    }
-                    catch (KeyNotFoundException knfEx)
-                    {
-                        _logger.LogError(knfEx, "KeyNotFoundException during Update deserialization. JSON: {Json}", redisValue.ToString());
-                        // Move to dead-letter queue for inspection
-                        await _redisDb.ListLeftPushAsync($"{UpdateQueueKey}:deadletter", redisValue);
-                        update = null;
-                    }
-                    catch (JsonException jsonEx)
-                    {
-                        _logger.LogError(jsonEx, "JsonException during Update deserialization. JSON: {Json}", redisValue.ToString());
-                        // Move malformed message to a dead-letter queue for inspection
-                        await _redisDb.ListLeftPushAsync($"{UpdateQueueKey}:deadletter", redisValue);
-                        update = null;
-                    }
-                }
-            });
+                redisValue = await _redisDb.ListRightPopLeftPushAsync(_mainQueueKey, _processingQueueKey);
+            }
+            catch (Exception ex) when (ex is RedisConnectionException or OperationCanceledException)
+            {
+                if (ex is OperationCanceledException) break;
+                _logger.LogError(ex, "Connection to Redis lost while popping from queue. Retrying...");
+                await Task.Delay(2000, cancellationToken);
+                continue;
+            }
 
-            if (update != null)
+            if (redisValue.HasValue)
             {
-                yield return update;
+                Update? update = null;
+                try
+                {
+                    update = JsonConvert.DeserializeObject<Update>(redisValue!);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to deserialize update from Redis. Moving to dead-letter queue. JSON: {Json}", redisValue.ToString());
+
+                    // --- FIX APPLIED HERE ---
+                    // The correct enum is ListSide, not RedisSide.
+                    await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
+                    continue;
+                }
+
+                yield return new QueueMessage(update, redisValue);
             }
             else
             {
-                // If BRPOP times out (queue is empty), wait a short moment before trying again
-                await Task.Delay(100, cancellationToken);
+                await Task.Delay(200, cancellationToken);
             }
         }
-        _logger.LogInformation("Stopped consuming from Redis queue '{QueueKey}'.", UpdateQueueKey);
+        _logger.LogInformation("Stopped consuming from Redis queue '{QueueKey}'.", _mainQueueKey);
+    }
+
+
+    public async Task AcknowledgeAsync(QueueMessage message, CancellationToken cancellationToken = default)
+    {
+        await _redisDb.ListRemoveAsync(_processingQueueKey, message.RawValue, 1);
+        _logger.LogTrace("Acknowledged message for UpdateId {UpdateId}.", message.DeserializedUpdate?.Id);
+    }
+
+
+    // In RedisUpdateChannel.cs
+
+    public async Task RequeueAsync(QueueMessage message, CancellationToken cancellationToken = default)
+    {
+        // Atomically move the message from our processing queue back to the head of the main queue.
+        // We move from the left of the processing queue to the left of the main queue.
+
+        // --- FIX APPLIED HERE ---
+        // The ListMoveAsync method returns the RedisValue of the item that was moved,
+        // or a null RedisValue if the source list was empty.
+        // We check if the returned value has a value to confirm the move was successful.
+        RedisValue movedValue = await _redisDb.ListMoveAsync(_processingQueueKey, _mainQueueKey, ListSide.Left, ListSide.Left);
+
+        if (movedValue.HasValue)
+        {
+            _logger.LogWarning("Re-queued message for UpdateId {UpdateId} for reprocessing.", message.DeserializedUpdate?.Id);
+        }
+        else
+        {
+            // This case is rare but could happen if another process (like a janitor)
+            // moved the message just before this method was called. It's good to log it.
+            _logger.LogWarning("Attempted to re-queue message for UpdateId {UpdateId}, but it was no longer in the processing queue '{Queue}'.",
+                message.DeserializedUpdate?.Id, _processingQueueKey);
+        }
     }
 }

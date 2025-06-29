@@ -74,6 +74,9 @@ namespace Infrastructure.Data
         /// </summary>
         public DbSet<NewsItem> NewsItems => Set<NewsItem>();
 
+
+        public DbSet<Setting> Settings { get; set; }
+
         /// <summary>
         /// DbSet برای موجودیت‌های ForwardingRule (از فضای نام خاص).
         /// </summary>
@@ -114,10 +117,9 @@ namespace Infrastructure.Data
         {
             base.OnModelCreating(modelBuilder);
 
-            // اعمال تمام پیکربندی‌های موجودیت (entity configurations) که کلاس IEntityTypeConfiguration<TEntity>
-            // را پیاده‌سازی می‌کنند و در اسمبلی جاری (assembly containing this DbContext) قرار دارند.
-            // این روش برای سازماندهی بهتر و جداسازی منطق پیکربندی توصیه می‌شود.
-            _ = modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+            // This line will now find and apply all your IEntityTypeConfiguration files,
+            // including the ForwardingRuleConfiguration.
+            modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
         }
     }
 }

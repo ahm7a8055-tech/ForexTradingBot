@@ -41,6 +41,8 @@ using System.Net;
 using Hangfire.Storage.SQLite;
 using Serilog;
 using TL;
+using TelegramPanel.Application.Interfaces;
+using TelegramPanel.Application.States.Admin;
 #endregion
 
 namespace Infrastructure.Data
@@ -288,6 +290,7 @@ namespace Infrastructure.Data
             services.AddTransient<INotificationJobScheduler, HangfireJobScheduler>();
             services.AddScoped<INotificationDispatchService, NotificationDispatchService>();
             services.AddScoped<IAdminService, AdminService>();
+            services.AddScoped<ISettingsService, SettingsService>();
             services.AddScoped<INewsItemRepository, NewsItemRepository>();
             services.AddScoped<IUserRepository, UserRepository>();
             services.AddScoped<ITokenWalletRepository, TokenWalletRepository>();
@@ -298,8 +301,7 @@ namespace Infrastructure.Data
             services.AddScoped<IUserSignalPreferenceRepository, UserSignalPreferenceRepository>();
             services.AddScoped<ISignalAnalysisRepository, SignalAnalysisRepository>();
             services.AddScoped<ITransactionRepository, TransactionRepository>();
-
-            services.AddForwardingInfrastructure();
+            
 
             #endregion
 

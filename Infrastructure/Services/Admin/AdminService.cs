@@ -1,6 +1,7 @@
 ﻿// --- START OF FILE: Infrastructure/Services/AdminService.cs ---
 
 using Application.DTOs.Admin;
+using Application.DTOs.Settings;
 using Application.Interfaces;
 using Dapper;
 using Domain.Entities;
@@ -19,12 +20,13 @@ namespace Infrastructure.Services.Admin
         private readonly string _connectionString;
         private readonly ILogger<AdminService> _logger;
         private const int CommandTimeoutSeconds = 180; // Increased timeout for admin queries
-
-        public AdminService(IConfiguration configuration, ILogger<AdminService> logger)
+        private readonly ICacheService _cacheService;
+        public AdminService(IConfiguration configuration, ILogger<AdminService> logger, ICacheService cacheService)
         {
             _connectionString = configuration.GetConnectionString("DefaultConnection")
                                 ?? throw new InvalidOperationException("DefaultConnection string is not found in configuration.");
             _logger = logger;
+            _cacheService = cacheService; // --- ADDED ---
         }
         private NpgsqlConnection CreateConnection() => new(_connectionString);
 
@@ -240,6 +242,44 @@ namespace Infrastructure.Services.Admin
             public string? WalletJson { get; set; }
             public string? SubscriptionsJson { get; set; }
             public string? TransactionsJson { get; set; }
+        }
+
+
+
+        private const string ForceJoinSettingsKey = "settings:force_join";
+        public async Task<ForceJoinSettingsDto> GetForceJoinSettingsAsync(CancellationToken cancellationToken = default)
+        {
+            await using var connection = CreateConnection();
+            const string sql = @"SELECT ""Value"" FROM public.""Settings"" WHERE ""Key"" = @Key;";
+
+            var jsonValue = await connection.QuerySingleOrDefaultAsync<string>(
+                new CommandDefinition(sql, new { Key = ForceJoinSettingsKey }, cancellationToken: cancellationToken));
+
+            if (string.IsNullOrEmpty(jsonValue))
+            {
+                _logger.LogInformation("Force join settings not found in database, returning default (disabled) state.");
+                return new ForceJoinSettingsDto { IsEnabled = false };
+            }
+
+            return JsonSerializer.Deserialize<ForceJoinSettingsDto>(jsonValue) ?? new ForceJoinSettingsDto();
+        }
+        public async Task UpdateForceJoinSettingsAsync(ForceJoinSettingsDto settings, CancellationToken cancellationToken = default)
+        {
+            await using var connection = CreateConnection();
+            var jsonValue = JsonSerializer.Serialize(settings);
+
+            const string sql = @"
+        INSERT INTO public.""Settings"" (""Key"", ""Value"")
+        VALUES (@Key, @Value::jsonb)
+        ON CONFLICT (""Key"") DO UPDATE
+        SET ""Value"" = EXCLUDED.""Value"";
+    ";
+            await connection.ExecuteAsync(new CommandDefinition(sql, new { Key = ForceJoinSettingsKey, Value = jsonValue }, cancellationToken: cancellationToken));
+            _logger.LogInformation("Force join settings have been updated in the database.");
+
+            // CRITICAL: Invalidate the cache so the application picks up the new setting immediately.
+            await _cacheService.RemoveAsync(ForceJoinSettingsKey);
+            _logger.LogInformation("Force join settings cache key '{CacheKey}' has been invalidated.", ForceJoinSettingsKey);
         }
 
         public async Task<(int UserCount, int NewsItemCount, List<(DateTime Date, int Count)> UserJoinStats)> GetDashboardStatsWithUserJoinsAsync(CancellationToken cancellationToken = default)

@@ -2,6 +2,7 @@
 
 using Application.Interfaces; // For IAdminService
 using Hangfire; // For IRecurringJobManager
+using Hangfire.MemoryStorage.Database;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -69,13 +70,11 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 return false;
 
             var data = update.CallbackQuery.Data;
-
-            // --- MODIFIED: Handle the new callback ---
-            return data is AdminServerStatsCallback or
-                   AdminManualRssFetchCallback or
-                   PurgeHangfireCallback or
-                   DownloadLogsCallback or // NEW
-                   BackToAdminPanelCallback;
+            return data is AdminServerStatsCallback or // "admin_server_stats"
+                   AdminManualRssFetchCallback or    // "admin_manual_rss"
+                   PurgeHangfireCallback or          // "admin_purge_hangfire"
+                   DownloadLogsCallback or         // "admin_download_logs"
+                   BackToAdminPanelCallback;         // "admin_panel_main"
         }
 
 

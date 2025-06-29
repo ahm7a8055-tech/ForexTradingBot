@@ -66,6 +66,8 @@ namespace Domain.Features.Forwarding.ValueObjects
         /// </summary>
         public bool NoForwards { get; private set; }
 
+
+
         #endregion
 
         #region Constructors and Methods

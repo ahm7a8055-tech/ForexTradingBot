@@ -2,17 +2,19 @@
 {
     public class UpdateQueueOptions
     {
+        // --- EXISTING PROPERTIES ---
         public int MaxConcurrency { get; set; } = 10;
-        public int QueueCapacity { get; set; } = 1000;
-        public int SupervisorLoopIntervalMs { get; set; } = 10000;
+        public int QueueCapacity { get; set; } = 50000;
+        public int ProducerRedisTimeoutSeconds { get; set; } = 10;
+        public int ProducerCircuitBreakerFailures { get; set; } = 5;
+        public int ProducerCircuitBreakSeconds { get; set; } = 30;
+        public int ProducerMaxRetryAttempts { get; set; } = 5;
+        public int SupervisorLoopIntervalMs { get; set; } = 5000;
         public int MetricsReportIntervalSeconds { get; set; } = 30;
-        public string DeadLetterQueueName { get; set; } = "telegram:updates:deadletter";
-        public int ShutdownTimeoutSeconds { get; set; } = 30;
+        public int ShutdownTimeoutSeconds { get; set; } = 15;
 
-        // SECURE-FIX: Added configuration for producer resilience
-        public int ProducerRedisTimeoutSeconds { get; set; } = 25; // How long to wait for a single message
-        public int ProducerMaxRetryAttempts { get; set; } = 5;      // How many times to retry on connection errors
-        public int ProducerCircuitBreakerFailures { get; set; } = 5; // How many failures before opening the circuit
-        public int ProducerCircuitBreakSeconds { get; set; } = 60;  // How long the circuit stays open
+        // --- NEW PROPERTIES FOR RELIABLE QUEUE ---
+        public string QueueName { get; set; } = "queue:telegram:updates";
+        public string DeadLetterQueueName { get; set; } = "queue:telegram:updates:deadletter";
     }
 }

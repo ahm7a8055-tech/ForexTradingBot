@@ -1,8 +1,10 @@
 ﻿using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Telegram.Bot.Types;
+using TelegramPanel.Queue.Models;
 
 namespace TelegramPanel.Queue
 {
@@ -10,7 +12,11 @@ namespace TelegramPanel.Queue
     public interface ITelegramUpdateChannel
     {
         ValueTask WriteAsync(Update update, CancellationToken cancellationToken = default);
-        IAsyncEnumerable<Update> ReadAllAsync(CancellationToken cancellationToken = default);
+        IAsyncEnumerable<QueueMessage> ReadAllAsync(CancellationToken cancellationToken = default);
+        Task AcknowledgeAsync(QueueMessage message, CancellationToken cancellationToken = default);
+        // --- NEW: Method to requeue a message that failed processing but should be retried ---
+        Task RequeueAsync(QueueMessage message, CancellationToken cancellationToken = default);
+
     }
     public class TelegramUpdateChannel : ITelegramUpdateChannel
     {
@@ -62,6 +68,32 @@ namespace TelegramPanel.Queue
             _logger.LogInformation("TelegramUpdateChannel initialized with capacity {Capacity} and FullMode '{FullMode}'.", capacity, options.FullMode);
         }
 
+
+        public async IAsyncEnumerable<QueueMessage> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await foreach (var update in _channel.Reader.ReadAllAsync(cancellationToken))
+            {
+                // Wrap the Update in a QueueMessage. The raw value is null because there's no Redis value.
+                yield return new QueueMessage(update, default);
+            }
+        }
+        public Task RequeueAsync(QueueMessage message, CancellationToken cancellationToken = default)
+        {
+            _logger.LogWarning("Re-queue called for in-memory queue. Re-writing message to channel.");
+            if (message.DeserializedUpdate != null)
+            {
+                // To properly simulate a requeue, we can try to write it back.
+                _ = WriteAsync(message.DeserializedUpdate, cancellationToken);
+            }
+            return Task.CompletedTask;
+        }
+        public Task AcknowledgeAsync(QueueMessage message, CancellationToken cancellationToken = default)
+        {
+            _logger.LogTrace("Acknowledge called for in-memory queue. No action taken.");
+            return Task.CompletedTask;
+        }
+
+
         public async ValueTask WriteAsync(Update update, CancellationToken cancellationToken = default)
         {
             // اکنون این فراخوانی ممکن است منتظر بماند اگر Channel پر باشد.
@@ -80,9 +112,6 @@ namespace TelegramPanel.Queue
             }).ConfigureAwait(false);
         }
 
-        public IAsyncEnumerable<Update> ReadAllAsync(CancellationToken cancellationToken = default)
-        {
-            return _channel.Reader.ReadAllAsync(cancellationToken);
-        }
+    
     }
 }

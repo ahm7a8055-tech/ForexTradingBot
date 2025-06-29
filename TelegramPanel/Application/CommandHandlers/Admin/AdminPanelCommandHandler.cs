@@ -1,4 +1,4 @@
-﻿// --- START OF FILE: AdminPanelCommandHandler.cs ---
+﻿// --- START OF UPGRADED FILE: AdminPanelCommandHandler.cs ---
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Telegram.Bot.Types;
@@ -38,32 +38,39 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                    _settings.AdminUserIds.Contains(update.Message.From.Id) &&
                    update.Message.Text?.Trim().Equals("/admin", StringComparison.OrdinalIgnoreCase) == true;
         }
+
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
             var message = update.Message!;
             _logger.LogInformation("Admin user {UserId} accessed the admin panel.", message.From!.Id);
 
-            var text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel V2");
+            // UPGRADED: Changed version to V3 to reflect new layout
+            var text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel V3");
             text += "\n\nSelect an action:";
 
+            // --- UPGRADED: More organized keyboard layout with new "Bot Settings" button ---
             var keyboard = MarkupBuilder.CreateInlineKeyboard(
-                new[] { // Row 1: User & Server Info
-            InlineKeyboardButton.WithCallbackData("📊 Server Stats", "admin_server_stats"),
-            InlineKeyboardButton.WithCallbackData("🔍 User Lookup", "admin_user_lookup")
+                new[] { // Row 1: Core Info
+                    InlineKeyboardButton.WithCallbackData("📊 Server Stats", "admin_server_stats"),
+                    InlineKeyboardButton.WithCallbackData("🔍 User Lookup", "admin_user_lookup")
                 },
-                new[] { // Row 2: Maintenance Tasks
-            InlineKeyboardButton.WithCallbackData("🔄 Fetch RSS Now", "admin_manual_rss"),
-            InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", "admin_purge_hangfire"),
-              InlineKeyboardButton.WithCallbackData("📂 Download Logs", "admin_download_logs") // NEW 
+                new[] { // Row 2: Bot Management (NEW and existing)
+                    InlineKeyboardButton.WithCallbackData("⚙️ Bot Settings", "admin_bot_settings"), // <<< NEW: Entry point for Force Join
+                    InlineKeyboardButton.WithCallbackData("📣 Broadcast Message", "admin_broadcast")
                 },
-                new[] { // Row 3: Advanced & Dangerous
-            InlineKeyboardButton.WithCallbackData("📣 Broadcast Message", "admin_broadcast"),
-            InlineKeyboardButton.WithCallbackData("☠️ Execute SQL", "admin_execute_sql") // New button
+                new[] { // Row 3: Maintenance Tasks
+                    InlineKeyboardButton.WithCallbackData("🔄 Fetch RSS Now", "admin_manual_rss"),
+                    InlineKeyboardButton.WithCallbackData("📂 Download Logs", "admin_download_logs")
                 },
-                new[] { // Row 4: Navigation
-            InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral)
+                new[] { // Row 4: Advanced / Dangerous
+                    InlineKeyboardButton.WithCallbackData("☠️ Execute SQL", "admin_execute_sql"),
+                    InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", "admin_purge_hangfire")
+                },
+                new[] { // Row 5: Navigation
+                    InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral)
                 }
             );
+
             await _messageSender.SendTextMessageAsync(message.Chat.Id, text, ParseMode.Markdown, keyboard, cancellationToken);
         }
     }

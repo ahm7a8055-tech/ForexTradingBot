@@ -1,6 +1,7 @@
 ﻿// --- START OF FILE: Application/Interfaces/IAdminService.cs ---
 
-using Application.DTOs.Admin; // For the detailed DTO
+using Application.DTOs.Admin;
+using Application.DTOs.Settings; // For the detailed DTO
 
 namespace Application.Interfaces
 {
@@ -35,6 +36,9 @@ namespace Application.Interfaces
 
         Task<string> ExecuteRawSqlQueryAsync(string sqlQuery, CancellationToken cancellationToken = default);
 
+        Task<ForceJoinSettingsDto> GetForceJoinSettingsAsync(CancellationToken cancellationToken = default);
+
+        Task UpdateForceJoinSettingsAsync(ForceJoinSettingsDto settings, CancellationToken cancellationToken = default);
         /// <summary>
         /// Gets dashboard statistics, including total user and news item counts, and user join stats for the last 7 days.
         /// </summary>

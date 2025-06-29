@@ -13,7 +13,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog;
 using StackExchange.Redis;
+using System;
 using Telegram.Bot;
+using TelegramPanel.Application.CommandHandlers.Admin;
 using TelegramPanel.Application.CommandHandlers.Entry;
 using TelegramPanel.Application.CommandHandlers.Features.Analysis;
 using TelegramPanel.Application.CommandHandlers.Features.CoinGecko;
@@ -64,10 +66,11 @@ namespace TelegramPanel.Extensions
 
             // 6. Register ITelegramUpdateJobService for Hangfire
             _ = services.AddScoped<IDirectMessageSender, DirectTelegramMessageSender>();
-
+       
             // 7. Register ITelegramUpdateJobService for Hangfire
             _ = services.AddSingleton<ITelegramUpdateChannel>(serviceProvider =>
             {
+                var queueOptions = serviceProvider.GetRequiredService<IOptions<UpdateQueueOptions>>();
                 // 1. Get the necessary services from the DI container.
                 var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
 
@@ -83,7 +86,7 @@ namespace TelegramPanel.Extensions
                     Log.Information("✅ Redis connection is active. Registering RedisUpdateChannel for the queue.");
 
                     // Create and return the Redis-based implementation.
-                    return new RedisUpdateChannel(redisConnection, redisLogger);
+                    return new RedisUpdateChannel(redisConnection, redisLogger, queueOptions);
                 }
                 else
                 {
@@ -138,15 +141,27 @@ namespace TelegramPanel.Extensions
 
             // 5. Register ALL ITelegramCommandHandler implementations from the assembly
 
-            // This will scan the assembly of StartCommandHandler
-            _ = services.Scan(scan => scan
-                .FromAssemblyOf<StartCommandHandler>() // A marker from your TelegramPanel.Application assembly
+            Log.Information("Scanning TelegramPanel.Application assembly for Handlers and States...");
+            services.Scan(scan => scan
+                // Define the assembly to scan. Use a class that is definitely in the right project.
+                .FromAssemblyOf<StartCommandHandler>()
+
+                // Find and register all command handlers (e.g., StartCommandHandler)
                 .AddClasses(classes => classes.AssignableTo<ITelegramCommandHandler>())
-                    .AsImplementedInterfaces().WithScopedLifetime()
+                    .AsImplementedInterfaces()
+                    .WithScopedLifetime()
+
+                // Find and register all callback query handlers (e.g., CryptoCallbackHandler, CloudflareRadarCallbackHandler)
                 .AddClasses(classes => classes.AssignableTo<ITelegramCallbackQueryHandler>())
-                    .AsImplementedInterfaces().WithScopedLifetime()
-                .AddClasses(classes => classes.AssignableTo<ITelegramState>())
-                    .AsImplementedInterfaces().WithScopedLifetime());
+                    .AsImplementedInterfaces()
+                    .WithScopedLifetime()
+
+                // Find and register all state machine states (e.g., ForceJoinSetChannelState, NewsSearchState)
+                .AddClasses(classes => classes.AssignableTo<ITelegramState>().Where(c => !c.IsAbstract))
+                    .AsSelfWithInterfaces() // Registers as both concrete (ForceJoinSetChannelState) AND interface (ITelegramState)
+                    .WithScopedLifetime()   // CRITICAL: Use Scoped lifetime for all of them
+            );
+            Log.Information("Handler and State registration scan complete.");
 
             // 6. Register State Machine
 
@@ -179,10 +194,6 @@ namespace TelegramPanel.Extensions
 
             // Register Services
             services.AddScoped<ICloudflareRadarService,CloudflareRadarService>();
-
-            // REMOVE explicit registration if covered by scan:
-            // services.AddScoped<ITelegramCallbackQueryHandler, FundamentalAnalysisCallbackHandler>(); // This is now redundant if scan works
-            _ = services.AddScoped<ITelegramState, FredSearchState>();
             // ------------------- 6. Register State Machine & States -------------------
             _ = services.AddSingleton<IUserConversationStateService, InMemoryUserConversationStateService>();
             _ = services.AddScoped<ITelegramStateMachine, TelegramStateMachine>();
@@ -191,7 +202,7 @@ namespace TelegramPanel.Extensions
                 .AddClasses(classes => classes.AssignableTo<ITelegramState>().Where(c => !c.IsAbstract && c.IsClass))
                 .AsImplementedInterfaces()
                 .WithScopedLifetime());
-
+            services.AddScoped<ITelegramCallbackQueryHandler, BotSettingsCallbackHandler>();
             // ------------------- 7. Register INotificationService Implementation -------------------
             _ = services.AddScoped<INotificationService, TelegramNotificationService>();
             _ = services.AddScoped<ITelegramCallbackQueryHandler, CryptoCallbackHandler>();

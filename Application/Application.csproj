@@ -8,11 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="DTOs\NewFolder\**" />
     <Compile Remove="Features\Crypto\Services\NewFolder\**" />
-    <EmbeddedResource Remove="DTOs\NewFolder\**" />
     <EmbeddedResource Remove="Features\Crypto\Services\NewFolder\**" />
-    <None Remove="DTOs\NewFolder\**" />
     <None Remove="Features\Crypto\Services\NewFolder\**" />
   </ItemGroup>
 
