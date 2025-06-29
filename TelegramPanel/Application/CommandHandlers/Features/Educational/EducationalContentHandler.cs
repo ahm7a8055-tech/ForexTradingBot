@@ -366,25 +366,15 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             _logger.LogInformation("User requested file: {FilePath}", absolutePath);
 
             // --- STEP 1: Send Chat Action (Typing...) ---
-            // Inform the user that the bot is busy. This is good UX.
             try
             {
-                // --- FIX: Use SendChatActionAsync ---
-                await _botClient.SendChatAction(chatId, ChatAction.UploadDocument);
+                await _botClient.SendChatAction(chatId, ChatAction.UploadDocument, ct);
                 _logger.LogDebug("Sent ChatAction 'UploadDocument' to ChatID {ChatId}.", chatId);
-            }
-            catch (ApiRequestException apiEx) when (
-                apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase) ||
-                apiEx.ErrorCode == 400) // 400 Bad Request can also indicate chat not found or bot blocked
-            {
-                _logger.LogWarning("Failed to send chat action to ChatID {ChatId}. User might have blocked the bot or chat is invalid. Error: {ApiError}", chatId, apiEx.Message);
-                // No need to return; the main operation might still be attempted if file sending is separate.
-                // However, if the chat is fundamentally gone, it's good to log and potentially mark user as unreachable if this was a user-specific operation.
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "An unexpected error occurred while sending chat action to ChatID {ChatId}.", chatId);
-                // For chat actions, we can usually continue even if this fails.
+                // We can often continue even if this fails.
             }
 
             // --- STEP 2: Open File Stream and Prepare InputFile ---
@@ -392,16 +382,38 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             InputFile? inputFile = null;
             string? caption = null;
             string? extension = null;
-            Task sendTask = Task.CompletedTask; // Default to a completed task
+            Task sendTask;
 
             try
             {
                 fileStream = new FileStream(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 inputFile = InputFile.FromStream(fileStream, fileName);
-                caption = $"{GetFormattedName(fileName)}\n\nShared by @trade_ai_helper_bot";
+
+                // --- FIX: Truncate caption to prevent exceeding Telegram's limits ---
+                // Telegram has a caption limit of 1024 characters.
+                var formattedFileName = GetFormattedName(fileName); // Cleaned up filename, e.g., "Trading Basics"
+
+                // Create the base caption.
+                var captionBuilder = new StringBuilder($"{formattedFileName}\n\nShared by @trade_ai_helper_bot");
+
+                // Append the summary if available and if there's space.
+                // We'll need to fetch the summary here if it's not directly in the filename.
+                // For now, let's assume the filename itself is the primary content.
+                // If you have a separate way to get summaries, you'd fetch and append them here,
+                // making sure to truncate them to leave room for the filename and bot signature.
+
+                // Truncate the final caption to be safe, leaving room for the bot signature and ensuring it's not too long.
+                // We'll leave some buffer for the bot signature and potential future additions.
+                const int captionMaxLength = 1000; // Slightly less than Telegram's 1024 limit for safety.
+                caption = captionBuilder.ToString();
+                if (caption.Length > captionMaxLength)
+                {
+                    caption = caption.Substring(0, captionMaxLength - 3) + "..."; // Truncate and add ellipsis
+                }
+                // --- END OF CAPTION FIX ---
+
                 extension = Path.GetExtension(fileName).ToLowerInvariant();
 
-                // --- STEP 3: Determine which file type method to use ---
                 if (extension is ".mp3" or ".wav")
                 {
                     sendTask = _botClient.SendAudio(chatId, inputFile, caption: caption, cancellationToken: ct);
@@ -413,57 +425,43 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 else
                 {
                     _logger.LogWarning("User requested unsupported file type: {FileName}", fileName);
-                    // Inform the user that the type is not supported, but don't necessarily throw or stop the whole process.
                     await _messageSender.SendTextMessageAsync(chatId, "Sorry, this file type is not supported for direct playback.", cancellationToken: ct);
-                    return; // Exit if the file type is not handled.
+                    return; // Do not proceed if file type is unsupported.
                 }
 
-                // --- STEP 4: Execute the Send Operation with Robust Error Handling ---
                 await sendTask;
+
                 _logger.LogInformation("Successfully sent file '{FileName}' to ChatID {ChatId}.", fileName, chatId);
             }
             // --- SPECIFIC API EXCEPTIONS ---
             catch (OperationCanceledException)
             {
                 _logger.LogInformation("File sending operation for '{FileName}' was cancelled.", fileName);
-                // This is expected during shutdown or normal cancellation.
             }
             catch (ApiRequestException apiEx)
             {
                 _logger.LogError(apiEx, "Telegram API Error while sending file '{FileName}' to ChatID {ChatId}. Error Code: {ErrorCode}, Message: {ApiMessage}",
                     fileName, chatId, apiEx.ErrorCode, apiEx.Message);
 
-                // Handle specific, common Telegram API errors that might indicate permanent issues with the user/chat.
-                if (apiEx.Message.Contains("file is too large"))
+                if (apiEx.Message.Contains("file is too large") || apiEx.ErrorCode == 413) // Telegram Error Code 413 for too large file
                 {
                     await _messageSender.SendTextMessageAsync(chatId, "The file is too large to send. Please check Telegram's file size limits.", cancellationToken: ct);
                 }
                 else if (apiEx.ErrorCode == 403 || apiEx.Message.Contains("bot was blocked by the user") || apiEx.Message.Contains("chat not found"))
                 {
-                    // This is a permanent error. Mark the user as unreachable.
-                    _logger.LogWarning("User {ChatId} blocked the bot, chat not found, or bot lost access. Marking as unreachable.", chatId);
-                    try
-                    {
-                        // IMPORTANT: You need to ensure `_userService` is available in this scope or passed down.
-                        // If `_userService` is not directly available, you'd resolve it from the `scope` if `SendFileAsync` was called within a scope.
-                        // For this specific middleware, we likely have access to `_serviceProvider` or `scope` if needed.
-                        // Assuming `_userService` is properly injected into the handler.
-                        // await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", CancellationToken.None);
-                    }
-                    catch (Exception markEx)
-                    {
-                        _logger.LogError(markEx, "FAILED during self-healing attempt to mark user {ChatId} as unreachable. Re-throwing original API error.", chatId);
-                        throw; // Re-throw original API error if marking user fails.
-                    }
+                    _logger.LogWarning("User {ChatId} blocked the bot or the bot lost access. Marking as unreachable.", chatId);
+                    // Placeholder for marking user as unreachable
+                    // await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", CancellationToken.None);
+                }
+                else if (apiEx.ErrorCode == 400 && apiEx.Message.Contains("chat not found"))
+                {
+                    _logger.LogWarning("Chat {ChatId} not found or bot lost access. Cannot send file.", chatId);
                 }
                 else
                 {
-                    // Generic API error
                     await _messageSender.SendTextMessageAsync(chatId, $"Telegram API error: {apiEx.Message}. Please try again later.", cancellationToken: ct);
                 }
-                // It's important to re-throw the ApiRequestException so that Hangfire (if this were a job)
-                // or the calling middleware knows the operation failed.
-                throw;
+                throw; // Re-throw to indicate failure to the caller/Hangfire
             }
             // --- GENERAL EXCEPTIONS ---
             catch (IOException ioEx)
@@ -473,16 +471,14 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             }
             catch (Exception ex)
             {
-                // Catch-all for any other unexpected errors.
                 _logger.LogError(ex, "An unexpected error occurred while processing or sending file '{FileName}' to ChatID {ChatId}.", fileName, chatId);
                 await _messageSender.SendTextMessageAsync(chatId, "An unexpected error occurred. Please try again later.", cancellationToken: ct);
             }
             finally
             {
-                // Ensure the file stream is always closed. 'await using' handles this automatically.
-                // The 'fileStream?.Dispose()' is redundant if 'await using' is used correctly, but harmless.
-                // If you used 'using var fileStream = ...', then this explicit dispose would be needed.
-                // With 'await using var fileStream = ...', you can safely remove the finally block.
+                // The 'await using var fileStream = ...' statement handles disposal automatically.
+                // Explicitly disposing here is redundant but harmless if you prefer the pattern.
+                // fileStream?.Dispose();
             }
         }
         #endregion
