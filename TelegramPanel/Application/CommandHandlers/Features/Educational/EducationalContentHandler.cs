@@ -202,12 +202,13 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             await _messageSender.EditMessageTextAsync(chatId, messageId, cachedMenu.Text, ParseMode.Markdown, cachedMenu.Keyboard, ct);
         }
 
+        // --- START OF FULLY UPGRADED METHOD: GenerateFolderMenu ---
+
         private CachedMenuDto GenerateFolderMenu(string relativePath, int page)
         {
             var absolutePath = Path.Combine(BaseLearningPath, relativePath);
-            var currentFolderName = Path.GetFileName(relativePath);
 
-            // --- 1. Generate a Smart, Context-Aware Title ---
+            // 1. Generate a Smart, Context-Aware Title (Breadcrumb)
             string title;
             if (string.IsNullOrEmpty(relativePath))
             {
@@ -215,66 +216,75 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             }
             else
             {
-                // Create a breadcrumb trail for navigation, e.g., "Podcasts > English > Market Basics"
                 var pathParts = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                     .Select(part => $"{GetEmojiForName(part)} {GetFormattedName(part)}");
                 title = string.Join(" > ", pathParts);
             }
 
-            // --- 2. Generate a Better Prompt ---
-            var prompt = "Please choose a category or file below:";
-
+            // 2. Generate the List of All Possible Menu Items (Buttons)
             var allItems = new List<InlineKeyboardButton>();
 
-            // Get sub-directories
-            var directories = Directory.GetDirectories(absolutePath).OrderBy(d => d);
-            foreach (var dir in directories)
+            try
             {
-                var dirName = Path.GetFileName(dir);
-                var newRelativePath = Path.Combine(relativePath, dirName).Replace('\\', '/');
+                // --- UPGRADE: Get sub-directories ONLY if they are not empty ---
+                var directories = Directory.GetDirectories(absolutePath)
+                    .Where(dir => Directory.EnumerateFileSystemEntries(dir).Any()) // This is the filter
+                    .OrderBy(d => d);
 
-                // --- 3. Use Full Language Names for Language Folders ---
-                string buttonText;
-                if (PrioritizedLanguages.Any(l => l.Code == dirName))
+                foreach (var dir in directories)
                 {
-                    // It's a language folder, use the full name from our list
-                    buttonText = PrioritizedLanguages.First(l => l.Code == dirName).Name;
-                }
-                else
-                {
-                    // It's a regular category folder
-                    buttonText = $"{GetEmojiForName(dirName)} {GetFormattedName(dirName)}";
+                    var dirName = Path.GetFileName(dir);
+                    var newRelativePath = Path.Combine(relativePath, dirName).Replace('\\', '/');
+
+                    string buttonText;
+                    if (PrioritizedLanguages.Any(l => l.Code == dirName))
+                    {
+                        // Use the full, pretty language name
+                        buttonText = PrioritizedLanguages.First(l => l.Code == dirName).Name;
+                    }
+                    else
+                    {
+                        // Use the formatted category name
+                        buttonText = $"{GetEmojiForName(dirName)} {GetFormattedName(dirName)}";
+                    }
+
+                    allItems.Add(InlineKeyboardButton.WithCallbackData(buttonText, NavPrefix + newRelativePath));
                 }
 
-                allItems.Add(InlineKeyboardButton.WithCallbackData(buttonText, NavPrefix + newRelativePath));
+                // Get supported files
+                var files = Directory.GetFiles(absolutePath)
+                    .Where(f => SupportedExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                    .OrderBy(f => f);
+
+                foreach (var file in files)
+                {
+                    var fileName = Path.GetFileName(file);
+                    var newRelativePath = Path.Combine(relativePath, fileName).Replace('\\', '/');
+                    allItems.Add(InlineKeyboardButton.WithCallbackData($"▶️ {GetFormattedName(fileName)}", NavPrefix + newRelativePath));
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error if we can't access the directory for any reason (e.g., permissions)
+                _logger.LogError(ex, "Failed to generate menu items for path: {Path}", absolutePath);
+                // The rest of the logic will gracefully handle the empty `allItems` list.
             }
 
-            // Get files
-            var files = Directory.GetFiles(absolutePath)
-                .Where(f => SupportedExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                .OrderBy(f => f);
-
-            foreach (var file in files)
-            {
-                var fileName = Path.GetFileName(file);
-                var newRelativePath = Path.Combine(relativePath, fileName).Replace('\\', '/');
-                allItems.Add(InlineKeyboardButton.WithCallbackData($"▶️ {GetFormattedName(fileName)}", NavPrefix + newRelativePath));
-            }
-
-            // --- Pagination Logic ---
+            // --- 3. Apply Pagination to the Filtered List ---
             var totalItems = allItems.Count;
             var totalPages = (int)Math.Ceiling(totalItems / (double)PageSize);
             page = Math.Clamp(page, 1, totalPages);
             var itemsForPage = allItems.Skip((page - 1) * PageSize).Take(PageSize).ToList();
 
+            // --- 4. Build the Final Text and Keyboard ---
             var finalTitle = totalPages > 1
                 ? $"{title} (Page {page}/{totalPages})"
                 : title;
 
             var textBuilder = new StringBuilder();
             textBuilder.AppendLine(TelegramMessageFormatter.Bold(finalTitle));
-            textBuilder.AppendLine(); // Add spacing
-            textBuilder.AppendLine(TelegramMessageFormatter.Italic(prompt));
+            textBuilder.AppendLine();
+            textBuilder.AppendLine(TelegramMessageFormatter.Italic("Please choose an option below:"));
 
             if (totalItems == 0)
             {
@@ -282,9 +292,9 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 textBuilder.AppendLine("_This section is currently empty._");
             }
 
+            // --- 5. Assemble the Final Keyboard with Navigation ---
             var keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
 
-            // Navigation Buttons
             var navButtons = new List<InlineKeyboardButton>();
             if (page > 1) navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{relativePath}_page_{page - 1}"));
             if (page < totalPages) navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{relativePath}_page_{page + 1}"));
@@ -296,10 +306,15 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + parentRelativePath) });
             }
 
-            // Always provide a way back to the start of the educational menu
+            // Use a different "Back" button depending on where the user is.
             if (!string.IsNullOrEmpty(relativePath))
             {
                 keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Learning Center", NavPrefix) });
+            }
+            else
+            {
+                // If they are at the root of the learning center, the button should go to the absolute main menu.
+                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu") });
             }
 
             return new CachedMenuDto(textBuilder.ToString(), new InlineKeyboardMarkup(keyboardRows));
@@ -307,7 +322,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features
 
         private async Task SendFileAsync(long chatId, string absolutePath, CancellationToken ct)
         {
-            _logger.LogInformation("User requested file: {FilePath}", absolutePath);
+            // ... (existing code to get path and check if file exists is correct) ...
+
             await _botClient.SendChatAction(chatId, ChatAction.UploadDocument);
 
             var fileName = Path.GetFileName(absolutePath);
@@ -316,17 +332,30 @@ namespace TelegramPanel.Application.CommandHandlers.Features
 
             try
             {
-                var caption = GetFormattedName(fileName);
+                // --- UPGRADE: Create a caption with the signature ---
+                var cleanFileName = GetFormattedName(fileName); // e.g., "Trading Basics"
+                var signature = "@trade_ai_helper_bot";
+                var captionWithSignature = $"{cleanFileName}\n\nShared by {signature}";
+                // --------------------------------------------------
+
                 var extension = Path.GetExtension(fileName).ToLowerInvariant();
 
                 if (extension is ".mp3" or ".wav")
-                    await _botClient.SendAudio(chatId, inputFile, caption: caption, cancellationToken: ct);
+                {
+                    // Use the new caption with the signature
+                    await _botClient.SendAudio(chatId, inputFile, caption: captionWithSignature, cancellationToken: ct);
+                }
                 else if (extension is ".mp4" or ".mov" or ".mkv")
-                    await _botClient.SendVideo(chatId, inputFile, caption: caption, cancellationToken: ct);
+                {
+                    // Use the new caption with the signature
+                    await _botClient.SendVideo(chatId, inputFile, caption: captionWithSignature, cancellationToken: ct);
+                }
             }
-            catch (Exception ex) { _logger.LogError(ex, "Failed to send file {FileName} to chat {ChatId}", fileName, chatId); }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send file {FileName} to chat {ChatId}", fileName, chatId);
+            }
         }
-
         private static string GetFormattedName(string name) => string.IsNullOrEmpty(name) ? "Back" : Path.GetFileNameWithoutExtension(name).Replace("_", " ").Replace("-", " ");
         private static string GetEmojiForName(string name) => FolderEmojiMap.TryGetValue(name.ToLowerInvariant(), out var emoji) ? emoji : "📁";
     }
