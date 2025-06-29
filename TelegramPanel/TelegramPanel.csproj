@@ -9,8 +9,11 @@
 
   <ItemGroup>
     <Compile Remove="Application\CommandHandlers\Features\Crypto\**" />
+    <Compile Remove="Application\CommandHandlers\Features\NewFolder\**" />
     <EmbeddedResource Remove="Application\CommandHandlers\Features\Crypto\**" />
+    <EmbeddedResource Remove="Application\CommandHandlers\Features\NewFolder\**" />
     <None Remove="Application\CommandHandlers\Features\Crypto\**" />
+    <None Remove="Application\CommandHandlers\Features\NewFolder\**" />
   </ItemGroup>
 
   <ItemGroup>

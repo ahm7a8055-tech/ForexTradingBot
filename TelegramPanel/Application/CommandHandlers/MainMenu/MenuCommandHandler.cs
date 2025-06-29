@@ -101,6 +101,10 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 {
                    InlineKeyboardButton.WithCallbackData("💎 Subscribe / Plans", SubscribeCallbackData)
                 },
+                new[]
+            {
+           InlineKeyboardButton.WithCallbackData("📚 Learn & Grow", "edu_main")
+              },
                 new[] // Row 4: Account Management
                 {
                    InlineKeyboardButton.WithCallbackData("⚙️ Settings", SettingsCallbackData),
