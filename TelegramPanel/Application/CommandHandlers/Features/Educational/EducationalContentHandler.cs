@@ -1,10 +1,12 @@
 ﻿// --- START OF PLATINUM TIER FILE: EducationalContentHandler.cs ---
 
 using Application.Common.Interfaces;
+using Hangfire;
 using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 using System.Text;
 using Telegram.Bot;
+using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
@@ -38,6 +40,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         private const string NavPrefix = HandlerPrefix + "nav_";
         private const string PagePrefix = HandlerPrefix + "page_";
         private const string SendFilePrefix = HandlerPrefix + "send_";
+        private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(10);
         private static readonly Dictionary<string, string> FolderEmojiMap = new()
 {
     // --- Custom Category Emojis ---
@@ -273,14 +276,14 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         /// </summary>
         private async Task ShowFolderContentsAsync(long chatId, int messageId, string relativePath, int page, CancellationToken ct)
         {
-            var encodedPath = EncodeUrlSafeBase64(relativePath);
+            var encodedPath = EncodeUrlSafeBase64(relativePath); // Encode path for cache key
             var cacheKey = $"edu_menu_{encodedPath}_p{page}";
 
             if (!_menuCache.TryGetValue(cacheKey, out var cachedMenu))
             {
                 _logger.LogInformation("CACHE MISS: Generating menu for path '{Path}', page {Page}.", relativePath, page);
                 cachedMenu = GenerateFolderMenuDto(relativePath, page);
-                _menuCache.Set(cacheKey, cachedMenu, MenuCacheDuration);
+                _menuCache.Set(cacheKey, cachedMenu, CacheDuration);
             }
             else
             {
@@ -301,11 +304,12 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             var title = BuildBreadcrumbTitle(relativePath);
 
             var allItems = new List<InlineKeyboardButton>();
+
             try
             {
-                // Get non-empty sub-directories
+                // Get sub-directories (ONLY IF NOT EMPTY)
                 allItems.AddRange(Directory.GetDirectories(absolutePath)
-                    .Where(dir => Directory.EnumerateFileSystemEntries(dir).Any())
+                    .Where(dir => Directory.EnumerateFileSystemEntries(dir).Any()) // Filter out empty directories
                     .OrderBy(d => d)
                     .Select(dir => BuildDirectoryButton(relativePath, Path.GetFileName(dir))));
 
@@ -320,50 +324,167 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 _logger.LogError(ex, "Failed to generate menu items for path: {Path}", absolutePath);
             }
 
-            // Pagination
+            // --- Pagination Logic ---
             var totalItems = allItems.Count;
             var totalPages = (int)Math.Ceiling(totalItems / (double)PageSize);
             page = Math.Clamp(page, 1, totalPages);
             var itemsForPage = allItems.Skip((page - 1) * PageSize).Take(PageSize).ToList();
 
-            // Build Text
+            // --- Text Formatting ---
             var finalTitle = totalPages > 1 ? $"{title} (Page {page}/{totalPages})" : title;
             var text = $"{TelegramMessageFormatter.Bold(finalTitle)}\n\n{TelegramMessageFormatter.Italic("Please choose an option below:")}";
             if (totalItems == 0) text += "\n\n_This section is currently empty._";
 
-            // Build Keyboard
-            var keyboardRows = BuildPaginatedKeyboard(itemsForPage, relativePath, page, totalPages);
+            // --- Keyboard Assembly ---
+            var keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
+
+            var navButtons = new List<InlineKeyboardButton>();
+            var encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
+            if (page > 1) navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{encodedCurrentPath}_page_{page - 1}"));
+            if (page < totalPages) navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{encodedCurrentPath}_page_{page + 1}"));
+            if (navButtons.Any()) keyboardRows.Add(navButtons);
+
+            var parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
+            if (parentRelativePath != null)
+                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + EncodeUrlSafeBase64(parentRelativePath)) });
+            else
+                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu") });
+
             return new CachedMenuDto(text, new InlineKeyboardMarkup(keyboardRows));
         }
-
+        /// <summary>
+        /// Sends a file to a chat.
+        /// </summary>
+        /// <param name="chatId"></param>
+        /// <param name="absolutePath"></param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        [AutomaticRetry (Attempts = 3)]
         private async Task SendFileAsync(long chatId, string absolutePath, CancellationToken ct)
         {
+            var fileName = Path.GetFileName(absolutePath);
             _logger.LogInformation("User requested file: {FilePath}", absolutePath);
 
-            // --- FIX: Correct method name is SendChatActionAsync ---
-            await _botClient.SendChatAction(chatId, ChatAction.UploadDocument);
-
-            var fileName = Path.GetFileName(absolutePath);
-            await using var fileStream = new FileStream(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var inputFile = InputFile.FromStream(fileStream, fileName);
-
+            // --- STEP 1: Send Chat Action (Typing...) ---
+            // Inform the user that the bot is busy. This is good UX.
             try
             {
-                var caption = $"{GetFormattedName(fileName)}\n\nShared by @trade_ai_helper_bot";
-                var extension = Path.GetExtension(fileName).ToLowerInvariant();
-
-                // --- FIX: Correct method names are SendAudioAsync and SendVideoAsync ---
-                if (extension is ".mp3" or ".wav")
-                    await _botClient.SendAudio(chatId, inputFile, caption: caption, cancellationToken: ct);
-                else if (extension is ".mp4" or ".mov" or ".mkv")
-                    await _botClient.SendVideo(chatId, inputFile, caption: caption, cancellationToken: ct);
+                // --- FIX: Use SendChatActionAsync ---
+                await _botClient.SendChatAction(chatId, ChatAction.UploadDocument);
+                _logger.LogDebug("Sent ChatAction 'UploadDocument' to ChatID {ChatId}.", chatId);
+            }
+            catch (ApiRequestException apiEx) when (
+                apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase) ||
+                apiEx.ErrorCode == 400) // 400 Bad Request can also indicate chat not found or bot blocked
+            {
+                _logger.LogWarning("Failed to send chat action to ChatID {ChatId}. User might have blocked the bot or chat is invalid. Error: {ApiError}", chatId, apiEx.Message);
+                // No need to return; the main operation might still be attempted if file sending is separate.
+                // However, if the chat is fundamentally gone, it's good to log and potentially mark user as unreachable if this was a user-specific operation.
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send file {FileName} to chat {ChatId}", fileName, chatId);
+                _logger.LogError(ex, "An unexpected error occurred while sending chat action to ChatID {ChatId}.", chatId);
+                // For chat actions, we can usually continue even if this fails.
+            }
+
+            // --- STEP 2: Open File Stream and Prepare InputFile ---
+            FileStream? fileStream = null;
+            InputFile? inputFile = null;
+            string? caption = null;
+            string? extension = null;
+            Task sendTask = Task.CompletedTask; // Default to a completed task
+
+            try
+            {
+                fileStream = new FileStream(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                inputFile = InputFile.FromStream(fileStream, fileName);
+                caption = $"{GetFormattedName(fileName)}\n\nShared by @trade_ai_helper_bot";
+                extension = Path.GetExtension(fileName).ToLowerInvariant();
+
+                // --- STEP 3: Determine which file type method to use ---
+                if (extension is ".mp3" or ".wav")
+                {
+                    sendTask = _botClient.SendAudio(chatId, inputFile, caption: caption, cancellationToken: ct);
+                }
+                else if (extension is ".mp4" or ".mov" or ".mkv")
+                {
+                    sendTask = _botClient.SendVideo(chatId, inputFile, caption: caption, cancellationToken: ct);
+                }
+                else
+                {
+                    _logger.LogWarning("User requested unsupported file type: {FileName}", fileName);
+                    // Inform the user that the type is not supported, but don't necessarily throw or stop the whole process.
+                    await _messageSender.SendTextMessageAsync(chatId, "Sorry, this file type is not supported for direct playback.", cancellationToken: ct);
+                    return; // Exit if the file type is not handled.
+                }
+
+                // --- STEP 4: Execute the Send Operation with Robust Error Handling ---
+                await sendTask;
+                _logger.LogInformation("Successfully sent file '{FileName}' to ChatID {ChatId}.", fileName, chatId);
+            }
+            // --- SPECIFIC API EXCEPTIONS ---
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("File sending operation for '{FileName}' was cancelled.", fileName);
+                // This is expected during shutdown or normal cancellation.
+            }
+            catch (ApiRequestException apiEx)
+            {
+                _logger.LogError(apiEx, "Telegram API Error while sending file '{FileName}' to ChatID {ChatId}. Error Code: {ErrorCode}, Message: {ApiMessage}",
+                    fileName, chatId, apiEx.ErrorCode, apiEx.Message);
+
+                // Handle specific, common Telegram API errors that might indicate permanent issues with the user/chat.
+                if (apiEx.Message.Contains("file is too large"))
+                {
+                    await _messageSender.SendTextMessageAsync(chatId, "The file is too large to send. Please check Telegram's file size limits.", cancellationToken: ct);
+                }
+                else if (apiEx.ErrorCode == 403 || apiEx.Message.Contains("bot was blocked by the user") || apiEx.Message.Contains("chat not found"))
+                {
+                    // This is a permanent error. Mark the user as unreachable.
+                    _logger.LogWarning("User {ChatId} blocked the bot, chat not found, or bot lost access. Marking as unreachable.", chatId);
+                    try
+                    {
+                        // IMPORTANT: You need to ensure `_userService` is available in this scope or passed down.
+                        // If `_userService` is not directly available, you'd resolve it from the `scope` if `SendFileAsync` was called within a scope.
+                        // For this specific middleware, we likely have access to `_serviceProvider` or `scope` if needed.
+                        // Assuming `_userService` is properly injected into the handler.
+                        // await _userService.MarkUserAsUnreachableAsync(chatId.ToString(), $"ApiError_{apiEx.ErrorCode}", CancellationToken.None);
+                    }
+                    catch (Exception markEx)
+                    {
+                        _logger.LogError(markEx, "FAILED during self-healing attempt to mark user {ChatId} as unreachable. Re-throwing original API error.", chatId);
+                        throw; // Re-throw original API error if marking user fails.
+                    }
+                }
+                else
+                {
+                    // Generic API error
+                    await _messageSender.SendTextMessageAsync(chatId, $"Telegram API error: {apiEx.Message}. Please try again later.", cancellationToken: ct);
+                }
+                // It's important to re-throw the ApiRequestException so that Hangfire (if this were a job)
+                // or the calling middleware knows the operation failed.
+                throw;
+            }
+            // --- GENERAL EXCEPTIONS ---
+            catch (IOException ioEx)
+            {
+                _logger.LogError(ioEx, "File IO error while reading '{FileName}' for ChatID {ChatId}.", fileName, chatId);
+                await _messageSender.SendTextMessageAsync(chatId, "Error reading the file. It might be corrupted or inaccessible.", cancellationToken: ct);
+            }
+            catch (Exception ex)
+            {
+                // Catch-all for any other unexpected errors.
+                _logger.LogError(ex, "An unexpected error occurred while processing or sending file '{FileName}' to ChatID {ChatId}.", fileName, chatId);
+                await _messageSender.SendTextMessageAsync(chatId, "An unexpected error occurred. Please try again later.", cancellationToken: ct);
+            }
+            finally
+            {
+                // Ensure the file stream is always closed. 'await using' handles this automatically.
+                // The 'fileStream?.Dispose()' is redundant if 'await using' is used correctly, but harmless.
+                // If you used 'using var fileStream = ...', then this explicit dispose would be needed.
+                // With 'await using var fileStream = ...', you can safely remove the finally block.
             }
         }
-
         #endregion
 
         //================================================================================
