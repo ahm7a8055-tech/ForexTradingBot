@@ -2,6 +2,7 @@
 
 using Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
+using System.Security.Cryptography;
 using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
@@ -21,21 +22,22 @@ namespace TelegramPanel.Application.CommandHandlers.Features
     /// </summary>
     public class EducationalContentHandler : ITelegramCallbackQueryHandler
     {
+        #region Configuration
         private readonly ILogger<EducationalContentHandler> _logger;
         private readonly ITelegramMessageSender _messageSender;
         private readonly ITelegramBotClient _botClient;
-        private readonly IMemoryCacheService<CachedMenuDto> _cache; // <-- FIX: Use the new DTO
-
-        #region Configuration
+        private readonly IMemoryCacheService<CachedMenuDto> _menuCache;
+        private readonly IMemoryCacheService<string> _filePathCache;
         private const string BaseLearningPath = @"C:\ForexBotContent";
         private const int PageSize = 8;
-        private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan MenuCacheDuration = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan FilePathCacheDuration = TimeSpan.FromHours(2);
         private static readonly string[] SupportedExtensions = { ".mp3", ".wav", ".mp4", ".mov", ".mkv" };
 
-        private const string EduPrefix = "edu_";
-        private const string NavPrefix = EduPrefix + "nav_";
-        private const string PagePrefix = EduPrefix + "page_";
-
+        private const string HandlerPrefix = "edu_"; // Single definition for the handler's prefix
+        private const string NavPrefix = HandlerPrefix + "nav_";
+        private const string PagePrefix = HandlerPrefix + "page_";
+        private const string SendFilePrefix = HandlerPrefix + "send_";
         private static readonly Dictionary<string, string> FolderEmojiMap = new()
 {
     // --- Custom Category Emojis ---
@@ -104,19 +106,26 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         #endregion
 
         public EducationalContentHandler(
-            ILogger<EducationalContentHandler> logger,
-            ITelegramMessageSender messageSender,
-            ITelegramBotClient botClient,
-            IMemoryCacheService<CachedMenuDto> cache) // <-- FIX: Use the new DTO
+      ILogger<EducationalContentHandler> logger,
+      ITelegramMessageSender messageSender,
+      ITelegramBotClient botClient,
+      IMemoryCacheService<CachedMenuDto> menuCache,
+      IMemoryCacheService<string> filePathCache)
         {
             _logger = logger;
             _messageSender = messageSender;
             _botClient = botClient;
-            _cache = cache;
+            _menuCache = menuCache; // Use this name consistently
+            _filePathCache = filePathCache;
 
             InitializeContentDirectories();
         }
 
+
+        /// <summary>
+        /// A robust, one-time startup procedure to ensure the entire required
+        /// directory structure exists, preventing runtime errors. This is idempotent.
+        /// </summary>
         private void InitializeContentDirectories()
         {
             _logger.LogInformation("Verifying educational content directory structure at '{BasePath}'...", BaseLearningPath);
@@ -129,6 +138,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 {
                     foreach (var langCode in languagesToSupport)
                     {
+                        // Directory.CreateDirectory is smart: it does nothing if the path already exists.
                         Directory.CreateDirectory(Path.Combine(BaseLearningPath, category, langCode));
                     }
                 }
@@ -136,12 +146,23 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             }
             catch (Exception ex)
             {
-                _logger.LogCritical(ex, "FATAL: Could not create educational content directories. Check permissions for '{Path}'.", BaseLearningPath);
+                _logger.LogCritical(ex, "FATAL: Could not create educational content directories. Check file system permissions for the application's user account at '{Path}'.", BaseLearningPath);
             }
         }
 
-        public bool CanHandle(Update update) => update.Type == UpdateType.CallbackQuery && update.CallbackQuery?.Data?.StartsWith(EduPrefix) == true;
+        //================================================================================
+        // SECTION 4: CORE HANDLER LOGIC (CanHandle & HandleAsync)
+        //================================================================================
+        #region Core Handler Logic
 
+
+        public bool CanHandle(Update update) =>
+            update.Type == UpdateType.CallbackQuery && update.CallbackQuery?.Data?.StartsWith(HandlerPrefix) == true;
+
+        /// <summary>
+        /// The main entry point for all callbacks. It acts as a secure, high-level router,
+        /// decoding the callback data and dispatching to the appropriate internal processor.
+        /// </summary>
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
             var callbackQuery = update.CallbackQuery!;
@@ -153,21 +174,46 @@ namespace TelegramPanel.Application.CommandHandlers.Features
 
             using var logScope = _logger.BeginScope("EduHandler: User={UserId}, CbData={Data}", callbackQuery.From.Id, data);
 
-            string relativePath;
+            // --- FIX: Corrected routing logic to prevent fall-through ---
+            if (data.StartsWith(SendFilePrefix))
+            {
+                await ProcessFileRequestAsync(chatId, data, cancellationToken);
+            }
+            else // It must be a navigation or pagination request
+            {
+                await ProcessNavigationRequestAsync(chatId, messageId, data, cancellationToken);
+            }
+        }
+
+        #endregion
+
+        //================================================================================
+        // SECTION 5: INTERNAL PROCESSING LOGIC (The "How")
+        //================================================================================
+        #region Internal Processing Methods
+
+        /// <summary>
+        /// Processes navigation-related requests (showing folders, pages).
+        /// </summary>
+        private async Task ProcessNavigationRequestAsync(long chatId, int messageId, string callbackData, CancellationToken ct)
+        {
+            string encodedPath;
             int page = 1;
 
-            if (data.StartsWith(PagePrefix))
+            if (callbackData.StartsWith(PagePrefix))
             {
-                // e.g., edu_page_podcasts/en_page_2
-                var parts = data.Substring(PagePrefix.Length).Split(new[] { "_page_" }, StringSplitOptions.None);
-                relativePath = parts[0];
+                var parts = callbackData.Substring(PagePrefix.Length).Split(new[] { "_page_" }, StringSplitOptions.None);
+                encodedPath = parts[0];
                 page = int.Parse(parts[1]);
             }
             else
             {
-                relativePath = data.Substring(NavPrefix.Length);
+                encodedPath = callbackData.Substring(NavPrefix.Length);
             }
 
+            string relativePath = DecodeUrlSafeBase64(encodedPath);
+
+            // --- SECURITY: Path Traversal Check ---
             if (relativePath.Contains("..") || Path.IsPathRooted(relativePath))
             {
                 _logger.LogWarning("Directory traversal attempt blocked: '{Path}'", relativePath);
@@ -175,155 +221,126 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             }
 
             var absolutePath = Path.GetFullPath(Path.Combine(BaseLearningPath, relativePath));
+            if (!absolutePath.StartsWith(BaseLearningPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("Path validation failed. Attempt to access outside base directory: '{Path}'", absolutePath);
+                return;
+            }
 
-            if (File.Exists(absolutePath))
-                await SendFileAsync(chatId, absolutePath, cancellationToken);
-            else if (Directory.Exists(absolutePath))
-                await ShowFolderContentsAsync(chatId, messageId, relativePath, page, cancellationToken);
+            if (Directory.Exists(absolutePath))
+            {
+                await ShowFolderContentsAsync(chatId, messageId, relativePath, page, ct);
+            }
             else
-                _logger.LogWarning("User requested a path that does not exist: {Path}", absolutePath);
+            {
+                _logger.LogWarning("User navigated to a directory that does not exist: {Path}", absolutePath);
+                await _messageSender.SendTextMessageAsync(chatId, "Sorry, that category no longer exists.", cancellationToken: ct);
+            }
         }
 
+        /// <summary>
+        /// Processes a request to send a specific file identified by its hash.
+        /// </summary>
+        private async Task ProcessFileRequestAsync(long chatId, string callbackData, CancellationToken ct)
+        {
+            var fileHash = callbackData.Substring(SendFilePrefix.Length);
+
+            if (!_filePathCache.TryGetValue(fileHash, out var absolutePath) || string.IsNullOrEmpty(absolutePath))
+            {
+                _logger.LogWarning("File hash '{Hash}' not found in cache. It may have expired.", fileHash);
+                await _messageSender.SendTextMessageAsync(chatId, "This link has expired. Please navigate the menu again.", cancellationToken: ct);
+                return;
+            }
+
+            if (!File.Exists(absolutePath))
+            {
+                _logger.LogError("File path '{Path}' from cache hash '{Hash}' does not exist on disk.", absolutePath, fileHash);
+                await _messageSender.SendTextMessageAsync(chatId, "Sorry, an error occurred and this file could not be found.", cancellationToken: ct);
+                return;
+            }
+
+            await SendFileAsync(chatId, absolutePath, ct);
+        }
+
+        #endregion
+
+        //================================================================================
+        // SECTION 6: UI GENERATION & FILE SENDING (The "What")
+        //================================================================================
+        #region UI Generation & File Sending
+        /// <summary>
+        /// Retrieves a menu from the cache or generates it if not present.
+        /// </summary>
         private async Task ShowFolderContentsAsync(long chatId, int messageId, string relativePath, int page, CancellationToken ct)
         {
-            var cacheKey = $"edu_menu_{relativePath}_p{page}";
-            if (!_cache.TryGetValue(cacheKey, out var cachedMenu))
+            var encodedPath = EncodeUrlSafeBase64(relativePath);
+            var cacheKey = $"edu_menu_{encodedPath}_p{page}";
+
+            if (!_menuCache.TryGetValue(cacheKey, out var cachedMenu))
             {
                 _logger.LogInformation("CACHE MISS: Generating menu for path '{Path}', page {Page}.", relativePath, page);
-                cachedMenu = GenerateFolderMenu(relativePath, page);
-                _cache.Set(cacheKey, cachedMenu, CacheDuration);
+                cachedMenu = GenerateFolderMenuDto(relativePath, page);
+                _menuCache.Set(cacheKey, cachedMenu, MenuCacheDuration);
             }
             else
             {
                 _logger.LogInformation("CACHE HIT: Serving menu for path '{Path}', page {Page}.", relativePath, page);
             }
 
-            // --- FIX: Correct argument order ---
             await _messageSender.EditMessageTextAsync(chatId, messageId, cachedMenu.Text, ParseMode.Markdown, cachedMenu.Keyboard, ct);
         }
 
-        // --- START OF FULLY UPGRADED METHOD: GenerateFolderMenu ---
 
-        private CachedMenuDto GenerateFolderMenu(string relativePath, int page)
+        /// <summary>
+        /// The core logic for building the menu DTO. This is a pure function with no I/O,
+        /// making it fast and testable.
+        /// </summary>
+        private CachedMenuDto GenerateFolderMenuDto(string relativePath, int page)
         {
             var absolutePath = Path.Combine(BaseLearningPath, relativePath);
+            var title = BuildBreadcrumbTitle(relativePath);
 
-            // 1. Generate a Smart, Context-Aware Title (Breadcrumb)
-            string title;
-            if (string.IsNullOrEmpty(relativePath))
-            {
-                title = "📚 Learning Center";
-            }
-            else
-            {
-                var pathParts = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                    .Select(part => $"{GetEmojiForName(part)} {GetFormattedName(part)}");
-                title = string.Join(" > ", pathParts);
-            }
-
-            // 2. Generate the List of All Possible Menu Items (Buttons)
             var allItems = new List<InlineKeyboardButton>();
-
             try
             {
-                // --- UPGRADE: Get sub-directories ONLY if they are not empty ---
-                var directories = Directory.GetDirectories(absolutePath)
-                    .Where(dir => Directory.EnumerateFileSystemEntries(dir).Any()) // This is the filter
-                    .OrderBy(d => d);
-
-                foreach (var dir in directories)
-                {
-                    var dirName = Path.GetFileName(dir);
-                    var newRelativePath = Path.Combine(relativePath, dirName).Replace('\\', '/');
-
-                    string buttonText;
-                    if (PrioritizedLanguages.Any(l => l.Code == dirName))
-                    {
-                        // Use the full, pretty language name
-                        buttonText = PrioritizedLanguages.First(l => l.Code == dirName).Name;
-                    }
-                    else
-                    {
-                        // Use the formatted category name
-                        buttonText = $"{GetEmojiForName(dirName)} {GetFormattedName(dirName)}";
-                    }
-
-                    allItems.Add(InlineKeyboardButton.WithCallbackData(buttonText, NavPrefix + newRelativePath));
-                }
+                // Get non-empty sub-directories
+                allItems.AddRange(Directory.GetDirectories(absolutePath)
+                    .Where(dir => Directory.EnumerateFileSystemEntries(dir).Any())
+                    .OrderBy(d => d)
+                    .Select(dir => BuildDirectoryButton(relativePath, Path.GetFileName(dir))));
 
                 // Get supported files
-                var files = Directory.GetFiles(absolutePath)
+                allItems.AddRange(Directory.GetFiles(absolutePath)
                     .Where(f => SupportedExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                    .OrderBy(f => f);
-
-                foreach (var file in files)
-                {
-                    var fileName = Path.GetFileName(file);
-                    var newRelativePath = Path.Combine(relativePath, fileName).Replace('\\', '/');
-                    allItems.Add(InlineKeyboardButton.WithCallbackData($"▶️ {GetFormattedName(fileName)}", NavPrefix + newRelativePath));
-                }
+                    .OrderBy(f => f)
+                    .Select(file => BuildFileButton(absolutePath, Path.GetFileName(file))));
             }
             catch (Exception ex)
             {
-                // Log the error if we can't access the directory for any reason (e.g., permissions)
                 _logger.LogError(ex, "Failed to generate menu items for path: {Path}", absolutePath);
-                // The rest of the logic will gracefully handle the empty `allItems` list.
             }
 
-            // --- 3. Apply Pagination to the Filtered List ---
+            // Pagination
             var totalItems = allItems.Count;
             var totalPages = (int)Math.Ceiling(totalItems / (double)PageSize);
             page = Math.Clamp(page, 1, totalPages);
             var itemsForPage = allItems.Skip((page - 1) * PageSize).Take(PageSize).ToList();
 
-            // --- 4. Build the Final Text and Keyboard ---
-            var finalTitle = totalPages > 1
-                ? $"{title} (Page {page}/{totalPages})"
-                : title;
+            // Build Text
+            var finalTitle = totalPages > 1 ? $"{title} (Page {page}/{totalPages})" : title;
+            var text = $"{TelegramMessageFormatter.Bold(finalTitle)}\n\n{TelegramMessageFormatter.Italic("Please choose an option below:")}";
+            if (totalItems == 0) text += "\n\n_This section is currently empty._";
 
-            var textBuilder = new StringBuilder();
-            textBuilder.AppendLine(TelegramMessageFormatter.Bold(finalTitle));
-            textBuilder.AppendLine();
-            textBuilder.AppendLine(TelegramMessageFormatter.Italic("Please choose an option below:"));
-
-            if (totalItems == 0)
-            {
-                textBuilder.AppendLine();
-                textBuilder.AppendLine("_This section is currently empty._");
-            }
-
-            // --- 5. Assemble the Final Keyboard with Navigation ---
-            var keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
-
-            var navButtons = new List<InlineKeyboardButton>();
-            if (page > 1) navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{relativePath}_page_{page - 1}"));
-            if (page < totalPages) navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{relativePath}_page_{page + 1}"));
-            if (navButtons.Any()) keyboardRows.Add(navButtons);
-
-            var parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
-            if (parentRelativePath != null)
-            {
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + parentRelativePath) });
-            }
-
-            // Use a different "Back" button depending on where the user is.
-            if (!string.IsNullOrEmpty(relativePath))
-            {
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Learning Center", NavPrefix) });
-            }
-            else
-            {
-                // If they are at the root of the learning center, the button should go to the absolute main menu.
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu") });
-            }
-
-            return new CachedMenuDto(textBuilder.ToString(), new InlineKeyboardMarkup(keyboardRows));
+            // Build Keyboard
+            var keyboardRows = BuildPaginatedKeyboard(itemsForPage, relativePath, page, totalPages);
+            return new CachedMenuDto(text, new InlineKeyboardMarkup(keyboardRows));
         }
 
         private async Task SendFileAsync(long chatId, string absolutePath, CancellationToken ct)
         {
-            // ... (existing code to get path and check if file exists is correct) ...
+            _logger.LogInformation("User requested file: {FilePath}", absolutePath);
 
+            // --- FIX: Correct method name is SendChatActionAsync ---
             await _botClient.SendChatAction(chatId, ChatAction.UploadDocument);
 
             var fileName = Path.GetFileName(absolutePath);
@@ -332,31 +349,98 @@ namespace TelegramPanel.Application.CommandHandlers.Features
 
             try
             {
-                // --- UPGRADE: Create a caption with the signature ---
-                var cleanFileName = GetFormattedName(fileName); // e.g., "Trading Basics"
-                var signature = "@trade_ai_helper_bot";
-                var captionWithSignature = $"{cleanFileName}\n\nShared by {signature}";
-                // --------------------------------------------------
-
+                var caption = $"{GetFormattedName(fileName)}\n\nShared by @trade_ai_helper_bot";
                 var extension = Path.GetExtension(fileName).ToLowerInvariant();
 
+                // --- FIX: Correct method names are SendAudioAsync and SendVideoAsync ---
                 if (extension is ".mp3" or ".wav")
-                {
-                    // Use the new caption with the signature
-                    await _botClient.SendAudio(chatId, inputFile, caption: captionWithSignature, cancellationToken: ct);
-                }
+                    await _botClient.SendAudio(chatId, inputFile, caption: caption, cancellationToken: ct);
                 else if (extension is ".mp4" or ".mov" or ".mkv")
-                {
-                    // Use the new caption with the signature
-                    await _botClient.SendVideo(chatId, inputFile, caption: captionWithSignature, cancellationToken: ct);
-                }
+                    await _botClient.SendVideo(chatId, inputFile, caption: caption, cancellationToken: ct);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send file {FileName} to chat {ChatId}", fileName, chatId);
             }
         }
+
+        #endregion
+
+        //================================================================================
+        // SECTION 7: PRIVATE STATIC HELPERS (Pure Functions)
+        //================================================================================
+        #region Private Static Helpers
+
+        private InlineKeyboardButton BuildDirectoryButton(string relativePath, string dirName)
+        {
+            var newRelativePath = Path.Combine(relativePath, dirName).Replace('\\', '/');
+            var encodedNewPath = EncodeUrlSafeBase64(newRelativePath);
+
+            string buttonText = PrioritizedLanguages.FirstOrDefault(l => l.Code == dirName).Name ?? $"{GetEmojiForName(dirName)} {GetFormattedName(dirName)}";
+            return InlineKeyboardButton.WithCallbackData(buttonText, NavPrefix + encodedNewPath);
+        }
+        private InlineKeyboardButton BuildFileButton(string absoluteDirPath, string fileName)
+        {
+            var fullPath = Path.Combine(absoluteDirPath, fileName);
+            var fileHash = GenerateSha256Hash(fullPath);
+            _filePathCache.Set(fileHash, fullPath, FilePathCacheDuration);
+            return InlineKeyboardButton.WithCallbackData($"▶️ {GetFormattedName(fileName)}", SendFilePrefix + fileHash);
+        }
+
+        private List<List<InlineKeyboardButton>> BuildPaginatedKeyboard(List<InlineKeyboardButton> itemsForPage, string relativePath, int page, int totalPages)
+        {
+            var keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
+
+            var navButtons = new List<InlineKeyboardButton>();
+            var encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
+            if (page > 1) navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{encodedCurrentPath}_page_{page - 1}"));
+            if (page < totalPages) navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{encodedCurrentPath}_page_{page + 1}"));
+            if (navButtons.Any()) keyboardRows.Add(navButtons);
+
+            var parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
+            if (parentRelativePath != null)
+                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + EncodeUrlSafeBase64(parentRelativePath)) });
+            else
+                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu") });
+
+            return keyboardRows;
+        }
+
+        private string BuildBreadcrumbTitle(string relativePath)
+        {
+            if (string.IsNullOrEmpty(relativePath)) return "📚 Learning Center";
+
+            var pathParts = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Select(part => $"{GetEmojiForName(part)} {GetFormattedName(part)}");
+            return string.Join(" > ", pathParts);
+        }
+
+        private static string GenerateSha256Hash(string input) => Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(input))).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+        private static string EncodeUrlSafeBase64(string plainText) => Convert.ToBase64String(Encoding.UTF8.GetBytes(plainText)).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+
+        // In TelegramPanel/Application/CommandHandlers/Features/EducationalContentHandler.cs
+        // Inside the private static helpers section
+
+        private static string DecodeUrlSafeBase64(string base64Url)
+        {
+            // 1. Replace URL-safe characters back to standard Base64 characters.
+            base64Url = base64Url.Replace('-', '+').Replace('_', '/');
+
+            // 2. Add the necessary padding. The length of a valid Base64 string
+            //    (without padding) must be a multiple of 4.
+            switch (base64Url.Length % 4)
+            {
+                case 2: base64Url += "=="; break;
+                case 3: base64Url += "="; break;
+            }
+
+            // 3. Decode the now-valid Base64 string.
+            var decodedBytes = Convert.FromBase64String(base64Url);
+            return Encoding.UTF8.GetString(decodedBytes);
+        }
         private static string GetFormattedName(string name) => string.IsNullOrEmpty(name) ? "Back" : Path.GetFileNameWithoutExtension(name).Replace("_", " ").Replace("-", " ");
         private static string GetEmojiForName(string name) => FolderEmojiMap.TryGetValue(name.ToLowerInvariant(), out var emoji) ? emoji : "📁";
+
+        #endregion
     }
 }

@@ -23,6 +23,7 @@ using Telegram.Bot.Types.ReplyMarkups;
 using Telegram.Bot.Extensions;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types;
+using Hangfire;
 #endregion
 
 namespace TelegramPanel.Application.CommandHandlers.Entry
@@ -88,8 +89,8 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                     break;
             }
         }
-        
 
+        [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private async Task HandleStartCommand(TGBotTypes.User telegramUser, long chatId, CancellationToken cancellationToken)
         {
             using var scope = _scopeFactory.CreateScope();
@@ -251,6 +252,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
 
         // In StartCommandHandler.cs
 
+        [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private async Task HandleShowMainMenuCallback(TGBotTypes.CallbackQuery callbackQuery, TGBotTypes.User user, TGBotTypes.Message originalMessage, CancellationToken cancellationToken)
         {
             var chatId = originalMessage.Chat.Id;
@@ -314,6 +316,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                  cancellationToken: cancellationToken);
         }
 
+        [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private Task EditWelcomeMessageWithDetailsAsync(long chatId, int messageId, string username, bool isExistingUser, ITelegramMessageSender messageSender, CancellationToken cancellationToken)
         {
             var sanitizedUsername = _logSanitizer.Sanitize(username);
@@ -337,6 +340,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                 replyMarkup: (InlineKeyboardMarkup)GetMainMenuKeyboard(), // Cast to the correct type
                 cancellationToken: cancellationToken);
         }
+        [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private string GenerateWelcomeMessageBody(string welcomeHeader, bool isExistingUser) =>
            $"{welcomeHeader}\n\nYour trusted companion for trading signals and market analysis.\n\n📊 *Available Features:*\n• 📈 Real-time alerts & signals\n• 💎 Professional trading tools\n• 📰 In-depth news analysis\n" +
            (isExistingUser ? "• 💼 Portfolio tracking\n• 🔔 Customizable notifications\n\n" : "• 💼 Portfolio tracking\n\n") +
