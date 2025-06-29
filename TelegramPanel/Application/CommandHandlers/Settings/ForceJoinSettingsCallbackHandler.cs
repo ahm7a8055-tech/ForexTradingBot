@@ -1,47 +1,58 @@
-﻿// --- START OF UPGRADED FILE: ForceJoinSettingsCallbackHandler.cs ---
+﻿// --- START OF FULLY CORRECTED FILE: ForceJoinSettingsCallbackHandler.cs ---
+
 using Application.DTOs.Settings;
 using Application.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text;
+using Telegram.Bot; // <-- ADD THIS for ITelegramBotClient
+using Telegram.Bot.Exceptions; // <-- ADD THIS for ApiRequestException
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Application.Interfaces;
-using TelegramPanel.Application.States; // UPGRADED: For ITelegramStateMachine
+using TelegramPanel.Application.States;
 using TelegramPanel.Formatters;
 using TelegramPanel.Infrastructure;
 using TelegramPanel.Infrastructure.Helper;
-// using TelegramPanel.Models; // REMOVED: No longer needed
 using TelegramPanel.Settings;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
 
 namespace TelegramPanel.Application.CommandHandlers.Admin
 {
+    /// <summary>
+    /// Manages the UI for the Force Join settings in the admin panel.
+    /// </summary>
     public class ForceJoinSettingsCallbackHandler : ITelegramCallbackQueryHandler
     {
+        // --- 1. DECLARE THE FIELDS ---
         private readonly ILogger<ForceJoinSettingsCallbackHandler> _logger;
         private readonly ITelegramMessageSender _messageSender;
         private readonly IAdminService _adminService;
-        private readonly ITelegramStateMachine _stateMachine; // UPGRADED: From _stateManager
+        private readonly ITelegramStateMachine _stateMachine;
+        private readonly ITelegramBotClient _botClient; // <-- FIX: Field is now declared
         private readonly TelegramPanelSettings _settings;
 
+        // Constants
         private const string MenuCallback = "admin_forcejoin_menu";
         private const string ToggleCallback = "admin_forcejoin_toggle";
         private const string SetChannelCallback = "admin_forcejoin_set_channel";
         private const string SetMessageCallback = "admin_forcejoin_set_message";
 
+        // --- 2. UPDATE THE CONSTRUCTOR ---
         public ForceJoinSettingsCallbackHandler(
             ILogger<ForceJoinSettingsCallbackHandler> logger,
             ITelegramMessageSender messageSender,
             IAdminService adminService,
-            ITelegramStateMachine stateMachine, // UPGRADED
+            ITelegramStateMachine stateMachine,
+            ITelegramBotClient botClient, // <-- FIX: Inject the bot client
             IOptions<TelegramPanelSettings> settingsOptions)
         {
             _logger = logger;
             _messageSender = messageSender;
             _adminService = adminService;
-            _stateMachine = stateMachine; // UPGRADED
+            _stateMachine = stateMachine;
+            _botClient = botClient; // <-- FIX: Assign the injected client to the field
             _settings = settingsOptions.Value;
         }
 
@@ -63,18 +74,15 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             var chatId = callbackQuery.Message!.Chat.Id;
             var messageId = callbackQuery.Message.MessageId;
 
-            // --- UPGRADED: Use the new State Machine ---
             var handlerTask = action switch
             {
                 SetChannelCallback => _stateMachine.SetStateAsync(chatId, "WaitingForForceJoinChannel", update, cancellationToken),
                 SetMessageCallback => _stateMachine.SetStateAsync(chatId, "WaitingForForceJoinMessage", update, cancellationToken),
                 _ => HandleMenuActions(action, chatId, messageId, cancellationToken)
             };
-
             await handlerTask;
         }
 
-        // Helper method to keep HandleAsync clean
         private async Task HandleMenuActions(string action, long chatId, int messageId, CancellationToken cancellationToken)
         {
             if (action == ToggleCallback)
@@ -84,35 +92,47 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 await _adminService.UpdateForceJoinSettingsAsync(currentSettings, cancellationToken);
             }
 
-            // For toggle and menu refresh, show the updated menu
             await ShowForceJoinMenuAsync(chatId, messageId, cancellationToken);
         }
 
         private async Task ShowForceJoinMenuAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             var settings = await _adminService.GetForceJoinSettingsAsync(cancellationToken);
-
             var text = new StringBuilder();
+
             text.AppendLine(TelegramMessageFormatter.Bold("🛂 Force Join Settings"));
-            text.AppendLine(); // Add a blank line for spacing
+            text.AppendLine();
             text.AppendLine($"**Status:** {(settings.IsEnabled ? "✅ Enabled" : "❌ Disabled")}");
 
-            // --- UPGRADED: Display detailed channel info ---
             if (settings.ChannelId != 0)
             {
-                // Use Monospace for the ID and the link for clarity
-                text.AppendLine($"**Channel ID:** `{settings.ChannelId}`");
-                text.AppendLine($"**Channel Link:** `{settings.ChannelLink}`");
+                try
+                {
+                    // This code now works because _botClient exists
+                    var chatInfo = await _botClient.GetChat(settings.ChannelId, cancellationToken);
+                    var memberCount = await _botClient.GetChatMemberCount(settings.ChannelId, cancellationToken);
+
+                    text.AppendLine($"**Title:** {TelegramMessageFormatter.EscapeMarkdownV2(chatInfo.Title)}");
+                    text.AppendLine($"**ID:** `{chatInfo.Id}`");
+                    text.AppendLine($"**Link:** {TelegramMessageFormatter.EscapeMarkdownV2(settings.ChannelLink)}");
+                    text.AppendLine($"**Members:** {memberCount:N0}");
+                }
+                catch (ApiRequestException ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch details for configured Force Join channel {ChannelId}.", settings.ChannelId);
+                    text.AppendLine($"**Channel ID:** `{settings.ChannelId}`");
+                    text.AppendLine($"**Status:** ⚠️ **Error Fetching Details**");
+                    text.AppendLine($"**Reason:** _{TelegramMessageFormatter.EscapeMarkdownV2(ex.Message)}_");
+                }
             }
             else
             {
                 text.AppendLine("**Channel:** Not Set");
             }
 
-            text.AppendLine(); // Add another blank line before the message
+            text.AppendLine();
             text.AppendLine("**Message:**");
 
-            // Use Monospace block for the message to show it exactly as it will appear
             if (!string.IsNullOrWhiteSpace(settings.Message))
             {
                 text.AppendLine(TelegramMessageFormatter.Bold(settings.Message));
@@ -124,36 +144,41 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
             var keyboard = GetKeyboard(settings);
 
-            // Using MarkdownV2 for better formatting control
             await _messageSender.EditMessageTextAsync(
                 chatId: chatId,
                 messageId: messageId,
                 text: text.ToString(),
-                parseMode: ParseMode.Markdown, // Sticking with Markdown as per your original for simplicity
+                parseMode: ParseMode.MarkdownV2,
                 replyMarkup: keyboard,
                 cancellationToken: cancellationToken);
         }
-        // This is unchanged
+
         private InlineKeyboardMarkup GetKeyboard(ForceJoinSettingsDto settings)
         {
-            return MarkupBuilder.CreateInlineKeyboard(
-                new[]
-                {
-                    InlineKeyboardButton.WithCallbackData(
-                        settings.IsEnabled ? "❌ Disable" : "✅ Enable", ToggleCallback),
-                    InlineKeyboardButton.WithCallbackData(
-                        "✏️ Set Channel", SetChannelCallback)
-                },
-                new[]
-                {
-                     InlineKeyboardButton.WithCallbackData(
-                        "📝 Set Message", SetMessageCallback)
-                },
-                new[]
-                {
-                    InlineKeyboardButton.WithCallbackData("⬅️ Back to Bot Settings", "admin_bot_settings")
-                }
-            );
+            var toggleButton = settings.IsEnabled
+                ? InlineKeyboardButton.WithCallbackData("❌ Disable Feature", ToggleCallback)
+                : InlineKeyboardButton.WithCallbackData("✅ Enable Feature", ToggleCallback);
+
+            var setChannelButton = InlineKeyboardButton.WithCallbackData("✏️ Set Channel", SetChannelCallback);
+            var setMessageButton = InlineKeyboardButton.WithCallbackData("📝 Set Message", SetMessageCallback);
+
+            var backButton = InlineKeyboardButton.WithCallbackData("⬅️ Back to Settings", "admin_bot_settings");
+
+            // --- THIS IS THE FIX ---
+            // Instead of creating an array of arrays (new[] { new[] { ... } }),
+            // we create a List of Lists (new List<List<...>>).
+            // This solves the Hangfire deserialization issue.
+            return new InlineKeyboardMarkup(new List<List<InlineKeyboardButton>>
+    {
+        // Row 1
+        new List<InlineKeyboardButton> { toggleButton },
+        
+        // Row 2
+        new List<InlineKeyboardButton> { setChannelButton, setMessageButton },
+        
+        // Row 3
+        new List<InlineKeyboardButton> { backButton }
+    });
         }
-}
+    }
 }

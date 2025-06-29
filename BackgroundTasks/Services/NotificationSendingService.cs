@@ -52,6 +52,7 @@ namespace BackgroundTasks.Services
         private readonly IDistributedThrottler _globalApiThrottler;
         private const string TELEGRAM_API_THROTTLE_KEY = "telegram-api-global";
         private const int TELEGRAM_MESSAGES_PER_SECOND_LIMIT = 28;
+        private readonly ISettingsService _settingsService;
         #endregion
 
         #region Constructor
@@ -85,7 +86,7 @@ namespace BackgroundTasks.Services
         ///     <item><description><paramref name="rateLimiter"/></description></item>
         /// </list>
         /// </exception>
-        public NotificationSendingService(
+        public NotificationSendingService(ISettingsService settingsService,
             ILogger<NotificationSendingService> logger,
              ITelegramBotClient botClient,
             ITelegramMessageSender telegramMessageSender,
@@ -94,6 +95,7 @@ namespace BackgroundTasks.Services
             IConnectionMultiplexer redisConnection, IDistributedThrottler globalApiThrottler,
             INotificationRateLimiter rateLimiter)
         {
+            _settingsService = settingsService;
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _telegramMessageSender = telegramMessageSender ?? throw new ArgumentNullException(nameof(telegramMessageSender));
@@ -380,10 +382,10 @@ namespace BackgroundTasks.Services
         [AutomaticRetry(OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         [JobDisplayName("WORKER: Send News {0} to User at Index {2}")]
         public async Task ProcessNotificationFromCacheAsync(
-                       Guid newsItemId,
-                       string userListCacheKey,
-                       int userIndex,
-                       IJobCancellationToken jobCancellationToken)
+               Guid newsItemId,
+               string userListCacheKey,
+               int userIndex,
+               IJobCancellationToken jobCancellationToken)
         {
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
@@ -400,49 +402,59 @@ namespace BackgroundTasks.Services
                     return;
                 }
 
-                // =========================================================================
-                // == THE DEFINITIVE FIX: Implement the "Check, then Act & Update" flow.  ==
-                // =========================================================================
+                // --- NEW: AUTHORIZATION (FORCE JOIN CHECK) ---
+                var forceJoinSettings = await _settingsService.GetForceJoinSettingsAsync(cancellationToken);
+                if (forceJoinSettings is { IsEnabled: true } && forceJoinSettings.ChannelId != 0)
+                {
+                    try
+                    {
+                        var chatMember = await _botClient.GetChatMember(forceJoinSettings.ChannelId, targetUserId, cancellationToken);
+                        if (chatMember.Status is ChatMemberStatus.Left or ChatMemberStatus.Kicked)
+                        {
+                            _logger.LogInformation("SKIP: User {TargetUserId} is not a member of the required channel {ChannelId}. Halting notification.", targetUserId, forceJoinSettings.ChannelId);
+                            // We don't mark as unreachable here, as they might rejoin. We just skip this notification.
+                            return; // Gracefully exit the job.
+                        }
+                    }
+                    catch (ApiRequestException apiEx) when (apiEx.Message.Contains("user not found"))
+                    {
+                        _logger.LogInformation("SKIP: User {TargetUserId} is not a member of the required channel {ChannelId} (user not found in chat). Halting notification.", targetUserId, forceJoinSettings.ChannelId);
+                        return; // Gracefully exit.
+                    }
+                    // Note: We let other ApiRequestExceptions (e.g., bot not admin in channel) fall through
+                    // so the job fails and the admin is alerted to a configuration problem.
+                }
 
-                // STEP 1: CHECK (Read-Only)
-                // This method ONLY checks the current count without incrementing it.
+                // 2. RATE LIMITING (CHECK, THEN ACT)
                 if (await _rateLimiter.IsUserAtOrOverLimitAsync(targetUserId, 5, TimeSpan.FromMinutes(15)))
                 {
                     _logger.LogInformation(
-                        "SKIP: User {TargetUserId} is already at or over their rate limit (5 notifications per 15 minutes).",
+                        "SKIP: User {TargetUserId} is at or over their rate limit.",
                         targetUserId);
-                    return; // Exit gracefully. No state was changed.
+                    return;
                 }
 
                 _logger.LogInformation("Rate limit check PASSED for User {TargetUserId}. Proceeding to send.", targetUserId);
 
-                // STEP 2: ACT (Send the message)
+                // 3. ACT (SEND THE MESSAGE)
                 NewsItem? newsItem = await _newsItemRepository.GetByIdAsync(newsItemId, cancellationToken);
                 if (newsItem == null)
                 {
-                    // This is a critical failure, but we haven't changed the rate limit, so no rollback is needed.
                     throw new InvalidOperationException($"NewsItem {newsItemId} not found.");
                 }
 
                 NotificationJobPayload payload = BuildNotificationPayload(newsItem, targetUserId);
                 await SendNotificationViaSenderAsync(payload, cancellationToken);
-                _logger.LogInformation("✅ Successfully SENT notification to User {UserId}.", targetUserId);
 
-
-                // STEP 3: UPDATE (Write to Redis)
-                // This is called ONLY AFTER the send operation has succeeded without throwing an exception.
+                // 4. UPDATE (Rate Limit Counter)
                 await _rateLimiter.IncrementUsageAsync(targetUserId, TimeSpan.FromMinutes(15));
-                _logger.LogInformation("✅ Successfully INCREMENTED rate limit for User {UserId}.", targetUserId);
+
+                _logger.LogInformation("✅ Successfully SENT notification and INCREMENTED rate limit for User {UserId}.", targetUserId);
 
             }
             catch (Exception ex)
             {
-                // This single catch block now handles any failure during the process (e.g., SendNotificationViaSenderAsync failed).
-                // Because we only increment the counter *after* a successful send, there is NO NEED TO ROLL BACK the rate limit.
-                // The user's counter remains unchanged, and they can receive another notification later.
                 _logger.LogCritical(ex, "A critical exception occurred for User {TargetUserId} (Index {UserIndex}). The job will be retried by Hangfire.", targetUserId, userIndex);
-
-                // Re-throw to let Hangfire mark the job as failed and handle retries.
                 throw;
             }
         }

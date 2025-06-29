@@ -1,26 +1,18 @@
 ﻿#region Usings
 // --- Aliases for Type Safety ---
-using DomainUser = Domain.Entities.User;
-using TGBotTypes = Telegram.Bot.Types;
-
 // --- Project and System ---
 using Application.Common.Interfaces;
-using Application.DTOs;
 using Application.DTOs.Settings; // --- ADDED: For ForceJoinSettingsDto ---
 using Application.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Shared.Extensions;
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using Telegram.Bot; // --- ADDED: For ITelegramBotClient ---
 using Telegram.Bot.Exceptions; // --- ADDED: For API exception handling ---
 using Telegram.Bot.Types.Enums; // --- ADDED: For ChatMemberStatus ---
-using TelegramPanel.Application.Interfaces;
-using TelegramPanel.Infrastructure;
-using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
 using Telegram.Bot.Types.ReplyMarkups;
+using TelegramPanel.Application.Interfaces;
+using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
+using TGBotTypes = Telegram.Bot.Types;
 #endregion
 
 namespace TelegramPanel.Application.Pipeline

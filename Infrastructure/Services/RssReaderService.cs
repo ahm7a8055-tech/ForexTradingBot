@@ -1241,7 +1241,7 @@ namespace Infrastructure.Services
         INSERT INTO public.""NewsItems"" (""Id"", ""Title"", ""Link"", ""Summary"", ""FullContent"", ""ImageUrl"", ""PublishedDate"", ""CreatedAt"", ""LastProcessedAt"", ""SourceName"", ""SourceItemId"", ""SentimentScore"", ""SentimentLabel"", ""DetectedLanguage"", ""AffectedAssets"", ""RssSourceId"", ""IsVipOnly"", ""AssociatedSignalCategoryId"") 
         VALUES (@Id, @Title, @Link, @Summary, @FullContent, @ImageUrl, @PublishedDate, @CreatedAt, @LastProcessedAt, @SourceName, @SourceItemId, @SentimentScore, @SentimentLabel, @DetectedLanguage, @AffectedAssets, @RssSourceId, @IsVipOnly, @AssociatedSignalCategoryId);";
                     // Dapper's ExecuteAsync on a list of objects will efficiently execute the command for each item.
-                    var rowsAffected = await connection.ExecuteAsync(sql, itemsToSave, transaction, commandTimeout: 30); // Added a command timeout
+                    var rowsAffected = await connection.ExecuteAsync(sql, itemsToSave, transaction, commandTimeout: 120); // Added a command timeout
 
                     await transaction.CommitAsync(ct);
 
