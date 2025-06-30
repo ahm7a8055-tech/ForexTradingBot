@@ -46,9 +46,6 @@ using Dapper;
 using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Renci.SshNet.Messages;
-using Microsoft.IdentityModel.Protocols;
-using WebAPI.Setup;
 
 #endregion
 
@@ -75,8 +72,8 @@ Log.Logger = new LoggerConfiguration()
 // Add a global handler for unhandled exceptions. This is our safety net.
 AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
 {
-Log.Fatal((Exception)eventArgs.ExceptionObject, "FATAL UNHANDLED EXCEPTION");
-Log.CloseAndFlush(); // Ensure the fatal log is sent before the app dies
+    Log.Fatal((Exception)eventArgs.ExceptionObject, "FATAL UNHANDLED EXCEPTION");
+    Log.CloseAndFlush(); // Ensure the fatal log is sent before the app dies
 };
 
 try
@@ -85,12 +82,10 @@ try
     Log.Information("--------------------------------------------------");
     Log.Information("Application Starting Up (Program.cs)...");
     Log.Information("--------------------------------------------------");
-    int minThreads = 50; // Lowered from 500 for better resource management
+    int minThreads = 500; // Adjust as needed based on monitoring
     _ = ThreadPool.SetMinThreads(minThreads, minThreads);
     Log.Information("ThreadPool minimum threads set to {MinThreads}.", minThreads);
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
-    ConfigurationValidator.Validate(builder.Configuration);
-
     _ = builder.WebHost.UseKestrel();
     builder.Services.AddSingleton<Infrastructure.Logging.TelegramAdminSink>();
     // This is more reliable than GetValue<bool> for environment variables.
@@ -173,33 +168,30 @@ try
 
     try
     {
-        // We will await the connection and then register the result.
-        // This requires a slight change in how the singleton is added.
-        // The most robust way is to register an IHostedService that performs the connection
-        // and then registers the established IConnectionMultiplexer into a Singleton.
+        // This registration is now guaranteed to work because redisConnectionString will always have a value.
+        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        {
+            // We re-read from the configuration to ensure we use the potentially updated value.
+            var finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
+            var options = ConfigurationOptions.Parse(finalConnectionString!);
+            options.AbortOnConnectFail = false;
+            options.ConnectTimeout = 5000;
+            options.SyncTimeout = 5000;
+            return ConnectionMultiplexer.Connect(options);
+        });
 
-        // Option 1: Register an IHostedService to manage the connection and registration (more robust)
-        // This approach separates the async operation from the DI configuration lambda.
-        builder.Services.AddHostedService<RedisConnectionInitializationService>(
-            provider => new RedisConnectionInitializationService(
-                provider.GetRequiredService<IConfiguration>(),
-                provider.GetRequiredService<ILogger<RedisConnectionInitializationService>>()
-            )
-        );
-
-        Log.Information("✅ Redis connection initialization service registered.");
+        Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
     }
     catch (Exception ex)
     {
-        Log.Error(ex, "Failed to register Redis connection initialization service. Using fallback in-memory Redis.");
+        Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
 
-        // Register the fallback in-memory Redis service directly if the initialization service fails to register.
+        // Register the fallback in-memory Redis service
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
-        Log.Information("Fallback in-memory Redis registered.");
     }
 
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
@@ -334,7 +326,7 @@ try
         string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
         string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
 
-        Log.Information("Database configuration check - ConnectionString: {HasConnectionString}, Provider: {Provider}", 
+        Log.Information("Database configuration check - ConnectionString: {HasConnectionString}, Provider: {Provider}",
             !string.IsNullOrEmpty(connectionString), dbProvider ?? "null");
 
         if (string.IsNullOrEmpty(connectionString))
@@ -382,7 +374,7 @@ try
                 Log.Information("User provided custom connection string. Provider detected: {Provider}", dbProvider);
             }
 
-            Log.Information("Setting configuration - ConnectionString: {ConnectionString}, Provider: {Provider}", 
+            Log.Information("Setting configuration - ConnectionString: {ConnectionString}, Provider: {Provider}",
                 connectionString?.Replace("Password=", "Password=***"), dbProvider);
 
             builder.Configuration.GetSection("ConnectionStrings")["DefaultConnection"] = connectionString;
@@ -412,11 +404,10 @@ try
                 "The application should have prompted for database connection details, but no valid connection string was set. " +
                 "Please ensure you provided a valid connection string when prompted.");
         }
-        
-        Log.Information("Database connection validated. Using provider: {Provider}, Connection: {ConnectionString}", 
-            builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider"), 
+
+        Log.Information("Database connection validated. Using provider: {Provider}, Connection: {ConnectionString}",
+            builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider"),
             finalConnectionString.Replace("Password=", "Password=***")); // Hide password in logs
-        // NOTE: Connection string options for stability and security are appended in appsettings.Production.json
     }
 
     _ = builder.Services.AddInfrastructureServices(builder.Configuration, isSmokeTest);
@@ -454,29 +445,29 @@ try
                 sessionPath = Path.Combine(AppContext.BaseDirectory, "telegram_user.session");
                 Log.Warning("TelegramUserApi:SessionPath not configured. Defaulting to {SessionPath}", sessionPath);
             }
-          
 
-                // 1. Configure the settings object
-                _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
 
-                // 2. Register the API client itself
-                _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
+            // 1. Configure the settings object
+            _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
 
-                // 3. Register the background service that initializes the client
-                _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
+            // 2. Register the API client itself
+            _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
 
-                // 4. Register all the other forwarding services from the other projects
-                _ = builder.Services.AddForwardingInfrastructure();
-                _ = builder.Services.AddForwardingServices();
-                _ = builder.Services.AddForwardingOrchestratorServices();
+            // 3. Register the background service that initializes the client
+            _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
 
-                Log.Information("All Auto-Forwarding services have been successfully registered.");
-            }
-            else
-            {
-                // If the secrets are missing, we skip ALL related services.
-                Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
-            }
+            // 4. Register all the other forwarding services from the other projects
+            _ = builder.Services.AddForwardingInfrastructure();
+            _ = builder.Services.AddForwardingServices();
+            _ = builder.Services.AddForwardingOrchestratorServices();
+
+            Log.Information("All Auto-Forwarding services have been successfully registered.");
+        }
+        else
+        {
+            // If the secrets are missing, we skip ALL related services.
+            Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
+        }
 
 
         // --- Universal Conditional Feature: CryptoPay (Example) ---
@@ -525,7 +516,7 @@ try
         try
         {
             Log.Information("Running on Windows (not in a container). Checking for local SQL Server services...");
-       //     ServiceManagerHelper.EnsureAllServicesRunningAndHealthy(); // Changed 
+            //     ServiceManagerHelper.EnsureAllServicesRunningAndHealthy(); // Changed 
             Log.Information("SQL Server service check complete.");
         }
         catch (Exception exSql)
@@ -597,7 +588,7 @@ try
                     dbProvider = "sqlserver";
                 else
                     dbProvider = "sqlite"; // Default fallback
-                
+
                 builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
                 Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
             }
@@ -651,12 +642,12 @@ try
         options.WorkerCount = 25; // <--- THE THROTTLE! Adjust this based on Telegram API limits.
         options.Queues = new[] { "notifications" }; // It ONLY processes this queue.
     });
- 
+
 
     builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Default";
-        options.WorkerCount = Math.Min(20, Environment.ProcessorCount * 2); // Lowered for safer DB usage
+        options.WorkerCount = Environment.ProcessorCount * 5; // Or your preferred default count
         options.Queues = new[] { "critical", "default" }; // Explicitly list the queues it WILL process
     });
 
@@ -691,24 +682,21 @@ try
             }
 
             Log.Information("Attempting to apply database migrations...");
-            await db.Database.MigrateAsync().ConfigureAwait(false);
-
+            db.Database.Migrate();
             Log.Information("Database migrations applied successfully.");
         }
-        // Line ~505
         catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
         {
+            // Fallback: try to create the database if migrations fail due to pending model changes
             Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
             try
             {
-                // Await the asynchronous version of the database creation.
-                // Use ConfigureAwait(false) as we are in a background task scope with no UI context.
-                await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
-                Log.Information("Database created successfully using EnsureCreatedAsync().");
+                db.Database.EnsureCreated();
+                Log.Information("Database created successfully using EnsureCreated().");
             }
             catch (Exception createEx)
             {
-                Log.Error(createEx, "Failed to create database using EnsureCreatedAsync(). Connection string may be invalid.");
+                Log.Error(createEx, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
                 throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
             }
         }
@@ -741,10 +729,10 @@ try
 
             Log.Information("Enqueuing Hangfire core cleanup job to run in the background...");
             // This job will run once, as soon as a Hangfire server is available.
-        //    _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeCompletedAndFailedJobs(connectionString));
+            //    _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeCompletedAndFailedJobs(connectionString));
 
             Log.Information("Enqueuing duplicate NewsItem cleanup job to run in the background...");
-           // _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeDuplicateNewsItems(connectionString));
+            // _ = backgroundJobClient.Enqueue<IHangfireCleaner>(cleaner => cleaner.PurgeDuplicateNewsItems(connectionString));
 
             Log.Information("✅ All startup maintenance jobs have been successfully enqueued. They will run asynchronously.");
         }
@@ -758,22 +746,21 @@ try
     _ = app.Lifetime.ApplicationStarted.Register(async () =>
     {
         Log.Information("Testing Redis connectivity after application startup...");
-        
+
         try
         {
             // Wait a bit for the EmbeddedRedisService to start Redis if needed
-            await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-
+            await Task.Delay(TimeSpan.FromSeconds(3));
 
             var redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
             var redisDb = redisConnection.GetDatabase();
-            
+
             // Test basic operations
             var testKey = $"test_connection_{Guid.NewGuid():N}";
             var testValue = DateTime.UtcNow.ToString();
 
-            await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-            var retrievedValue = await redisDb.StringGetAsync(testKey).ConfigureAwait(false);
+            await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10));
+            var retrievedValue = await redisDb.StringGetAsync(testKey);
 
             if (retrievedValue == testValue)
             {
@@ -787,7 +774,7 @@ try
         catch (Exception ex)
         {
             Log.Warning(ex, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
-            
+
             // In release mode, prompt user for options
             if (!app.Environment.IsDevelopment())
             {
@@ -851,17 +838,6 @@ try
 
     _ = app.UseRouting();
     _ = app.UseAuthorization();
-    
-    // Add Windows Service support to the middleware pipeline
-    if (OperatingSystem.IsWindows())
-    {
-        builder.Services.AddWindowsService(options =>
-        {
-            options.ServiceName = "ForexTradingBot"; // serviceName از قبل تعریف شده است
-        });
-        programLogger.LogInformation("Windows Service middleware enabled.");
-    }
-    
     _ = app.MapHangfireDashboard();
     programLogger.LogInformation("HTTP request pipeline configured.");
     #endregion
@@ -941,7 +917,7 @@ try
     //});
 
 
-  
+
 
 
     _ = app.MapControllers(); //  مسیردهی درخواست‌ها به Action های کنترلرها
@@ -1000,49 +976,6 @@ finally
     Log.Information("--------------------------------------------------");
 }
 
-public class RedisConnectionInitializationService : IHostedService
-{
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<RedisConnectionInitializationService> _logger;
-    private IConnectionMultiplexer? _redisMultiplexer;
-
-    public RedisConnectionInitializationService(
-        IConfiguration configuration,
-        ILogger<RedisConnectionInitializationService> logger)
-    {
-        _configuration = configuration;
-        _logger = logger;
-    }
-
-    public async Task StartAsync(CancellationToken cancellationToken)
-    {
-        var redisConnectionString = _configuration.GetConnectionString("Redis");
-        var options = ConfigurationOptions.Parse(redisConnectionString!);
-        options.AbortOnConnectFail = false; // Allow to connect to fallback if main fails
-        options.ConnectTimeout = 5000;
-        options.SyncTimeout = 5000;
-
-        try
-        {
-            _logger.LogInformation("Attempting to connect to Redis at {RedisEndpoint}...", redisConnectionString);
-            _redisMultiplexer = await ConnectionMultiplexer.ConnectAsync(options).ConfigureAwait(false);
-            _logger.LogInformation("✅ Successfully connected to Redis.");
-
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to connect to Redis. Falling back to in-memory Redis.");
-        }
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        // Dispose the multiplexer if it was successfully connected.
-        _redisMultiplexer?.Dispose();
-        return Task.CompletedTask;
-    }
-}
-
 public static class ConfigurationHelper
 {
     private static void PromptForTelegramApiSecrets(IConfiguration configuration)
@@ -1050,20 +983,8 @@ public static class ConfigurationHelper
         string? apiId = configuration["TelegramUserApi:ApiId"];
         string? apiHash = configuration["TelegramUserApi:ApiHash"];
 
-        if (string.IsNullOrEmpty(apiId) || apiId == "0" || string.IsNullOrEmpty(apiHash) || 
-            apiId?.Contains("#{") == true || apiId?.Contains("}#") == true ||
-            apiHash?.Contains("#{") == true || apiHash?.Contains("}#") == true)
+        if (string.IsNullOrEmpty(apiId) || apiId == "0" || string.IsNullOrEmpty(apiHash))
         {
-            // Check if we're running as a Windows service
-            if (!Environment.UserInteractive)
-            {
-                Log.Information("Auto-Forwarding feature DISABLED for Windows service (ApiId or ApiHash not properly configured).");
-                Log.Information("To enable Auto-Forwarding, ensure the following configuration is properly set:");
-                Log.Information("- TelegramUserApi:ApiId in appsettings.Production.json");
-                Log.Information("- TelegramUserApi:ApiHash in appsettings.Production.json");
-                return; // Exit gracefully for Windows service
-            }
-
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("\n--- Telegram User API Setup (Optional) ---");
             Console.WriteLine("Auto-Forwarding feature requires Telegram API credentials.");
@@ -1072,7 +993,7 @@ public static class ConfigurationHelper
             Console.ResetColor();
 
             // Only prompt if the section is potentially needed.
-            if (string.IsNullOrEmpty(apiId) || apiId == "0" || apiId?.Contains("#{") == true || apiId?.Contains("}#") == true)
+            if (string.IsNullOrEmpty(apiId) || apiId == "0")
             {
                 Console.Write("Enter your ApiId (or 'skip'): ");
                 var inputApiId = Console.ReadLine();
@@ -1084,7 +1005,7 @@ public static class ConfigurationHelper
                 configuration["TelegramUserApi:ApiId"] = inputApiId;
             }
 
-            if (string.IsNullOrEmpty(apiHash) || apiHash?.Contains("#{") == true || apiHash?.Contains("}#") == true)
+            if (string.IsNullOrEmpty(apiHash))
             {
                 Console.Write("Enter your ApiHash (or 'skip'): ");
                 var inputApiHash = Console.ReadLine();
@@ -1104,19 +1025,8 @@ public static class ConfigurationHelper
     {
         string? botToken = configuration["TelegramPanel:BotToken"];
 
-        if (string.IsNullOrWhiteSpace(botToken) || botToken.Contains("REPLACE") || botToken.Contains("#{") || botToken.Contains("}#"))
+        if (string.IsNullOrWhiteSpace(botToken) || botToken.Contains("REPLACE"))
         {
-            // Check if we're running as a Windows service
-            if (!Environment.UserInteractive)
-            {
-                var errorMsg = "Bot Token is missing or contains placeholder values. Cannot start as Windows service without proper configuration.";
-                Log.Fatal(errorMsg);
-                Log.Fatal("Please ensure the following configuration is properly set:");
-                Log.Fatal("- TelegramPanel:BotToken in appsettings.Production.json");
-                Log.Fatal("- Or set the configuration values before starting the service");
-                throw new InvalidOperationException(errorMsg);
-            }
-
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("\n--- Telegram Bot Setup ---");
             Console.WriteLine("The main Bot Token is required to run the application.");
@@ -1143,19 +1053,8 @@ public static class ConfigurationHelper
     {
         string? apiToken = configuration["CryptoPay:ApiToken"];
 
-        if (string.IsNullOrWhiteSpace(apiToken) || apiToken.Contains("REPLACE") || apiToken.Contains("#{") || apiToken.Contains("}#"))
+        if (string.IsNullOrWhiteSpace(apiToken) || apiToken.Contains("REPLACE"))
         {
-            // Check if we're running as a Windows service
-            if (!Environment.UserInteractive)
-            {
-                Log.Information("CryptoPay feature DISABLED for Windows service (ApiToken not properly configured).");
-                Log.Information("To enable CryptoPay, ensure the following configuration is properly set:");
-                Log.Information("- CryptoPay:ApiToken in appsettings.Production.json");
-                // Explicitly set to null to ensure the feature check fails
-                configuration["CryptoPay:ApiToken"] = null;
-                return; // Exit gracefully for Windows service
-            }
-
             Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine("\n--- CryptoPay Setup (Optional) ---");
             Console.WriteLine("Payment processing requires a CryptoPay API Token.");
