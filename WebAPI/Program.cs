@@ -603,15 +603,50 @@ try
             {
                 case "postgres":
                 case "postgresql":
-                    config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString), new Hangfire.PostgreSql.PostgreSqlStorageOptions
+                    // 1. Configure Hangfire to use PostgreSQL storage with tuned options:
+                    config.UsePostgreSqlStorage(
+                        options => options.UseNpgsqlConnection(connectionString),
+                        new Hangfire.PostgreSql.PostgreSqlStorageOptions
+                        {
+                            // Balance DB load vs. responsiveness
+                            QueuePollInterval = TimeSpan.FromSeconds(5),
+
+                            // Prevent a long-running job from being re-queued while it's still executing
+                            InvisibilityTimeout = TimeSpan.FromHours(1),
+
+
+
+                            // How long to wait for the lock before giving up
+                            DistributedLockTimeout = TimeSpan.FromSeconds(30),
+
+                            // How often to scan for expired jobs (cleanup)
+                            JobExpirationCheckInterval = TimeSpan.FromHours(1)
+                        }
+                    );
+
+                    // 2. Tune the BackgroundJobServer to the machine’s CPU count:
+                    var cpuCount = Environment.ProcessorCount;
+                    var serverOptions = new BackgroundJobServerOptions
                     {
-                        // A 5-second poll is a good balance between responsiveness and DB load.
-                        QueuePollInterval = TimeSpan.FromSeconds(5),
-                        // For long jobs, prevent Hangfire from re-queueing them while running.
-                                                                              // Set a reasonable timeout for obtaining the distributed lock.
-                        DistributedLockTimeout = TimeSpan.FromMinutes(1) // <-- INCORRECT PROPERTY
-                    });
-                    Log.Information("✅ Hangfire configured with optimized PostgreSQL storage options.");
+                        // Leave one core free for OS and other processes
+                        WorkerCount = Math.Max(cpuCount - 1, 1),
+
+                        // Check server health & heartbeat every 15 seconds
+                        ServerCheckInterval = TimeSpan.FromSeconds(15),
+
+                        // Define your queues in priority order
+                        Queues = new[] { "critical", "default", "low" },
+
+                        // Name each server instance for easier monitoring
+                        ServerName = $"hangfire-{Environment.MachineName}-{Guid.NewGuid():N}"
+                    };     
+                    Log.Information(
+                        "✅ Hangfire (PostgreSQL) configured: " +
+                        $"Poll={TimeSpan.FromSeconds(5)}, " +
+                        $"LockLifetime={TimeSpan.FromMinutes(10)}, " +
+                        $"LockTimeout={TimeSpan.FromSeconds(30)}, " +
+                        $"Workers={serverOptions.WorkerCount}"
+                    );
                     break;
 
                 case "sqlserver":
