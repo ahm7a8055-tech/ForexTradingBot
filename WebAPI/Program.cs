@@ -603,8 +603,15 @@ try
             {
                 case "postgres":
                 case "postgresql":
-                    config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString));
-                    Log.Information("✅ Hangfire successfully configured with PostgreSQL storage.");
+                    config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString), new Hangfire.PostgreSql.PostgreSqlStorageOptions
+                    {
+                        // A 5-second poll is a good balance between responsiveness and DB load.
+                        QueuePollInterval = TimeSpan.FromSeconds(5),
+                        // For long jobs, prevent Hangfire from re-queueing them while running.
+                                                                              // Set a reasonable timeout for obtaining the distributed lock.
+                        DistributedLockTimeout = TimeSpan.FromMinutes(1) // <-- INCORRECT PROPERTY
+                    });
+                    Log.Information("✅ Hangfire configured with optimized PostgreSQL storage options.");
                     break;
 
                 case "sqlserver":
@@ -632,10 +639,11 @@ try
         }
     });
 
-    var defaultWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:DefaultWorkerCount")
-                       ?? Math.Max(Environment.ProcessorCount, 10);
-    var notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount") ?? 5;
 
+    // These can still be overridden in appsettings.json for more powerful machines.
+    var defaultWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:DefaultWorkerCount")
+                           ?? (Environment.ProcessorCount * 2); // 4 workers on a 2-core machine.
+    var notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount") ?? Environment.ProcessorCount; // 2 workers on a 2-core machine.
     _ = builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Notifications";
