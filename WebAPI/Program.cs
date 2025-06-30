@@ -46,9 +46,6 @@ using Dapper;
 using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Diagnostics;
-using System.ServiceProcess;
-using WebAPI.Services;
 
 #endregion
 
@@ -208,80 +205,14 @@ try
     #endregion
 
     #region Add Core ASP.NET Core Services
-
-
-    try
+    _ = builder.Services.AddWindowsService(options =>
     {
-        #region Service Self-Management (Pre-Startup)
-        // این منطق قبل از هر چیز دیگری اجرا می‌شود
-        const string serviceName = "ForexTradingBotAPI";
-        if (args.Contains("--delete-service-only"))
-        {
-            Log.Information("Received '--delete-service-only' argument. Attempting to remove service and exit.");
-            await RemoveExistingService(serviceName);
-            return;
-        }
-        #endregion
+        options.ServiceName = "ForexTradingBotAPI";
+    });
 
-        Log.Information("Application Starting Up...");
-      
-
-        // =========================================================================
-        // ✅✅✅ FIX 1: Set Content Root Explicitly ✅✅✅
-        // این کار تضمین می‌کند که سرویس فایل‌های خود را از پوشه نصب می‌خواند
-        // =========================================================================
-        builder.Environment.ContentRootPath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule!.FileName);
-
-        // =========================================================================
-        // ✅✅✅ FIX 2: Configure for Windows Service ✅✅✅
-        // =========================================================================
-        builder.Services.AddWindowsService(options =>
-        {
-            options.ServiceName = serviceName;
-        });
-        builder.Services.AddLogging(configure => configure.AddEventLog()); // برای لاگ‌گیری در Event Viewer
-
-        // ... تمام پیکربندی‌های Serilog، DI و سرویس‌های شما در اینجا قرار می‌گیرد ...
-        // ... (AddControllers, AddSwaggerGen, AddHangfire, AddApplicationServices, etc.) ...
-
-        // =========================================================================
-        // ❌❌❌ REMOVED: All interactive prompts (Console.ReadLine) ❌❌❌
-        // سرویس باید تمام تنظیمات خود را از appsettings.json یا Environment Variables بخواند.
-        // منطق مربوط به پرسیدن Connection String حذف شد.
-        // =========================================================================
-        string? finalConnectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-        if (string.IsNullOrWhiteSpace(finalConnectionString))
-        {
-            throw new InvalidOperationException("CRITICAL: Database connection string not found in appsettings.json. Application cannot start without it.");
-        }
-
-        // =========================================================================
-        // ✅✅✅ FIX 3: Move Database Migration to a Hosted Service ✅✅✅
-        // این سرویس بعد از استارت کامل برنامه، کار خود را در پس‌زمینه انجام می‌دهد.
-        // =========================================================================
-        builder.Services.AddHostedService<StartupDatabaseInitializer>();
-
-
-        // =========================================================================
-        // ❌❌❌ REMOVED: Synchronous db.Database.Migrate() call ❌❌❌
-        // این کار اکنون توسط StartupDatabaseInitializer انجام می‌شود.
-        // =========================================================================
-
-        // ... تمام پیکربندی‌های Pipeline شما در اینجا قرار می‌گیرد ...
-        // ... (UseSwagger, UseRouting, UseAuthorization, MapControllers, etc.) ...
-    }
-    catch (Exception ex)
-    {
-        Log.Fatal(ex, "Application host terminated unexpectedly.");
-    }
-    finally
-    {
-        Log.CloseAndFlush();
-    }
-
-        // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
-        // فعال کردن پشتیبانی از کنترلرهای API
-        _ = builder.Services.AddControllers();
+    // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
+    // فعال کردن پشتیبانی از کنترلرهای API
+    _ = builder.Services.AddControllers();
     // فعال کردن API Explorer برای تولید مستندات Swagger/OpenAPI
     _ = builder.Services.AddEndpointsApiExplorer();
 
@@ -738,6 +669,44 @@ try
     WebApplication app = builder.Build(); //  ساخت برنامه با تمام سرویس‌های پیکربندی شده
     Log.Information("Application host built. Performing mandatory startup tasks...");
 
+    // Automatically apply EF Core migrations at startup
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
+        try
+        {
+            // Validate connection string before attempting database operations
+            string? connectionString = app.Services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection");
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
+            }
+
+            Log.Information("Attempting to apply database migrations...");
+            await db.Database.MigrateAsync();
+            Log.Information("Database migrations applied successfully.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
+        {
+            // Fallback: try to create the database if migrations fail due to pending model changes
+            Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
+            try
+            {
+                db.Database.EnsureCreated();
+                Log.Information("Database created successfully using EnsureCreated().");
+            }
+            catch (Exception createEx)
+            {
+                Log.Error(createEx, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
+                throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to apply database migrations or create database. Connection string may be invalid.");
+            throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
+        }
+    }
 
     // The application will now start INSTANTLY.
     #region Queue Startup Maintenance Jobs to Hangfire
@@ -1008,33 +977,6 @@ finally
     Log.Information("--------------------------------------------------");
 }
 
-async Task RemoveExistingService(string serviceName)
-{
-    try
-    {
-        using var controller = new ServiceController(serviceName);
-        var status = controller.Status;
-        Log.Information($"Found existing service '{serviceName}' with status: {status}.");
-
-        Log.Information("--> Attempting to stop the service...");
-        await ProcessRunner.RunAsync("sc.exe", $"stop {serviceName}");
-        await Task.Delay(2000);
-
-        Log.Information("--> Sending delete command for the service...");
-        var deleteResult = await ProcessRunner.RunAsync("sc.exe", $"delete {serviceName}");
-
-        if (deleteResult.ExitCode != 0 && deleteResult.Output.Contains("1072"))
-        {
-            throw new InvalidOperationException($"CRITICAL: Service '{serviceName}' is stuck in a 'Marked for Deletion' state. The process must be killed manually.");
-        }
-        Log.Information("Service successfully removed.");
-    }
-    catch (InvalidOperationException ex) when (ex.Message.Contains("was not found"))
-    {
-        Log.Information($"Service '{serviceName}' does not exist. No removal needed.");
-    }
-}
-
 public static class ConfigurationHelper
 {
     private static void PromptForTelegramApiSecrets(IConfiguration configuration)
@@ -1206,5 +1148,4 @@ public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
     {
         writer.WriteStringValue(value.ToString("O")); // ISO 8601
     }
-  
 }
