@@ -82,7 +82,14 @@ try
     Log.Information("--------------------------------------------------");
     Log.Information("Application Starting Up (Program.cs)...");
     Log.Information("--------------------------------------------------");
-    Log.Information("ThreadPool minimum threads set to {MinThreads}.");
+    ThreadPool.GetMinThreads(out var minWorker, out var minIo);
+
+    // Then log with the placeholder and the argument:
+    Log.Information(
+        "ThreadPool minimum threads set to {MinWorkerThreads} worker threads and {MinIoThreads} I/O threads.",
+        minWorker,
+        minIo
+    );
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
     _ = builder.WebHost.UseKestrel();
     builder.Services.AddSingleton<Infrastructure.Logging.TelegramAdminSink>();
@@ -675,24 +682,27 @@ try
     });
 
 
-    // These can still be overridden in appsettings.json for more powerful machines.
+    // 3. خواندن تعداد Workerها از appsettings.json یا Fall‑Back به CPU count
     var defaultWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:DefaultWorkerCount")
-                           ?? (Environment.ProcessorCount * 2); // 4 workers on a 2-core machine.
-    var notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount") ?? Environment.ProcessorCount; // 2 workers on a 2-core machine.
-    _ = builder.Services.AddHangfireServer(options =>
+                           ?? (Environment.ProcessorCount * 2);
+    var notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount")
+                               ?? Environment.ProcessorCount;
+
+    // 4. ثبت دو سرور با صف‌ها و WorkerCount مخصوص:
+    builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Notifications";
         options.WorkerCount = notificationWorkerCount;
         options.Queues = new[] { "notifications" };
+        options.ServerCheckInterval = TimeSpan.FromSeconds(15);
     });
-
     builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Default";
         options.WorkerCount = defaultWorkerCount;
         options.Queues = new[] { "critical", "default" };
+        options.ServerCheckInterval = TimeSpan.FromSeconds(15);
     });
-
 
     Log.Information("Hangfire cleaner service added.");
 
