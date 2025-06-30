@@ -270,10 +270,6 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                 // Answer the callback to remove the "loading" state from the button.
                 await messageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
 
-                // --- START OF TARGETED FIX ---
-                // 1. Delete the previous message, whatever it was (photo or text).
-                await messageSender.DeleteMessageAsync(chatId, messageId, cancellationToken);
-
                 // 2. Prepare the content for the new main menu.
                 var effectiveUsername = GetEffectiveUsername(user);
                 var welcomeText = $"🎉 *Welcome back, {TelegramMessageFormatter.EscapeMarkdownV2(effectiveUsername)}!*";
