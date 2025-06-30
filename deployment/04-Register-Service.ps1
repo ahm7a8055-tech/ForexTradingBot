@@ -10,6 +10,7 @@ param(
 $ScriptLogFile = Join-Path $TempPath "04-Service-Log-$(Get-Date -f yyyyMMdd-HHmmss).txt"
 Start-Transcript -Path $ScriptLogFile -Append
 $ErrorActionPreference = 'Stop'
+$ProcessName = (Get-Item (Join-Path $DeployPath "WebAPI.exe")).BaseName # Get the base name of the executable
 
 Write-Host "--- SCRIPT 4: REGISTER & LAUNCH WINDOWS SERVICE ---" -ForegroundColor Cyan
 $ServiceName = "ForexTradingBotAPI"
@@ -33,10 +34,10 @@ if ($service) {
     sc.exe delete "$ServiceName"
     
     # --- START: Robust Wait Loop (THE FIX) ---
-    # This loop replaces the unreliable 'Start-Sleep'. It actively checks until
-    # the service is confirmed to be gone, with a 60-second timeout.
-    Write-Host "Waiting for service '$ServiceName' to be fully removed..."
-    $timeout = 60 # seconds
+    # This loop checks until the service is confirmed to be gone, with a 60-second timeout.
+    # It also checks for and terminates lingering processes if the service is marked for deletion.
+    Write-Host "Waiting for service '$ServiceName' to be fully removed or for process to terminate..."
+    $timeout = 120 # seconds (Increased timeout to allow for process termination)
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.Elapsed.TotalSeconds -lt $timeout) {
         $serviceCheck = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -44,6 +45,16 @@ if ($service) {
             Write-Host "`n✅ Service fully removed."
             break # Exit the loop, the service is gone
         }
+
+        # If service is still present and marked for deletion (PID 0 often indicates this state implicitly)
+        # Try to find and terminate the process
+        $lingeringProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -eq $ProcessName }
+        if ($lingeringProcesses) {
+ Write-Host "`nFound lingering process(es) for $($lingeringProcesses[0].ProcessName). Attempting to terminate..."
+            $lingeringProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Host "✅ Lingering process(es) terminated."
+        }
+
         Write-Host -NoNewline "."
         Start-Sleep -Seconds 2
     }
