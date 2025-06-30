@@ -82,7 +82,7 @@ try
     Log.Information("--------------------------------------------------");
     Log.Information("Application Starting Up (Program.cs)...");
     Log.Information("--------------------------------------------------");
-    int minThreads = 500; // Adjust as needed based on monitoring
+    int minThreads = 50; // Lowered from 500 for better resource management
     _ = ThreadPool.SetMinThreads(minThreads, minThreads);
     Log.Information("ThreadPool minimum threads set to {MinThreads}.", minThreads);
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -408,6 +408,7 @@ try
         Log.Information("Database connection validated. Using provider: {Provider}, Connection: {ConnectionString}", 
             builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider"), 
             finalConnectionString.Replace("Password=", "Password=***")); // Hide password in logs
+        // NOTE: Connection string options for stability and security are appended in appsettings.Production.json
     }
 
     _ = builder.Services.AddInfrastructureServices(builder.Configuration, isSmokeTest);
@@ -647,7 +648,7 @@ try
     builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Default";
-        options.WorkerCount = Environment.ProcessorCount * 5; // Or your preferred default count
+        options.WorkerCount = Math.Min(20, Environment.ProcessorCount * 2); // Lowered for safer DB usage
         options.Queues = new[] { "critical", "default" }; // Explicitly list the queues it WILL process
     });
 
