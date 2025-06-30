@@ -7,4 +7,4 @@ builder.Services.AddStrongWorker(options =>
 });
 builder.Services.AddLogging(configure => configure.AddConsole());
 IHost host = builder.Build();
-host.Run();
+await host.RunAsync();

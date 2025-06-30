@@ -207,31 +207,76 @@ try
     #endregion
 
     #region Add Core ASP.NET Core Services
-    builder.Services.AddWindowsService(options =>
-    {
-        options.ServiceName = "ForexTradingBotAPI";
-    });
-    bool ServiceExists(string serviceName)
-    {
-        return ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
-    }
-    // Optional: Remove old service during deployment using sc.exe
-    if (ServiceExists("ForexTradingBotAPI"))
-    {
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = "sc",
-            Arguments = "delete ForexTradingBotAPI",
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
-        Log.Information("Old service 'ForexTradingBotAPI' removal command issued.");
-    }
 
-    // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
-    // فعال کردن پشتیبانی از کنترلرهای API
-    _ = builder.Services.AddControllers();
+
+    try
+    {
+        // =========================================================================
+        // == SELF-MANAGEMENT LOGIC (Use with caution - better in a script)       ==
+        // =========================================================================
+        const string serviceName = "ForexTradingBotAPI";
+
+        // Performant check for service existence.
+        bool serviceExists = false;
+        try
+        {
+            using var controller = new ServiceController(serviceName);
+            _ = controller.Status; // Access a property to force an exception if not found
+            serviceExists = true;
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("was not found"))
+        {
+            // This is the expected outcome if the service does not exist.
+            serviceExists = false;
+        }
+
+        if (serviceExists)
+        {
+            Console.WriteLine($"Found existing service '{serviceName}'. Attempting to remove it synchronously...");
+
+            // 1. Stop the service and wait.
+            Console.WriteLine("--> Stopping the service...");
+            var stopResult = await ProcessRunner.RunAsync("sc.exe", $"stop {serviceName}");
+            // We don't care about the exit code too much here, as it might already be stopped.
+            // The error message for "not running" is "1062".
+            Console.WriteLine($"Stop command completed. Exit Code: {stopResult.ExitCode}. Output: {stopResult.Output.Trim()}");
+
+            // Give the service a moment to fully stop.
+            await Task.Delay(3000);
+
+            // 2. Delete the service and wait.
+            Console.WriteLine("--> Deleting the service...");
+            var deleteResult = await ProcessRunner.RunAsync("sc.exe", $"delete {serviceName}");
+
+            if (deleteResult.ExitCode == 0)
+            {
+                Console.WriteLine("Service deleted successfully. Waiting for it to disappear from SCM...");
+                // Wait until the service is actually gone.
+                for (int i = 0; i < 15; i++)
+                {
+                    using var checkController = new ServiceController(serviceName);
+                    try { _ = checkController.Status; await Task.Delay(2000); }
+                    catch (InvalidOperationException) { break; /* It's gone! */ }
+                }
+            }
+            else
+            {
+                // Handle the "marked for deletion" error specifically.
+                if (deleteResult.Output.Contains("1072") || deleteResult.Error.Contains("1072"))
+                {
+                    throw new InvalidOperationException($"Service '{serviceName}' is stuck in a 'Marked for Deletion' state. The WebAPI.exe process must be killed manually before retrying.");
+                }
+                throw new InvalidOperationException($"Failed to delete service '{serviceName}'. Exit Code: {deleteResult.ExitCode}. Output: {deleteResult.Output.Trim()}. Error: {deleteResult.Error.Trim()}");
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+Log.Fatal(ex, "Application host very much terminated unexpectedly.");
+    }
+        // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
+        // فعال کردن پشتیبانی از کنترلرهای API
+        _ = builder.Services.AddControllers();
     // فعال کردن API Explorer برای تولید مستندات Swagger/OpenAPI
     _ = builder.Services.AddEndpointsApiExplorer();
 
