@@ -46,6 +46,8 @@ using Dapper;
 using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Diagnostics;
+using TelegramPanel.Infrastructure.Extensions;
 
 #endregion
 
@@ -205,10 +207,62 @@ try
     #endregion
 
     #region Add Core ASP.NET Core Services
-    _ = builder.Services.AddWindowsService(options =>
+
+    try
     {
-        options.ServiceName = "ForexTradingBotAPI";
-    });
+        // =====================================================================
+        // == START: UPGRADES FOR WINDOWS SERVICE COMPATIBILITY               ==
+        // =====================================================================
+
+        // 1. Configure the Windows Service lifetime and name.
+        // This integrates the configuration you requested.
+        builder.Services.AddWindowsService(options =>
+        {
+            // This must match the name you use in the PowerShell script's New-Service command.
+            options.ServiceName = "ForexTradingBotAPI";
+        });
+
+        // 2. Configure logging to include the Windows Event Log.
+        // This is essential for diagnosing startup issues.
+        builder.Logging.ClearProviders(); // Optional: Start with a clean slate of loggers.
+        builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
+        builder.Logging.AddConsole();
+        builder.Logging.AddDebug();
+
+        if (OperatingSystem.IsWindows())
+        {
+            builder.Logging.AddEventLog(settings =>
+            {
+                // For best results, this SourceName should match the service's Display Name.  
+                settings.SourceName = "Forex Trading Bot API Service";
+            });
+        }
+
+
+        // 3. Set the correct content root (Working Directory).
+        // This is CRITICAL for preventing Error 1053. It ensures the service
+        // can find appsettings.json instead of looking in C:\Windows\System32.
+        // While the new builder is smarter, being explicit is safest for services.
+        builder.Environment.ContentRootPath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule!.FileName);
+
+        // =====================================================================
+        // == END: UPGRADES FOR WINDOWS SERVICE COMPATIBILITY                 ==
+        // =====================================================================
+
+        // Add your application's specific services.
+        builder.Services.AddMarketDataServices(builder.Configuration);
+
+        // Build and run the host.
+        var host = builder.Build();
+        host.Run();
+    }
+    catch (Exception ex)
+    {
+        // A fallback logger in case the host itself fails to build.
+        // This will write a file next to your .exe if a catastrophic error occurs.
+        string crashLogPath = Path.Combine(AppContext.BaseDirectory, "fatal_startup_error.log");
+        File.WriteAllText(crashLogPath, $"{DateTime.UtcNow:O}\r\n{ex}");
+    }
 
     // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
     // فعال کردن پشتیبانی از کنترلرهای API
