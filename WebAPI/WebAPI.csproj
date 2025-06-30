@@ -11,13 +11,6 @@
     <!-- <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile> -->
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Remove="NewFolder\**" />
-    <Content Remove="NewFolder\**" />
-    <EmbeddedResource Remove="NewFolder\**" />
-    <None Remove="NewFolder\**" />
-  </ItemGroup>
-
   <!-- ==================================================================== -->
   <!-- ✅ CORRECTED SECTION FOR APPSETTINGS FILES -->
   <!-- ==================================================================== -->

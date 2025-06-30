@@ -47,6 +47,8 @@ using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Renci.SshNet.Messages;
+using Microsoft.IdentityModel.Protocols;
+using WebAPI.Setup;
 
 #endregion
 
@@ -87,6 +89,8 @@ try
     _ = ThreadPool.SetMinThreads(minThreads, minThreads);
     Log.Information("ThreadPool minimum threads set to {MinThreads}.", minThreads);
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+    ConfigurationValidator.Validate(builder.Configuration);
+
     _ = builder.WebHost.UseKestrel();
     builder.Services.AddSingleton<Infrastructure.Logging.TelegramAdminSink>();
     // This is more reliable than GetValue<bool> for environment variables.
