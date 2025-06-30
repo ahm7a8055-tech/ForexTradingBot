@@ -46,6 +46,7 @@ using Dapper;
 using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Renci.SshNet.Messages;
 
 #endregion
 
@@ -168,30 +169,33 @@ try
 
     try
     {
-        // This registration is now guaranteed to work because redisConnectionString will always have a value.
-        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-        {
-            // We re-read from the configuration to ensure we use the potentially updated value.
-            var finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
-            var options = ConfigurationOptions.Parse(finalConnectionString!);
-            options.AbortOnConnectFail = false;
-            options.ConnectTimeout = 5000;
-            options.SyncTimeout = 5000;
-            return ConnectionMultiplexer.Connect(options);
-        });
+        // We will await the connection and then register the result.
+        // This requires a slight change in how the singleton is added.
+        // The most robust way is to register an IHostedService that performs the connection
+        // and then registers the established IConnectionMultiplexer into a Singleton.
 
-        Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
+        // Option 1: Register an IHostedService to manage the connection and registration (more robust)
+        // This approach separates the async operation from the DI configuration lambda.
+        builder.Services.AddHostedService<RedisConnectionInitializationService>(
+            provider => new RedisConnectionInitializationService(
+                provider.GetRequiredService<IConfiguration>(),
+                provider.GetRequiredService<ILogger<RedisConnectionInitializationService>>()
+            )
+        );
+
+        Log.Information("✅ Redis connection initialization service registered.");
     }
     catch (Exception ex)
     {
-        Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
-        
-        // Register the fallback in-memory Redis service
+        Log.Error(ex, "Failed to register Redis connection initialization service. Using fallback in-memory Redis.");
+
+        // Register the fallback in-memory Redis service directly if the initialization service fails to register.
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
+        Log.Information("Fallback in-memory Redis registered.");
     }
 
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
@@ -683,21 +687,24 @@ try
             }
 
             Log.Information("Attempting to apply database migrations...");
-            await db.Database.MigrateAsync();
+            await db.Database.MigrateAsync().ConfigureAwait(false);
+
             Log.Information("Database migrations applied successfully.");
         }
+        // Line ~505
         catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
         {
-            // Fallback: try to create the database if migrations fail due to pending model changes
             Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
             try
             {
-                db.Database.EnsureCreated();
-                Log.Information("Database created successfully using EnsureCreated().");
+                // Await the asynchronous version of the database creation.
+                // Use ConfigureAwait(false) as we are in a background task scope with no UI context.
+                await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                Log.Information("Database created successfully using EnsureCreatedAsync().");
             }
             catch (Exception createEx)
             {
-                Log.Error(createEx, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
+                Log.Error(createEx, "Failed to create database using EnsureCreatedAsync(). Connection string may be invalid.");
                 throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
             }
         }
@@ -751,18 +758,19 @@ try
         try
         {
             // Wait a bit for the EmbeddedRedisService to start Redis if needed
-            await Task.Delay(TimeSpan.FromSeconds(3));
-            
+            await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+
+
             var redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
             var redisDb = redisConnection.GetDatabase();
             
             // Test basic operations
             var testKey = $"test_connection_{Guid.NewGuid():N}";
             var testValue = DateTime.UtcNow.ToString();
-            
-            await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10));
-            var retrievedValue = await redisDb.StringGetAsync(testKey);
-            
+
+            await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            var retrievedValue = await redisDb.StringGetAsync(testKey).ConfigureAwait(false);
+
             if (retrievedValue == testValue)
             {
                 Log.Information("✅ Redis connectivity test successful. Redis is working properly.");
@@ -839,6 +847,17 @@ try
 
     _ = app.UseRouting();
     _ = app.UseAuthorization();
+    
+    // Add Windows Service support to the middleware pipeline
+    if (OperatingSystem.IsWindows())
+    {
+        builder.Services.AddWindowsService(options =>
+        {
+            options.ServiceName = "ForexTradingBot"; // serviceName از قبل تعریف شده است
+        });
+        programLogger.LogInformation("Windows Service middleware enabled.");
+    }
+    
     _ = app.MapHangfireDashboard();
     programLogger.LogInformation("HTTP request pipeline configured.");
     #endregion
@@ -977,6 +996,49 @@ finally
     Log.Information("--------------------------------------------------");
 }
 
+public class RedisConnectionInitializationService : IHostedService
+{
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<RedisConnectionInitializationService> _logger;
+    private IConnectionMultiplexer? _redisMultiplexer;
+
+    public RedisConnectionInitializationService(
+        IConfiguration configuration,
+        ILogger<RedisConnectionInitializationService> logger)
+    {
+        _configuration = configuration;
+        _logger = logger;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        var redisConnectionString = _configuration.GetConnectionString("Redis");
+        var options = ConfigurationOptions.Parse(redisConnectionString!);
+        options.AbortOnConnectFail = false; // Allow to connect to fallback if main fails
+        options.ConnectTimeout = 5000;
+        options.SyncTimeout = 5000;
+
+        try
+        {
+            _logger.LogInformation("Attempting to connect to Redis at {RedisEndpoint}...", redisConnectionString);
+            _redisMultiplexer = await ConnectionMultiplexer.ConnectAsync(options).ConfigureAwait(false);
+            _logger.LogInformation("✅ Successfully connected to Redis.");
+
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to connect to Redis. Falling back to in-memory Redis.");
+        }
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        // Dispose the multiplexer if it was successfully connected.
+        _redisMultiplexer?.Dispose();
+        return Task.CompletedTask;
+    }
+}
+
 public static class ConfigurationHelper
 {
     private static void PromptForTelegramApiSecrets(IConfiguration configuration)
@@ -984,8 +1046,20 @@ public static class ConfigurationHelper
         string? apiId = configuration["TelegramUserApi:ApiId"];
         string? apiHash = configuration["TelegramUserApi:ApiHash"];
 
-        if (string.IsNullOrEmpty(apiId) || apiId == "0" || string.IsNullOrEmpty(apiHash))
+        if (string.IsNullOrEmpty(apiId) || apiId == "0" || string.IsNullOrEmpty(apiHash) || 
+            apiId?.Contains("#{") == true || apiId?.Contains("}#") == true ||
+            apiHash?.Contains("#{") == true || apiHash?.Contains("}#") == true)
         {
+            // Check if we're running as a Windows service
+            if (!Environment.UserInteractive)
+            {
+                Log.Information("Auto-Forwarding feature DISABLED for Windows service (ApiId or ApiHash not properly configured).");
+                Log.Information("To enable Auto-Forwarding, ensure the following configuration is properly set:");
+                Log.Information("- TelegramUserApi:ApiId in appsettings.Production.json");
+                Log.Information("- TelegramUserApi:ApiHash in appsettings.Production.json");
+                return; // Exit gracefully for Windows service
+            }
+
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("\n--- Telegram User API Setup (Optional) ---");
             Console.WriteLine("Auto-Forwarding feature requires Telegram API credentials.");
@@ -994,7 +1068,7 @@ public static class ConfigurationHelper
             Console.ResetColor();
 
             // Only prompt if the section is potentially needed.
-            if (string.IsNullOrEmpty(apiId) || apiId == "0")
+            if (string.IsNullOrEmpty(apiId) || apiId == "0" || apiId?.Contains("#{") == true || apiId?.Contains("}#") == true)
             {
                 Console.Write("Enter your ApiId (or 'skip'): ");
                 var inputApiId = Console.ReadLine();
@@ -1006,7 +1080,7 @@ public static class ConfigurationHelper
                 configuration["TelegramUserApi:ApiId"] = inputApiId;
             }
 
-            if (string.IsNullOrEmpty(apiHash))
+            if (string.IsNullOrEmpty(apiHash) || apiHash?.Contains("#{") == true || apiHash?.Contains("}#") == true)
             {
                 Console.Write("Enter your ApiHash (or 'skip'): ");
                 var inputApiHash = Console.ReadLine();
@@ -1026,8 +1100,19 @@ public static class ConfigurationHelper
     {
         string? botToken = configuration["TelegramPanel:BotToken"];
 
-        if (string.IsNullOrWhiteSpace(botToken) || botToken.Contains("REPLACE"))
+        if (string.IsNullOrWhiteSpace(botToken) || botToken.Contains("REPLACE") || botToken.Contains("#{") || botToken.Contains("}#"))
         {
+            // Check if we're running as a Windows service
+            if (!Environment.UserInteractive)
+            {
+                var errorMsg = "Bot Token is missing or contains placeholder values. Cannot start as Windows service without proper configuration.";
+                Log.Fatal(errorMsg);
+                Log.Fatal("Please ensure the following configuration is properly set:");
+                Log.Fatal("- TelegramPanel:BotToken in appsettings.Production.json");
+                Log.Fatal("- Or set the configuration values before starting the service");
+                throw new InvalidOperationException(errorMsg);
+            }
+
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("\n--- Telegram Bot Setup ---");
             Console.WriteLine("The main Bot Token is required to run the application.");
@@ -1054,8 +1139,19 @@ public static class ConfigurationHelper
     {
         string? apiToken = configuration["CryptoPay:ApiToken"];
 
-        if (string.IsNullOrWhiteSpace(apiToken) || apiToken.Contains("REPLACE"))
+        if (string.IsNullOrWhiteSpace(apiToken) || apiToken.Contains("REPLACE") || apiToken.Contains("#{") || apiToken.Contains("}#"))
         {
+            // Check if we're running as a Windows service
+            if (!Environment.UserInteractive)
+            {
+                Log.Information("CryptoPay feature DISABLED for Windows service (ApiToken not properly configured).");
+                Log.Information("To enable CryptoPay, ensure the following configuration is properly set:");
+                Log.Information("- CryptoPay:ApiToken in appsettings.Production.json");
+                // Explicitly set to null to ensure the feature check fails
+                configuration["CryptoPay:ApiToken"] = null;
+                return; // Exit gracefully for Windows service
+            }
+
             Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine("\n--- CryptoPay Setup (Optional) ---");
             Console.WriteLine("Payment processing requires a CryptoPay API Token.");
