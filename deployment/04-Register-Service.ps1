@@ -1,8 +1,8 @@
 # ====================================================================================
-# THE DEFINITIVE WINDOWS SERVICE MANAGEMENT SCRIPT (v.Final-Victory-Robust-Improved)
+# THE DEFINITIVE WINDOWS SERVICE MANAGEMENT SCRIPT (v.Final-Victory-Robust-Improved-Syntax)
 # This version is simpler because the .NET app is now service-aware.
 # It only needs to create the service pointing to the EXE.
-# Improved error handling for service startup.
+# Improved error handling for service startup and corrected Get-Service syntax.
 # ====================================================================================
 param(
     [string]$DeployPath,
@@ -26,6 +26,7 @@ Write-Host "✅ Executable found."
 
 # --- Section: Remove and Re-register Service ---
 Write-Host "Checking for existing service '$ServiceName'..."
+# Corrected: Only use one ErrorAction parameter. SilentlyContinue is appropriate here.
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 
 if ($service) {
@@ -48,14 +49,14 @@ if ($service) {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $serviceRemoved = $false
     while ($stopwatch.Elapsed.TotalSeconds -lt $timeout) {
-        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue -ea 0) {
-            Write-Host -NoNewline "."
-            Start-Sleep -Seconds 2
-        } else {
+        # Corrected: Get-Service without -ea 0, as -ErrorAction SilentlyContinue handles it.
+        if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
             Write-Host "`n✅ Service '$ServiceName' confirmed as removed."
             $serviceRemoved = $true
             break
         }
+        Write-Host -NoNewline "."
+        Start-Sleep -Seconds 2
     }
 
     if (-not $serviceRemoved) {
