@@ -82,9 +82,7 @@ try
     Log.Information("--------------------------------------------------");
     Log.Information("Application Starting Up (Program.cs)...");
     Log.Information("--------------------------------------------------");
-    int minThreads = 500; // Adjust as needed based on monitoring
-    _ = ThreadPool.SetMinThreads(minThreads, minThreads);
-    Log.Information("ThreadPool minimum threads set to {MinThreads}.", minThreads);
+    Log.Information("ThreadPool minimum threads set to {MinThreads}.");
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
     _ = builder.WebHost.UseKestrel();
     builder.Services.AddSingleton<Infrastructure.Logging.TelegramAdminSink>();
@@ -634,22 +632,24 @@ try
         }
     });
 
+    var defaultWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:DefaultWorkerCount")
+                       ?? Math.Max(Environment.ProcessorCount, 10);
+    var notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount") ?? 5;
 
-    _ = builder.Services.AddHangfireCleaner();
     _ = builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Notifications";
-        options.WorkerCount = 25; // <--- THE THROTTLE! Adjust this based on Telegram API limits.
-        options.Queues = new[] { "notifications" }; // It ONLY processes this queue.
+        options.WorkerCount = notificationWorkerCount;
+        options.Queues = new[] { "notifications" };
     });
-
 
     builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Default";
-        options.WorkerCount = Environment.ProcessorCount * 5; // Or your preferred default count
-        options.Queues = new[] { "critical", "default" }; // Explicitly list the queues it WILL process
+        options.WorkerCount = defaultWorkerCount;
+        options.Queues = new[] { "critical", "default" };
     });
+
 
     Log.Information("Hangfire cleaner service added.");
 
@@ -682,7 +682,7 @@ try
             }
 
             Log.Information("Attempting to apply database migrations...");
-            db.Database.Migrate();
+            await db.Database.MigrateAsync().ConfigureAwait(false);
             Log.Information("Database migrations applied successfully.");
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
@@ -691,7 +691,7 @@ try
             Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
             try
             {
-                db.Database.EnsureCreated();
+               await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
                 Log.Information("Database created successfully using EnsureCreated().");
             }
             catch (Exception createEx)

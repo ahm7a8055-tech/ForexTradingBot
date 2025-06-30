@@ -109,10 +109,10 @@ namespace Infrastructure.Data
 
                     case "postgres":
                     case "postgresql":
-                        services.AddDbContext<AppDbContext>(opts =>
-                            opts.UseNpgsql(connectionString, npgsql =>
-                                npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
-
+                        services.AddDbContextPool<AppDbContext>(opts =>
+        opts.UseNpgsql(connectionString, npgsql =>
+            npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)),
+        poolSize: 32);
                         // --- ADDED: Hangfire config for PostgreSQL ---
                         services.AddHangfire(config =>
                         {
@@ -275,7 +275,6 @@ namespace Infrastructure.Data
             // =================================================================
             #region Application Services and Repositories
 
-            services.AddHangfireServer();
             services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
 
             // This line is redundant if TelegramUserApiClient is only resolved via its interface.
