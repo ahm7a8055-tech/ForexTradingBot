@@ -368,7 +368,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             // --- STEP 1: Send Chat Action (Typing...) ---
             try
             {
-                await _botClient.SendChatAction(chatId, ChatAction.UploadDocument);
+                await _botClient.SendChatAction(chatId, ChatAction.UploadDocument, ct);
                 _logger.LogDebug("Sent ChatAction 'UploadDocument' to ChatID {ChatId}.", chatId);
             }
             catch (Exception ex)
