@@ -8,7 +8,7 @@ using Application.Common.Interfaces.Fred;
 using Application.Features.Crypto.Services.CoinGecko;
 using Application.Interfaces;
 using Application.Services;
-
+using Hangfire.PostgreSql;
 // --- Infrastructure ---
 using Infrastructure.Caching;
 using Infrastructure.ExternalServices;
@@ -28,7 +28,7 @@ using Microsoft.Extensions.Options;
 
 // --- Third-Party ---
 using Hangfire;
-using Hangfire.PostgreSql;
+
 using Polly;
 using Polly.Extensions.Http;
 using StackExchange.Redis;
@@ -110,20 +110,33 @@ namespace Infrastructure.Data
                     case "postgres":
                     case "postgresql":
                         services.AddDbContextPool<AppDbContext>(opts =>
-        opts.UseNpgsql(connectionString, npgsql =>
-            npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)),
-        poolSize: 32);
-                        // --- ADDED: Hangfire config for PostgreSQL ---
-                        services.AddHangfire(config =>
-                        {
-                            config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString));
-                            config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
-                            {
-                                TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
-                            });
-                        });
-                        break;
+                            opts.UseNpgsql(connectionString, npgsql =>
+                                npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)),
+                            poolSize: 32);
 
+                        // --- MODIFIED THIS SECTION ---
+                        services.AddHangfire(config =>
+                    {
+                        config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+                        {
+                            TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
+                        });
+
+                        // Configure Hangfire to use PostgreSQL storage with tuned options:
+                        config.UsePostgreSqlStorage(
+                            options => options.UseNpgsqlConnection(connectionString),
+                            new PostgreSqlStorageOptions // <-- This is now recognized
+                            {
+                                // Balance DB load vs. responsiveness
+                                QueuePollInterval = TimeSpan.FromSeconds(5),
+                                // How often to scan for expired jobs (cleanup)
+                                JobExpirationCheckInterval = TimeSpan.FromHours(6) // Set to a longer duration
+                            }
+                        );
+                        Log.Information("✅ Hangfire successfully configured with PostgreSQL storage and tuned intervals.");
+                    });
+                    break;
+                        break;
                     case "sqlserver":
                         services.AddDbContext<AppDbContext>(opts =>
                             opts.UseSqlServer(connectionString, sql =>

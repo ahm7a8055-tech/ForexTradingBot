@@ -896,6 +896,7 @@ namespace TelegramPanel.Infrastructure
             /// <summary>
             /// Enqueues a job to delete a message from a chat.
             /// </summary>
+
             Task DeleteMessageAsync(
               long chatId,
               int messageId,

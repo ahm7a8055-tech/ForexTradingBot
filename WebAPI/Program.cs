@@ -50,7 +50,7 @@ using System.Text.Json.Serialization;
 #endregion
 
 // Register the handler at app startup:
-SqlMapper.AddTypeHandler(new GuidTypeHandler());
+//SqlMapper.AddTypeHandler(new GuidTypeHandler());
 
 // ------------------- پیکربندی اولیه لاگر Serilog (Bootstrap Logger) -------------------
 // این لاگر قبل از خواندن کامل appsettings.json و ساخت هاست استفاده می‌شود
@@ -612,24 +612,22 @@ try
                 case "postgresql":
                     // 1. Configure Hangfire to use PostgreSQL storage with tuned options:
                     config.UsePostgreSqlStorage(
-                        options => options.UseNpgsqlConnection(connectionString),
-                        new Hangfire.PostgreSql.PostgreSqlStorageOptions
-                        {
-                            // Balance DB load vs. responsiveness
-                            QueuePollInterval = TimeSpan.FromSeconds(5),
+     options => options.UseNpgsqlConnection(connectionString),
+     new Hangfire.PostgreSql.PostgreSqlStorageOptions
+     {
+         // Balance DB load vs. responsiveness
+         QueuePollInterval = TimeSpan.FromSeconds(5),
 
-                            // Prevent a long-running job from being re-queued while it's still executing
-                            InvisibilityTimeout = TimeSpan.FromHours(1),
+         // Prevent a long-running job from being re-queued while it's still executing
+         InvisibilityTimeout = TimeSpan.FromHours(1),
 
+         // How long to wait for the lock before giving up
+         DistributedLockTimeout = TimeSpan.FromSeconds(30),
 
-
-                            // How long to wait for the lock before giving up
-                            DistributedLockTimeout = TimeSpan.FromSeconds(30),
-
-                            // How often to scan for expired jobs (cleanup)
-                            JobExpirationCheckInterval = TimeSpan.FromHours(1)
-                        }
-                    );
+         // How often to scan for expired jobs (cleanup)
+         JobExpirationCheckInterval = TimeSpan.FromHours(1) // <<< This is the primary setting to adjust
+     }
+ );
 
                     // 2. Tune the BackgroundJobServer to the machine’s CPU count:
                     var cpuCount = Environment.ProcessorCount;
