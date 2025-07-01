@@ -294,23 +294,18 @@ namespace Infrastructure.Services.Admin
             int userCount = await multi.ReadSingleAsync<int>();
             int newsItemCount = await multi.ReadSingleAsync<int>();
 
-            // Get user join stats for the last 7 days
-            const string sqlJoins = @"
-                SELECT date_trunc('day', ""CreatedAt"") AS join_date, COUNT(*) AS count
-                FROM public.""Users""
-                WHERE ""CreatedAt"" >= (CURRENT_DATE - INTERVAL '6 days')
-                GROUP BY join_date
-                ORDER BY join_date;
-            ";
-            List<(DateTime join_date, int count)> joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
+            // Get user join stats for the last 30 days
+            const string sqlJoins = @"SELECT date_trunc('day', ""CreatedAt"" ) AS join_date, COUNT(*) AS count FROM public.""Users"" WHERE ""CreatedAt"" >= (CURRENT_DATE - INTERVAL '29 days') GROUP BY join_date ORDER BY join_date;";
+            var joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
 
             // Fill missing days with 0
             List<(DateTime Date, int Count)> userJoinStats = new();
             DateTime today = DateTime.UtcNow.Date;
-            for (int i = 6; i >= 0; i--)
+            for (int i = 29; i >= 0; i--)
             {
                 DateTime day = today.AddDays(-i);
-                (DateTime join_date, int count) = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
+                var found = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
+                int count = found != default ? found.count : 0;
                 userJoinStats.Add((day, count));
             }
 

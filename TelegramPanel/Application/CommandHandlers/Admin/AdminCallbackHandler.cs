@@ -148,9 +148,20 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 int max = userJoinStats.Max(x => x.Count);
                 int barMax = 8;
                 int total = userJoinStats.Sum(x => x.Count);
-                double avg = userJoinStats.Count > 0 ? userJoinStats.Average(x => x.Count) : 0;
+                double avgAll = userJoinStats.Average(x => x.Count);
+                var activeDays = userJoinStats.Where(x => x.Count > 0).ToList();
+                double avgActive = activeDays.Count > 0 ? activeDays.Average(x => x.Count) : 0;
+                var orderedCounts = userJoinStats.Select(x => x.Count).OrderBy(x => x).ToList();
+                double median = orderedCounts.Count % 2 == 1
+                    ? orderedCounts[orderedCounts.Count / 2]
+                    : (orderedCounts[orderedCounts.Count / 2 - 1] + orderedCounts[orderedCounts.Count / 2]) / 2.0;
+                // Trend: Compare last 7 days to previous 7 days
+                int trendWindow = 7;
+                int sumLast = userJoinStats.Skip(userJoinStats.Count - trendWindow).Sum(x => x.Count);
+                int sumPrev = userJoinStats.Skip(userJoinStats.Count - 2 * trendWindow).Take(trendWindow).Sum(x => x.Count);
+                string trend = sumLast > sumPrev ? "⬆️" : sumLast < sumPrev ? "⬇️" : "➡️";
                 DateTime today = DateTime.UtcNow.Date;
-                _ = stats.AppendLine("👤 *User Joins (Last 7 Days)*\n");
+                _ = stats.AppendLine("👤 *User Joins (Last 30 Days)*\n");
                 _ = stats.AppendLine("` Date   | Users |`");
                 foreach ((DateTime date, int count) in userJoinStats)
                 {
@@ -167,7 +178,11 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                     string dayMark = date == today ? "➡️" : "  ";
                     _ = stats.AppendLine($"{dayMark}{date:MM-dd} {bar.PadRight(barMax)} {count}");
                 }
-                _ = stats.AppendLine($"\n📈 *7d Total:* {total}   *Avg/day:* {avg:0.0}\n");
+                _ = stats.AppendLine($"\n📈 *30d Total:* {total}");
+                _ = stats.AppendLine($"*Avg/day (all):* {avgAll:0.0}");
+                _ = stats.AppendLine($"*Avg/day (active):* {avgActive:0.0}");
+                _ = stats.AppendLine($"*Median/day:* {median:0.0}");
+                _ = stats.AppendLine($"*Trend (last 7 vs prev 7):* {trend}\n");
                 _ = stats.AppendLine("Legend: ▏=0, █=max");
             }
             #endregion
