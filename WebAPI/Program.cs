@@ -31,6 +31,12 @@ using TelegramPanel.Infrastructure.Logging;
 using TelegramPanel.Infrastructure.Services;
 using System.Security.Cryptography;
 using System.Text;
+using Application.Interfaces;
+using Microsoft.Extensions.Logging;
+using Telegram.Bot;
+using Telegram.Bot.Exceptions;
+using Telegram.Bot.Types.Enums;
+using BackgroundTasks.Services;
 
 #endregion
 
@@ -953,6 +959,12 @@ try
 
     });
     programLogger.LogInformation("Hangfire recurring jobs registration initiated (will run after application starts).");
+
+    var recurringJobManager = app.Services.GetRequiredService<IRecurringJobManager>();
+    recurringJobManager.AddOrUpdate<UserCleanupService>(
+        "user-cleanup-job",
+        job => job.CheckAndDeleteUnreachableUsersAsync(),
+        Cron.Daily);
     #endregion
 
     #region Map Controllers & Run Application (region master)
