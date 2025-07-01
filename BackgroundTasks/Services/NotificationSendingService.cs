@@ -955,23 +955,29 @@ namespace BackgroundTasks.Services
             // Escape title, source, and summary as they are plain text within Markdown.
             string title = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
             string sourceName = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
-            // --- FIX: Remove all newlines from summary/description before escaping ---
+            // Remove all newlines from summary/description before escaping
             string summaryRaw = newsItem.Summary?.Trim() ?? string.Empty;
             string summaryNoNewlines = summaryRaw.Replace("\r", " ").Replace("\n", " ");
             string summary = TelegramMessageFormatter.EscapeMarkdownV2(summaryNoNewlines);
             string? link = newsItem.Link?.Trim();
 
-            _ = messageTextBuilder.AppendLine($"*{title}*");
-            _ = messageTextBuilder.AppendLine($"_Source: {sourceName}_");
+            // Title (bold)
+            messageTextBuilder.AppendLine($"*{title}*");
+            // Source (italic)
+            messageTextBuilder.AppendLine($"_Source: {sourceName}_");
 
+            // Blank line before summary
             if (!string.IsNullOrWhiteSpace(summary))
             {
-                _ = messageTextBuilder.Append($"\n{summary}");
+                messageTextBuilder.AppendLine();
+                messageTextBuilder.AppendLine(summary);
             }
 
+            // Blank line before link
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                _ = messageTextBuilder.Append($"\n\n[Read Full Article]({link})");
+                messageTextBuilder.AppendLine();
+                messageTextBuilder.AppendLine($"[Read Full Article]({link})");
             }
 
             return messageTextBuilder.ToString().Trim();
