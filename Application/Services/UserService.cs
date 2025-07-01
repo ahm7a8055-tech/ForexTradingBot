@@ -8,6 +8,7 @@ using AutoMapper;                   // For IMapper
 using Domain.Entities;              // For User, TokenWallet, Subscription
 using Microsoft.Extensions.Logging;
 using Shared.Extensions; // For ILogger
+using Microsoft.EntityFrameworkCore;
 // Remove if not directly used: using StackExchange.Redis;
 // Remove if not directly used: using Microsoft.Extensions.Caching.Distributed;
 #endregion

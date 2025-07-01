@@ -1,24 +1,18 @@
 ﻿// File: WebAPI/Program.cs
 
 #region Usings
-// Using های استاندارد .NET و NuGet Packages
-// Using های مربوط به پروژه‌های شما
-using Application;                          // برای متد توسعه‌دهنده AddApplicationServices
+using Application;                          
 using Application.Common.Interfaces;
 using Application.Features.Forwarding.Extensions;
-// using Application.Interfaces;          // معمولاً اینترفیس‌های Application مستقیماً اینجا نیاز نیستند مگر برای موارد خاص
-// using Application.Services;            // و نه پیاده‌سازی‌های آن
-using BackgroundTasks;                    // برای متد توسعه‌دهنده AddBackgroundTasksServices (اگر تعریف کرده‌اید)
+using BackgroundTasks;                   
 using Dapper;
-using Hangfire;                             // برای پیکربندی‌های Hangfire مانند CompatibilityLevel, RecurringJob, Cron
-using Hangfire.Dashboard;                   // برای DashboardOptions, IDashboardAuthorizationFilter
+using Hangfire;                            
+using Hangfire.Dashboard;               
 using Hangfire.MemoryStorage;
 using Hangfire.PostgreSql;
 using Hangfire.Storage.SQLite;
 using Infrastructure.Data;
 using Infrastructure.ExternalServices;
-// using Hangfire.SqlServer;              // اگر از SQL Server برای Hangfire استفاده می‌کنید
-// using WebAPI.Filters; //  Namespace برای HangfireNoAuthFilter (اگر در این مسیر است و استفاده می‌کنید)
 using Infrastructure.Features.Forwarding.Extensions;
 using Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
@@ -35,15 +29,12 @@ using System.Text.Json.Serialization;
 using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Logging;
 using TelegramPanel.Infrastructure.Services;
+using System.Security.Cryptography;
+using System.Text;
 
 #endregion
 
-// Register the handler at app startup:
-//SqlMapper.AddTypeHandler(new GuidTypeHandler());
-
-// ------------------- پیکربندی اولیه لاگر Serilog (Bootstrap Logger) -------------------
-// این لاگر قبل از خواندن کامل appsettings.json و ساخت هاست استفاده می‌شود
-// تا خطاهای بسیار اولیه در راه‌اندازی برنامه نیز لاگ شوند.
+#region Main Program logger
 Log.Logger = new LoggerConfiguration()
     // Read base configuration from appsettings.json
     .ReadFrom.Configuration(new ConfigurationBuilder()
@@ -65,9 +56,12 @@ AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
     Log.CloseAndFlush(); // Ensure the fatal log is sent before the app dies
 };
 
+#endregion
+
+
+    #region Main Application Entry (region master)
 try
 {
-    #region Main Application Entry (region master)
     Log.Information("--------------------------------------------------");
     Log.Information("Application Starting Up (Program.cs)...");
     Log.Information("--------------------------------------------------");
@@ -753,8 +747,18 @@ try
                 throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
             }
             Log.Information("Attempting to apply database migrations...");
-            await db.Database.MigrateAsync().ConfigureAwait(false); // async master
-            Log.Information("Database migrations applied successfully.");
+            Log.Information("Database provider: {ProviderName}", db.Database.ProviderName);
+
+            if (db.Database.IsRelational())
+            {
+                await db.Database.MigrateAsync().ConfigureAwait(false);
+                Log.Information("Database migrations applied successfully.");
+            }
+            else
+            {
+                await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                Log.Information("Non-relational provider detected. Database created using EnsureCreated().");
+            }
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
         {
@@ -857,15 +861,9 @@ try
             }
         }
     });
-
-    #endregion
-
     Log.Information("Mandatory startup tasks completed.");
-
-
-    // ------------------- دریافت لاگر از DI برای استفاده در ادامه Program.cs -------------------
-    //  این لاگر، لاگری است که توسط UseSerilog پیکربندی شده است.
     ILogger<Program> programLogger = app.Services.GetRequiredService<ILogger<Program>>(); //  استفاده از ILogger<Program> برای لاگ‌های مختص Program.cs
+    #endregion
 
     #region Configure HTTP Request Pipeline (region master)
     // ------------------- ۶. پیکربندی پایپ‌لاین پردازش درخواست‌های HTTP -------------------
@@ -1024,8 +1022,7 @@ try
     app.UseSerilogRequestLogging();
     // In the middleware pipeline section (before app.Run())
     _ = app.UseStaticFiles();
-    await app.RunAsync(); //  شروع به گوش دادن به درخواست‌های HTTP و اجرای برنامه
-    #endregion
+    await app.RunAsync();
 }
 catch (Exception ex)
 {
@@ -1041,9 +1038,16 @@ finally
     Log.CloseAndFlush();
     Log.Information("--------------------------------------------------");
 }
+#endregion
 
+    #region Configuration Helper
+/// <summary>
+/// Helper class to prompt the user for Telegram API credentials.
+/// </summary>
 public static class ConfigurationHelper
 {
+
+    #region PromptForTelegramApiSecrets
     private static void PromptForTelegramApiSecrets(IConfiguration configuration)
     {
         string? apiId = configuration["TelegramUserApi:ApiId"];
@@ -1086,7 +1090,15 @@ public static class ConfigurationHelper
             }
         }
     }
+    #endregion
 
+#region TelegramPanel
+
+    /// <summary>
+    /// Prompts the user to enter the Telegram Panel Bot Token.
+    /// </summary>
+    /// <param name="configuration"></param>
+    /// <exception cref="InvalidOperationException"></exception>
     private static void PromptForTelegramPanelSecrets(IConfiguration configuration)
     {
         string? botToken = configuration["TelegramPanel:BotToken"];
@@ -1115,6 +1127,13 @@ public static class ConfigurationHelper
         }
     }
 
+    #endregion
+
+#region CryptoPay
+    /// <summary>
+    /// Prompt the user for their CryptoPay API token.
+    /// </summary>
+    /// <param name="configuration"></param>
     private static void PromptForCryptoPaySecrets(IConfiguration configuration)
     {
         string? apiToken = configuration["CryptoPay:ApiToken"];
@@ -1150,7 +1169,12 @@ public static class ConfigurationHelper
         PromptForCryptoPaySecrets(configuration);
     }
 }
+#endregion
 
+#region GuidTypeHandler
+/// <summary>
+/// A custom type handler for Guid values.
+/// </summary>
 public class GuidTypeHandler : SqlMapper.TypeHandler<Guid>
 {
     public override void SetValue(IDbDataParameter parameter, Guid value)
@@ -1163,7 +1187,13 @@ public class GuidTypeHandler : SqlMapper.TypeHandler<Guid>
         return Guid.Parse(value.ToString());
     }
 }
+#endregion
 
+#region IntToBoolJsonConverter
+
+/// <summary>
+/// A custom JSON converter for boolean values.
+/// </summary>
 public class IntToBoolJsonConverter : JsonConverter<bool>
 {
     public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -1185,7 +1215,13 @@ public class IntToBoolJsonConverter : JsonConverter<bool>
         writer.WriteNumberValue(value ? 1 : 0);
     }
 }
+#endregion
 
+#region FlexibleDateTimeJsonConverter
+
+/// <summary>
+/// A custom JSON converter for DateTime that supports different date-time formats.
+/// </summary>
 public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
 {
     private static readonly string[] Formats = new[]
@@ -1212,13 +1248,21 @@ public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
         }
         return reader.GetDateTime();
     }
-
+    /// <summary>
+    /// Writes a DateTime as a string in ISO 8601 format.
+    /// </summary>
+    /// <param name="writer"></param>
+    /// <param name="value"></param>
+    /// <param name="options"></param>
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
     {
         writer.WriteStringValue(value.ToString("O")); // ISO 8601
     }
 }
 
+#endregion
+
+#region Cross-platform system info helper
 // Cross-platform system info helper
 public static class SystemInfoHelper
 {
@@ -1271,3 +1315,7 @@ public static class SystemInfoHelper
         return 2;
     }
 }
+#endregion
+
+#endregion
+
