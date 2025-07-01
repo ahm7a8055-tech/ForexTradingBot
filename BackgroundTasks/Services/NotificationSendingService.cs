@@ -930,7 +930,6 @@ namespace BackgroundTasks.Services
 
 
 
-
         /// <summary>
         /// Constructs a human-readable message string from a <see cref="NewsItem"/> object,
         /// specifically formatted for display within Telegram chats using MarkdownV2 syntax.
@@ -947,42 +946,93 @@ namespace BackgroundTasks.Services
         ///     <item><description>Guaranteed to have dynamic content correctly escaped for MarkdownV2.</description></item>
         /// </list>
         /// The quality of this output directly impacts the user's experience with the AI-provided news.
-        /// </returns>
+        /// </summary>
         private string BuildMessageText(NewsItem newsItem)
         {
             StringBuilder messageTextBuilder = new();
 
-            // Escape title, source, and summary as they are plain text within Markdown.
-            string title = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
-            string sourceName = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
-            // Remove all newlines from summary/description before escaping
-            string summaryRaw = newsItem.Summary?.Trim() ?? string.Empty;
-            string summaryNoNewlines = summaryRaw.Replace("\r", " ").Replace("\n", " ");
-            string summary = TelegramMessageFormatter.EscapeMarkdownV2(summaryNoNewlines);
-            string? link = newsItem.Link?.Trim();
+            // --- In-Method Strategy: Escaping Logic ---
+            // Define the characters that need escaping in MarkdownV2.
+            // This lambda function encapsulates the escaping logic.
+            Func<string?, string> escapeMarkdownV2 = (input) =>
+            {
+                if (string.IsNullOrEmpty(input))
+                {
+                    return string.Empty;
+                }
 
-            // Title (bold)
+                // Escape characters that have special meaning in Telegram's MarkdownV2.
+                // It's crucial that this covers all special characters.
+                return input
+                    .Replace("_", "\\_")
+                    .Replace("*", "\\*")
+                    .Replace("[", "\\[")
+                    .Replace("]", "\\]")
+                    .Replace("(", "\\(")
+                    .Replace(")", "\\)")
+                    .Replace("~", "\\~")
+                    .Replace("`", "\\`")
+                    .Replace(">", "\\>")
+                    .Replace("#", "\\#")
+                    .Replace("+", "\\+")
+                    .Replace("-", "\\-")
+                    .Replace("=", "\\=")
+                    .Replace("|", "\\|")
+                    .Replace("{", "\\{")
+                    .Replace("}", "\\}")
+                    .Replace(".", "\\.") // Period is special in inline links like [text](url). Escaping it generally safe.
+                    .Replace("!", "\\!"); // Exclamation mark can be special too in some contexts.
+            };
+            // --- End In-Method Strategy: Escaping Logic ---
+
+
+            // --- In-Method Strategy: Data Preparation and Formatting ---
+
+            // 1. Process and escape Title
+            string title = escapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
+            // Apply bold formatting to the escaped title.
             messageTextBuilder.AppendLine($"*{title}*");
-            // Source (italic)
-            messageTextBuilder.AppendLine($"_Source: {sourceName}_");
 
-            // Blank line before summary
+            // 2. Process and escape Source Name
+            string sourceName = escapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
+            // Apply italic formatting to the escaped source name.
+            // Adding a space before the underscore can sometimes improve rendering clarity in Telegram.
+            messageTextBuilder.AppendLine($" _Source: {sourceName}_");
+
+            // 3. Process and escape Summary
+            string summaryRaw = newsItem.Summary?.Trim() ?? string.Empty;
+            // Replace internal newlines/carriage returns with spaces to ensure the summary
+            // remains a single block of text within the message unless specific paragraph
+            // breaks are intended. MarkdownV2 does not support multi-line text within a single
+            // bold/italic block easily, so collapsing is often preferred.
+            string summaryProcessed = summaryRaw.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+            string summary = escapeMarkdownV2(summaryProcessed);
+
+            // Add summary to the message if it's not empty.
+            // Include a blank line for visual separation before the summary.
             if (!string.IsNullOrWhiteSpace(summary))
             {
-                messageTextBuilder.AppendLine();
+                messageTextBuilder.AppendLine(); // Blank line
                 messageTextBuilder.AppendLine(summary);
             }
 
-            // Blank line before link
+            // 4. Process and add Link
+            string? link = newsItem.Link?.Trim();
+
+            // Add the "Read Full Article" link if a valid URL is provided.
+            // Include a blank line for visual separation before the link.
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                messageTextBuilder.AppendLine();
+                messageTextBuilder.AppendLine(); // Blank line
+                                                 // Format the link using MarkdownV2 syntax: [Link Text](URL)
                 messageTextBuilder.AppendLine($"[Read Full Article]({link})");
             }
+            // --- End In-Method Strategy: Data Preparation and Formatting ---
 
+
+            // Final trimming of any leading/trailing whitespace from the entire message.
             return messageTextBuilder.ToString().Trim();
         }
-
 
         /// <summary>
         /// Constructs a list of simple notification buttons for a given news item.
