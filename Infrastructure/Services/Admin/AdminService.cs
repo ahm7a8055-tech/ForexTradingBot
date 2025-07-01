@@ -5,7 +5,6 @@ using Application.DTOs.Settings;
 using Application.Interfaces;
 using Dapper;
 using Domain.Entities;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -28,16 +27,19 @@ namespace Infrastructure.Services.Admin
             _logger = logger;
             _cacheService = cacheService; // --- ADDED ---
         }
-        private NpgsqlConnection CreateConnection() => new(_connectionString);
+        private NpgsqlConnection CreateConnection()
+        {
+            return new(_connectionString);
+        }
 
         public async Task<(int UserCount, int NewsItemCount)> GetDashboardStatsAsync(CancellationToken cancellationToken = default)
         {
             // CORRECTED: Using NpgsqlConnection and PostgreSQL-compliant quoted identifiers.
-            await using var connection = CreateConnection();
+            await using NpgsqlConnection connection = CreateConnection();
 
             const string sql = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
 
-            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(sql, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
+            using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(new CommandDefinition(sql, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
             return (await multi.ReadSingleAsync<int>(), await multi.ReadSingleAsync<int>());
         }
 
@@ -45,11 +47,11 @@ namespace Infrastructure.Services.Admin
         {
             // CORRECTED: Using NpgsqlConnection and PostgreSQL-compliant quoted identifiers.
             // Also, directly querying for the 'bigint' type is more efficient than parsing strings.
-            await using var connection = CreateConnection();
+            await using NpgsqlConnection connection = CreateConnection();
 
             const string sql = @"SELECT ""TelegramId""::bigint FROM public.""Users"" WHERE ""TelegramId"" IS NOT NULL AND ""TelegramId"" <> '';";
 
-            var ids = await connection.QueryAsync<long>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+            IEnumerable<long> ids = await connection.QueryAsync<long>(new CommandDefinition(sql, cancellationToken: cancellationToken));
             return ids.ToList();
         }
 
@@ -66,7 +68,7 @@ namespace Infrastructure.Services.Admin
                     return (null, "", "Log directory not found.");
                 }
 
-                var logFiles = Directory.GetFiles(logDirectory, "log-*.txt").OrderByDescending(f => f).ToList();
+                List<string> logFiles = Directory.GetFiles(logDirectory, "log-*.txt").OrderByDescending(f => f).ToList();
 
                 if (!logFiles.Any())
                 {
@@ -74,19 +76,19 @@ namespace Infrastructure.Services.Admin
                 }
 
                 // Create a zip file in memory
-                await using var memoryStream = new MemoryStream();
-                using (var archive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
+                await using MemoryStream memoryStream = new();
+                using (ZipArchive archive = new(memoryStream, ZipArchiveMode.Create, true))
                 {
-                    foreach (var logFile in logFiles)
+                    foreach (string? logFile in logFiles)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
-                        var entryName = Path.GetFileName(logFile);
-                        var zipEntry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+                        string entryName = Path.GetFileName(logFile);
+                        ZipArchiveEntry zipEntry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
 
-                        await using var entryStream = zipEntry.Open();
+                        await using Stream entryStream = zipEntry.Open();
                         // Use FileShare.ReadWrite to avoid locking issues with the logger
-                        await using var fileStream = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        await using FileStream fileStream = new(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                         await fileStream.CopyToAsync(entryStream, cancellationToken);
                     }
                 }
@@ -110,15 +112,13 @@ namespace Infrastructure.Services.Admin
             _logger.LogWarning("Admin is executing a raw SQL query. THIS IS A HIGH-RISK OPERATION. Query: {Query}", sqlQuery);
 
             // CORRECTED: Using NpgsqlConnection
-            await using var connection = CreateConnection();
-            var response = new StringBuilder();
+            await using NpgsqlConnection connection = CreateConnection();
+            StringBuilder response = new();
 
             try
             {
-                var command = new CommandDefinition(sqlQuery, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken);
-                using var multi = await connection.QueryMultipleAsync(command);
-
-                int resultSetIndex = 1;
+                CommandDefinition command = new(sqlQuery, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken);
+                using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(command);
                 while (!multi.IsConsumed)
                 {
                     // No changes needed here, as Dapper returns IDictionary<string, object> which is provider-agnostic.
@@ -154,10 +154,10 @@ namespace Infrastructure.Services.Admin
                 FROM public.""Users"" u
                 WHERE u.""TelegramId"" = @TelegramIdStr;";
 
-            await using var connection = CreateConnection();
+            await using NpgsqlConnection connection = CreateConnection();
 
             // Dapper will map the main columns and the JSON strings to this DTO.
-            var resultDto = await connection.QuerySingleOrDefaultAsync<AdminUserDetailRawDto>(
+            AdminUserDetailRawDto? resultDto = await connection.QuerySingleOrDefaultAsync<AdminUserDetailRawDto>(
                 new CommandDefinition(sql, new { TelegramIdStr = telegramId.ToString() }, cancellationToken: cancellationToken)
             );
 
@@ -173,7 +173,7 @@ namespace Infrastructure.Services.Admin
         #region DTOs and Mappers for GetUserDetailByTelegramIdAsync
         private AdminUserDetailDto MapRawDtoToAdminUserDetail(AdminUserDetailRawDto rawDto)
         {
-            var userDetail = new AdminUserDetailDto
+            AdminUserDetailDto userDetail = new()
             {
 
                 UserId = rawDto.Id,
@@ -184,7 +184,7 @@ namespace Infrastructure.Services.Admin
 
             if (!string.IsNullOrEmpty(rawDto.WalletJson) && rawDto.WalletJson != "[]")
             {
-                var wallet = JsonSerializer.Deserialize<List<WalletDto>>(rawDto.WalletJson)?.FirstOrDefault();
+                WalletDto? wallet = JsonSerializer.Deserialize<List<WalletDto>>(rawDto.WalletJson)?.FirstOrDefault();
                 if (wallet != null)
                 {
                     userDetail.TokenBalance = wallet.Balance;
@@ -194,9 +194,9 @@ namespace Infrastructure.Services.Admin
 
             if (!string.IsNullOrEmpty(rawDto.SubscriptionsJson) && rawDto.SubscriptionsJson != "[]")
             {
-                var subscriptions = JsonSerializer.Deserialize<List<SubscriptionSummaryDto>>(rawDto.SubscriptionsJson);
+                List<SubscriptionSummaryDto>? subscriptions = JsonSerializer.Deserialize<List<SubscriptionSummaryDto>>(rawDto.SubscriptionsJson);
                 userDetail.Subscriptions = subscriptions;
-                var activeSub = subscriptions?.FirstOrDefault(s => s.Status == "Active" && DateTime.UtcNow >= s.StartDate && DateTime.UtcNow <= s.EndDate);
+                SubscriptionSummaryDto? activeSub = subscriptions?.FirstOrDefault(s => s.Status == "Active" && DateTime.UtcNow >= s.StartDate && DateTime.UtcNow <= s.EndDate);
                 if (activeSub != null)
                 {
                     userDetail.ActiveSubscription = new ActiveSubscriptionDto { EndDate = activeSub.EndDate };
@@ -222,7 +222,9 @@ namespace Infrastructure.Services.Admin
             // --- THIS IS THE FIX ---
             // The TokenWallet domain entity likely requires a non-nullable DateTime for UpdatedAt.
             // We must provide a default value if the DTO's UpdatedAt is null.
-            public TokenWallet ToDomainEntity() => new TokenWallet(
+            public TokenWallet ToDomainEntity()
+            {
+                return new TokenWallet(
                 Id,
                 UserId,
                 Balance,
@@ -230,6 +232,7 @@ namespace Infrastructure.Services.Admin
                 CreatedAt,
                 UpdatedAt ?? CreatedAt // If UpdatedAt is null, use CreatedAt as a sensible default.
             );
+            }
         }
         #endregion
         // This DTO receives the raw data from the database, including the JSON strings.
@@ -249,10 +252,10 @@ namespace Infrastructure.Services.Admin
         private const string ForceJoinSettingsKey = "settings:force_join";
         public async Task<ForceJoinSettingsDto> GetForceJoinSettingsAsync(CancellationToken cancellationToken = default)
         {
-            await using var connection = CreateConnection();
+            await using NpgsqlConnection connection = CreateConnection();
             const string sql = @"SELECT ""Value"" FROM public.""Settings"" WHERE ""Key"" = @Key;";
 
-            var jsonValue = await connection.QuerySingleOrDefaultAsync<string>(
+            string? jsonValue = await connection.QuerySingleOrDefaultAsync<string>(
                 new CommandDefinition(sql, new { Key = ForceJoinSettingsKey }, cancellationToken: cancellationToken));
 
             if (string.IsNullOrEmpty(jsonValue))
@@ -265,8 +268,8 @@ namespace Infrastructure.Services.Admin
         }
         public async Task UpdateForceJoinSettingsAsync(ForceJoinSettingsDto settings, CancellationToken cancellationToken = default)
         {
-            await using var connection = CreateConnection();
-            var jsonValue = JsonSerializer.Serialize(settings);
+            await using NpgsqlConnection connection = CreateConnection();
+            string jsonValue = JsonSerializer.Serialize(settings);
 
             const string sql = @"
         INSERT INTO public.""Settings"" (""Key"", ""Value"")
@@ -274,20 +277,20 @@ namespace Infrastructure.Services.Admin
         ON CONFLICT (""Key"") DO UPDATE
         SET ""Value"" = EXCLUDED.""Value"";
     ";
-            await connection.ExecuteAsync(new CommandDefinition(sql, new { Key = ForceJoinSettingsKey, Value = jsonValue }, cancellationToken: cancellationToken));
+            _ = await connection.ExecuteAsync(new CommandDefinition(sql, new { Key = ForceJoinSettingsKey, Value = jsonValue }, cancellationToken: cancellationToken));
             _logger.LogInformation("Force join settings have been updated in the database.");
 
             // CRITICAL: Invalidate the cache so the application picks up the new setting immediately.
-            await _cacheService.RemoveAsync(ForceJoinSettingsKey);
+            _ = await _cacheService.RemoveAsync(ForceJoinSettingsKey);
             _logger.LogInformation("Force join settings cache key '{CacheKey}' has been invalidated.", ForceJoinSettingsKey);
         }
 
         public async Task<(int UserCount, int NewsItemCount, List<(DateTime Date, int Count)> UserJoinStats)> GetDashboardStatsWithUserJoinsAsync(CancellationToken cancellationToken = default)
         {
-            await using var connection = CreateConnection();
+            await using NpgsqlConnection connection = CreateConnection();
             // Get total user count and news item count
             const string sqlCounts = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
-            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(sqlCounts, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
+            using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(new CommandDefinition(sqlCounts, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
             int userCount = await multi.ReadSingleAsync<int>();
             int newsItemCount = await multi.ReadSingleAsync<int>();
 
@@ -299,16 +302,16 @@ namespace Infrastructure.Services.Admin
                 GROUP BY join_date
                 ORDER BY join_date;
             ";
-            var joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
+            List<(DateTime join_date, int count)> joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
 
             // Fill missing days with 0
-            var userJoinStats = new List<(DateTime Date, int Count)>();
-            var today = DateTime.UtcNow.Date;
+            List<(DateTime Date, int Count)> userJoinStats = new();
+            DateTime today = DateTime.UtcNow.Date;
             for (int i = 6; i >= 0; i--)
             {
-                var day = today.AddDays(-i);
-                var stat = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
-                userJoinStats.Add((day, stat.count));
+                DateTime day = today.AddDays(-i);
+                (DateTime join_date, int count) = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
+                userJoinStats.Add((day, count));
             }
 
             return (userCount, newsItemCount, userJoinStats);

@@ -8,11 +8,10 @@ using Dapper; // Dapper for micro-ORM operations
 using Domain.Entities;             // For User, Subscription, TokenWallet, UserSignalPreference entities
 using Domain.Enums; // For UserLevel enum (stored as string in DB)
 using Infrastructure.Data;
-using Microsoft.Data.SqlClient; // SQL Server specific connection
+using Infrastructure.Persistence.Configurations;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration; // To access connection strings
 using Microsoft.Extensions.Logging; // For logging
-using Npgsql;
 using Polly; // For resilience policies
 using Polly.Retry; // For retry policies
 using Polly.Timeout; // For custom RepositoryException
@@ -34,9 +33,12 @@ public class IntToBoolJsonConverter : JsonConverter<bool>
         {
             return reader.GetInt32() != 0;
         }
-        if (reader.TokenType == JsonTokenType.True) return true;
-        if (reader.TokenType == JsonTokenType.False) return false;
-        throw new JsonException();
+        if (reader.TokenType == JsonTokenType.True)
+        {
+            return true;
+        }
+
+        return reader.TokenType == JsonTokenType.False ? false : throw new JsonException();
     }
 
     public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
@@ -62,12 +64,13 @@ public class FlexibleDateTimeJsonConverter : System.Text.Json.Serialization.Json
     {
         if (reader.TokenType == JsonTokenType.String)
         {
-            var str = reader.GetString();
-            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dt))
+            string? str = reader.GetString();
+            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out DateTime dt))
+            {
                 return dt;
-            if (DateTime.TryParse(str, out dt))
-                return dt;
-            throw new JsonException($"Could not parse DateTime: {str}");
+            }
+
+            return DateTime.TryParse(str, out dt) ? dt : throw new JsonException($"Could not parse DateTime: {str}");
         }
         return reader.GetDateTime();
     }
@@ -124,7 +127,7 @@ namespace Infrastructure.Repositories
             {
                 // Create the main user entity using the properties from this DTO.
                 // This is similar to what UserDbDto.ToDomainEntity() does, but here we map directly.
-                var user = new User
+                User user = new()
                 {
                     Id = Id,
                     Username = Username,
@@ -147,7 +150,7 @@ namespace Infrastructure.Repositories
                     try
                     {
                         // Deserialize the JSON array string into a list of TokenWalletDbDto.
-                        var walletDtos = System.Text.Json.JsonSerializer.Deserialize<List<TokenWalletDbDto>>(TokenWalletJson);
+                        List<TokenWalletDbDto>? walletDtos = System.Text.Json.JsonSerializer.Deserialize<List<TokenWalletDbDto>>(TokenWalletJson);
                         if (walletDtos != null && walletDtos.Any())
                         {
                             singleWalletDto = walletDtos.First(); // Get the first (and likely only) wallet
@@ -176,7 +179,7 @@ namespace Infrastructure.Repositories
                     }
                 }
                 // Assign the domain entity list, providing an empty list if not found or if deserialization failed.
-                user.Subscriptions = subscriptionDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? new List<Subscription>();
+                user.Subscriptions = subscriptionDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? [];
 
                 // --- Deserialize User Signal Preferences ---
                 List<UserSignalPreferenceDbDto>? preferenceDtos = null;
@@ -192,10 +195,10 @@ namespace Infrastructure.Repositories
                     }
                 }
                 // Assign the domain entity list, providing an empty list if not found or if deserialization failed.
-                user.Preferences = preferenceDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? new List<UserSignalPreference>();
+                user.Preferences = preferenceDtos?.Select(dto => dto.ToDomainEntity()).ToList() ?? [];
 
                 // Transactions are not fetched in this query. Ensure the list is initialized.
-                user.Transactions = new List<Transaction>();
+                user.Transactions = [];
 
                 return user;
             }
@@ -433,28 +436,28 @@ namespace Infrastructure.Repositories
             // --- Build the SQL Query Dynamically ---
             // CORRECTED: Use the new 'GetUsersForNewsNotificationBaseSql' property from the upgraded UserSqlProvider.
             // This property provides a complete and syntactically correct base query, including the initial WHERE clause.
-            var sqlBuilder = new StringBuilder(_sql.GetUsersForNewsNotificationBaseSql);
+            StringBuilder sqlBuilder = new(_sql.GetUsersForNewsNotificationBaseSql);
 
             // Initialize Dapper parameters. This object will hold any dynamic values needed for the query.
-            var parameters = new DynamicParameters();
+            DynamicParameters parameters = new();
 
             // Conditionally append the clause for VIP-only news notifications.
             // This clause safely adds an 'AND' condition to the existing WHERE clause.
             if (isNewsItemVipOnly)
             {
-                sqlBuilder.Append(_sql.VipSubscriptionCheckClause);
+                _ = sqlBuilder.Append(_sql.VipSubscriptionCheckClause);
             }
 
             // Conditionally append the clause for filtering by specific news category preferences.
             if (newsItemSignalCategoryId.HasValue)
             {
-                sqlBuilder.Append(_sql.CategoryPreferenceCheckClause);
+                _ = sqlBuilder.Append(_sql.CategoryPreferenceCheckClause);
                 // Add the category ID to the parameters, ensuring it's correctly passed to the query.
                 parameters.Add("NewsItemSignalCategoryId", newsItemSignalCategoryId.Value);
             }
 
             // Finalize the SQL query string.
-            var finalSql = sqlBuilder.ToString();
+            string finalSql = sqlBuilder.ToString();
             // Log the constructed SQL query at a trace level for debugging purposes.
             _logger.LogTrace("Executing SQL for GetUsersForNewsNotificationAsync: {Sql}", finalSql);
 
@@ -463,24 +466,24 @@ namespace Infrastructure.Repositories
             try
             {
                 // --- 2. Execute the Query with Resilience Policies ---
-                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+                Polly.Wrap.AsyncPolicyWrap combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
-                var eligibleUsers = await combinedPolicy.ExecuteAsync(async (ct) =>
+                List<User> eligibleUsers = await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
                     // --- UPGRADE: Use a dictionary for robust multi-mapping ---
                     // This prevents issues if a user has multiple subscriptions or preferences, ensuring each user appears only once.
-                    var userMap = new Dictionary<Guid, User>();
+                    Dictionary<Guid, User> userMap = new();
 
                     // The DTOs are defined in the repository, this mapping assumes their existence.
-                    await connection.QueryAsync<UserDbDto, TokenWalletDbDto, SubscriptionDbDto, UserSignalPreferenceDbDto, User>(
+                    _ = await connection.QueryAsync<UserDbDto, TokenWalletDbDto, SubscriptionDbDto, UserSignalPreferenceDbDto, User>(
                         new CommandDefinition(finalSql, parameters, cancellationToken: ct),
                         (userDto, walletDto, subscriptionDto, preferenceDto) =>
                         {
                             // Find or create the main User entity
-                            if (!userMap.TryGetValue(userDto.Id, out var user))
+                            if (!userMap.TryGetValue(userDto.Id, out User? user))
                             {
                                 user = userDto.ToDomainEntity(); // This creates the User with empty collections
                                 userMap.Add(user.Id, user);
@@ -511,12 +514,12 @@ namespace Infrastructure.Repositories
                     );
 
                     // Ensure every user has a non-null wallet, even if it's a default/empty one.
-                    foreach (var user in userMap.Values)
+                    foreach (User user in userMap.Values)
                     {
                         user.TokenWallet ??= TokenWallet.Create(user.Id);
                     }
 
-                    var eligibleUsersList = userMap.Values.ToList();
+                    List<User> eligibleUsersList = userMap.Values.ToList();
 
                     _logger.LogInformation("UserRepository: Found {UserCount} eligible users for news notification.", eligibleUsersList.Count);
                     return eligibleUsersList;
@@ -627,20 +630,20 @@ namespace Infrastructure.Repositories
 
             // --- REMOVED THE LARGE, HARDCODED 'const string sql' ---
             // Instead, we get the correct, provider-specific SQL from our SQL provider.
-            var sql = _sql.GetByIdSql;
+            string sql = _sql.GetByIdSql;
 
             try
             {
                 // This entire block of C# logic remains UNCHANGED. It's already database-agnostic.
-                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+                Polly.Wrap.AsyncPolicyWrap combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
                 return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     // CreateConnection() already handles switching between database connections.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
-                    var userWithRelatedDataDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                    UserWithRelatedDataDto? userWithRelatedDataDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
                         new CommandDefinition(sql, new { Id = id }, cancellationToken: ct)
                     );
 
@@ -650,7 +653,7 @@ namespace Infrastructure.Repositories
                         return null;
                     }
 
-                    var user = userWithRelatedDataDto.ToDomainEntity(_logger);
+                    User user = userWithRelatedDataDto.ToDomainEntity(_logger);
 
                     _logger.LogDebug("Successfully fetched user {UserId} with all related entities.", id);
                     return user;
@@ -682,28 +685,29 @@ namespace Infrastructure.Repositories
         /// <returns>The complete User entity, or null if not found.</returns>
         public async Task<User?> GetByTelegramIdAsync(string telegramId, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(telegramId)) return null;
+            if (string.IsNullOrWhiteSpace(telegramId))
+            {
+                return null;
+            }
 
             _logger.LogTrace("UserRepository: Fetching user by TelegramID: {TelegramId}", telegramId);
 
             // --- MODIFIED LINE ---
             // The SQL is now fetched from the provider, which returns the correct dialect.
-            var sql = _sql.GetByTelegramIdSql;
+            string sql = _sql.GetByTelegramIdSql;
 
             try
             {
                 // The rest of this method's logic is already database-agnostic and requires no changes.
-                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+                Polly.Wrap.AsyncPolicyWrap combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
                 return await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
-                    var userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                    UserWithRelatedDataDto? userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
                         new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct));
 
-                    if (userDto == null) return null;
-                    return userDto.ToDomainEntity(_logger);
-
+                    return userDto == null ? null : userDto.ToDomainEntity(_logger);
                 }, cancellationToken);
             }
             catch (Exception ex)
@@ -724,20 +728,20 @@ namespace Infrastructure.Repositories
 
             string lowerEmail = email.ToLowerInvariant();
 
-            var sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
+            string sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
             _logger.LogTrace("UserRepository: Fetching user by Email: {SanitizedEmail}.", sanitizedEmail);
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
                     // --- MODIFIED LINE ---
                     // The query is now fetched from the provider, ensuring correct syntax.
-                    var userIdQuery = _sql.GetUserIdByEmailSql;
-                    var userId = await connection.ExecuteScalarAsync<Guid?>(userIdQuery, new { Email = lowerEmail });
+                    string userIdQuery = _sql.GetUserIdByEmailSql;
+                    Guid? userId = await connection.ExecuteScalarAsync<Guid?>(userIdQuery, new { Email = lowerEmail });
 
                     if (!userId.HasValue)
                     {
@@ -764,24 +768,24 @@ namespace Infrastructure.Repositories
             _logger.LogTrace("UserRepository: Fetching all users.");
             return await _retryPolicy.ExecuteAsync(async () =>
             {
-                using var connection = CreateConnection();
+                using IDbConnection connection = CreateConnection();
                 await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
                 // --- MODIFIED: Fetch all users first using the provider's SQL ---
-                var users = (await connection.QueryAsync<UserDbDto>(_sql.GetAllUsersSql))
+                List<User> users = (await connection.QueryAsync<UserDbDto>(_sql.GetAllUsersSql))
                     .Select(dto => dto.ToDomainEntity()).ToList();
 
                 if (users.Any())
                 {
-                    var userIds = users.Select(u => u.Id).ToList();
+                    List<Guid> userIds = users.Select(u => u.Id).ToList();
 
                     // --- MODIFIED: Batch fetch all related data using the provider's SQL ---
-                    var wallets = (await connection.QueryAsync<TokenWalletDbDto>(_sql.GetWalletsForUsersSql, new { UserIds = userIds })).ToList();
-                    var subscriptions = (await connection.QueryAsync<SubscriptionDbDto>(_sql.GetSubscriptionsForUsersSql, new { UserIds = userIds })).ToList();
-                    var preferences = (await connection.QueryAsync<UserSignalPreferenceDbDto>(_sql.GetPreferencesForUsersSql, new { UserIds = userIds })).ToList();
+                    List<TokenWalletDbDto> wallets = (await connection.QueryAsync<TokenWalletDbDto>(_sql.GetWalletsForUsersSql, new { UserIds = userIds })).ToList();
+                    List<SubscriptionDbDto> subscriptions = (await connection.QueryAsync<SubscriptionDbDto>(_sql.GetSubscriptionsForUsersSql, new { UserIds = userIds })).ToList();
+                    List<UserSignalPreferenceDbDto> preferences = (await connection.QueryAsync<UserSignalPreferenceDbDto>(_sql.GetPreferencesForUsersSql, new { UserIds = userIds })).ToList();
 
                     // This mapping logic is unchanged as it's pure C#
-                    foreach (var user in users)
+                    foreach (User? user in users)
                     {
                         user.TokenWallet = wallets.FirstOrDefault(tw => tw.UserId == user.Id)?.ToDomainEntity() ?? TokenWallet.Create(user.Id);
                         user.Subscriptions = subscriptions.Where(s => s.UserId == user.Id).Select(s => s.ToDomainEntity()).ToList();
@@ -827,12 +831,15 @@ namespace Infrastructure.Repositories
 
             // --- Input Validation ---
             // Ensure the user object provided is not null.
-            if (user == null) throw new ArgumentNullException(nameof(user));
+            if (user == null)
+            {
+                throw new ArgumentNullException(nameof(user));
+            }
             // Further validation for user and tokenWallet properties could be added here.
 
             // --- Prepare for Logging ---
             // Sanitize sensitive information like usernames before logging.
-            var sanitizedUsername = _logSanitizer.Sanitize(user.Username);
+            string sanitizedUsername = _logSanitizer.Sanitize(user.Username);
             // Log the intent to add a new user, including the sanitized username for traceability.
             _logger.LogInformation("UserRepository: Preparing to add new user '{SanitizedUsername}'.", sanitizedUsername);
 
@@ -843,7 +850,7 @@ namespace Infrastructure.Repositories
             // --- Construct the Combined SQL Statement ---
             // Concatenate the SQL statements for adding a user and their wallet.
             // The _sql provider ensures that AddUserSql and AddWalletSql use the correct syntax for the target database.
-            var insertSql = $"{_sql.AddUserSql} {_sql.AddWalletSql}";
+            string insertSql = $"{_sql.AddUserSql} {_sql.AddWalletSql}";
 
             #endregion
 
@@ -851,7 +858,7 @@ namespace Infrastructure.Repositories
             {
                 // --- Apply Resilience Policies ---
                 // Combine the timeout and retry policies for execution.
-                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+                Polly.Wrap.AsyncPolicyWrap combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
                 // Execute the core logic within the resilience policies.
                 await combinedPolicy.ExecuteAsync(async (ct) =>
@@ -859,14 +866,14 @@ namespace Infrastructure.Repositories
                     // --- Database Connection and Transaction Management ---
                     // Obtain a database connection using the factory method, which is provider-aware.
                     // Use synchronous 'using' for IDbConnection as it's only IDisposable, not IAsyncDisposable.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     // Asynchronously open the connection. Cast is safe if CreateConnection returns DbConnection.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
                     // Begin a database transaction.
                     // Use 'await using' for the transaction because DbTransaction implements IAsyncDisposable.
                     // This ensures the transaction is properly managed (committed or rolled back).
-                    await using var transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
+                    await using DbTransaction transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
 
                     try
                     {
@@ -897,7 +904,7 @@ namespace Infrastructure.Repositories
                         // --- Execute SQL within the Transaction ---
                         // Execute the combined SQL statement (AddUserSql + AddWalletSql) using Dapper.
                         // The parameters are passed, and the transaction is specified to ensure atomicity.
-                        await connection.ExecuteAsync(insertSql, parameters, transaction: transaction);
+                        _ = await connection.ExecuteAsync(insertSql, parameters, transaction: transaction);
 
                         // --- Commit the Transaction ---
                         // If ExecuteAsync completes without exceptions, commit the transaction to make changes permanent.
@@ -972,7 +979,7 @@ namespace Infrastructure.Repositories
             {
                 // --- Apply Resilience Policies ---
                 // Combine timeout and retry policies to execute the database operation robustly.
-                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+                Polly.Wrap.AsyncPolicyWrap combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
                 // Execute the core database update logic within the resilience policies.
                 await combinedPolicy.ExecuteAsync(async (ct) =>
@@ -980,21 +987,21 @@ namespace Infrastructure.Repositories
                     // --- Database Connection and Transaction Setup ---
                     // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
                     // Use synchronous 'using' for IDbConnection as it is only IDisposable.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     // Asynchronously open the database connection.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
                     // Begin a new database transaction to ensure atomicity of the update operations.
                     // Use 'await using' for DbTransaction as it implements IAsyncDisposable.
-                    await using var transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
+                    await using DbTransaction transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
 
                     try
                     {
                         // --- Retrieve Provider-Specific SQL Statements ---
                         // Get the appropriate SQL strings for updating a user and upserting a wallet
                         // from the injected UserSqlProvider, which accounts for database dialect differences.
-                        var updateUserSql = _sql.UpdateUserSql;
-                        var upsertWalletSql = _sql.UpsertWalletSql;
+                        string updateUserSql = _sql.UpdateUserSql;
+                        string upsertWalletSql = _sql.UpsertWalletSql;
 
                         #region Prepare User Update Parameters
 
@@ -1021,7 +1028,7 @@ namespace Infrastructure.Repositories
 
                         // --- Execute User Update SQL ---
                         // Execute the user update command against the database within the current transaction.
-                        var rowsAffected = await connection.ExecuteAsync(updateUserSql, userParams, transaction: transaction);
+                        int rowsAffected = await connection.ExecuteAsync(updateUserSql, userParams, transaction: transaction);
 
                         // --- Check if User Was Found and Updated ---
                         // If zero rows were affected, it means the user ID did not exist in the database.
@@ -1051,7 +1058,7 @@ namespace Infrastructure.Repositories
                                 UpdatedAt = DateTime.UtcNow // Update the timestamp for the wallet record.
                             };
                             // Execute the upsert command for the token wallet.
-                            await connection.ExecuteAsync(upsertWalletSql, walletParams, transaction: transaction);
+                            _ = await connection.ExecuteAsync(upsertWalletSql, walletParams, transaction: transaction);
                         }
                         else
                         {
@@ -1150,7 +1157,7 @@ namespace Infrastructure.Repositories
             // --- Retrieve Provider-Specific SQL ---
             // Fetch the SQL statement for retrieving user data by Telegram ID.
             // The UserSqlProvider ensures that the correct SQL dialect (e.g., syntax for JSON functions, quoting) is used.
-            var sql = _sql.GetByTelegramIdSql;
+            string sql = _sql.GetByTelegramIdSql;
 
             #endregion
 
@@ -1158,21 +1165,21 @@ namespace Infrastructure.Repositories
             {
                 // --- Apply Resilience Policies ---
                 // Combine timeout and retry policies to manage potential transient issues during database access.
-                var combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
+                Polly.Wrap.AsyncPolicyWrap combinedPolicy = _timeoutPolicy.WrapAsync(_retryPolicy);
 
                 // Execute the database retrieval logic within the defined resilience policies.
-                var user = await combinedPolicy.ExecuteAsync(async (ct) =>
+                User? user = await combinedPolicy.ExecuteAsync(async (ct) =>
                 {
                     // --- Database Connection and Query Execution ---
                     // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
                     // Use synchronous 'using' for IDbConnection as it is only IDisposable.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     // Asynchronously open the database connection.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
                     // Execute the query to fetch the user data, including related entities aggregated as JSON.
                     // Dapper's QueryFirstOrDefaultAsync returns the first matching record or null if none is found.
-                    var userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
+                    UserWithRelatedDataDto? userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
                         // CommandDefinition encapsulates the SQL, parameters, and cancellation token for Dapper.
                         new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct)
                     );
@@ -1186,7 +1193,7 @@ namespace Infrastructure.Repositories
                     }
 
                     // Convert the fetched DTO into a domain entity, potentially parsing JSON fields.
-                    var userDomainEntity = userDto.ToDomainEntity(_logger);
+                    User userDomainEntity = userDto.ToDomainEntity(_logger);
 
                     // Log successful retrieval of the user and their related data.
                     _logger.LogDebug("Successfully fetched user {UserId} (TelegramID: {TelegramId}) with all related entities.", userDomainEntity.Id, telegramId);
@@ -1217,7 +1224,7 @@ namespace Infrastructure.Repositories
 
             #endregion
         }
-    
+
         /// <inheritdoc />
         public async Task DeleteAsync(User user, CancellationToken cancellationToken = default)
         {
@@ -1265,7 +1272,7 @@ namespace Infrastructure.Repositories
             // Convert the email to lowercase for a case-insensitive database comparison.
             string lowerEmail = email.ToLowerInvariant();
             // Sanitize the email for safe logging, preventing potential data leakage.
-            var sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
+            string sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
             // Log the intent to check for user existence, including the sanitized email for traceability.
             _logger.LogTrace("UserRepository: Checking existence by Email: {SanitizedEmail}.", sanitizedEmail);
 
@@ -1281,20 +1288,20 @@ namespace Infrastructure.Repositories
                     // --- Database Connection and Query Execution ---
                     // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
                     // Use synchronous 'using' for IDbConnection as it is only IDisposable.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     // Asynchronously open the database connection.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
                     // --- Retrieve Provider-Specific SQL ---
                     // Fetch the SQL statement for checking email existence from the UserSqlProvider.
                     // This ensures that the query uses the correct syntax and parameter naming conventions for the target database.
-                    var sql = _sql.CheckExistsByEmailSql;
+                    string sql = _sql.CheckExistsByEmailSql;
 
                     // --- Execute Scalar Query ---
                     // Execute the SQL query which is expected to return a single scalar value (the count of matching emails).
                     // Dapper's ExecuteScalarAsync is used for this purpose.
                     // The lowercased email is passed as a parameter to the query.
-                    var count = await connection.ExecuteScalarAsync<int>(sql, new { Email = lowerEmail });
+                    int count = await connection.ExecuteScalarAsync<int>(sql, new { Email = lowerEmail });
 
                     // --- Determine Existence ---
                     // The user exists if the count of matching emails returned from the database is greater than zero.
@@ -1348,7 +1355,7 @@ namespace Infrastructure.Repositories
                 {
                     // --- Database Connection and Query Execution ---
                     // Obtain a database connection instance using the helper method.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     // Asynchronously open the database connection to the data source.
                     // Using System.Data.Common.DbConnection for generality.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
@@ -1356,12 +1363,12 @@ namespace Infrastructure.Repositories
                     // --- MODIFIED LINE: Retrieve SQL from Provider ---
                     // Fetch the SQL statement for checking user existence by Telegram ID from the UserSqlProvider.
                     // This ensures that the query uses the correct syntax and parameter naming conventions for the target database.
-                    var sql = _sql.CheckExistsByTelegramIdSql;
+                    string sql = _sql.CheckExistsByTelegramIdSql;
 
                     // --- Execute Scalar Query ---
                     // Use Dapper's ExecuteScalarAsync to run the SQL query and retrieve a single scalar value (the count).
                     // The TelegramId parameter is passed to the query, ensuring safe parameterization.
-                    var count = await connection.ExecuteScalarAsync<int>(sql, new { TelegramId = telegramId });
+                    int count = await connection.ExecuteScalarAsync<int>(sql, new { TelegramId = telegramId });
 
                     // --- Determine Existence Based on Count ---
                     // The user is considered to exist if the count returned from the database is greater than zero.
@@ -1437,20 +1444,20 @@ namespace Infrastructure.Repositories
                 {
                     // --- Establish Database Connection and Transaction ---
                     // Obtain a database connection instance using the helper method.
-                    using var connection = CreateConnection();
+                    using IDbConnection connection = CreateConnection();
                     // Asynchronously open the database connection. Cast to DbConnection is for accessing async methods.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(ct);
 
                     // Start an asynchronous database transaction. This ensures that all operations within the transaction
                     // are treated as a single atomic unit – either all succeed, or all are rolled back.
                     // Using 'await using' ensures the transaction is properly disposed of (committed or rolled back).
-                    await using var transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
+                    await using DbTransaction transaction = await (connection as System.Data.Common.DbConnection)!.BeginTransactionAsync(ct);
                     try
                     {
                         // --- MODIFIED: Fetch Provider-Specific SQL for Existence Check ---
                         // Retrieve the SQL query to check if the user exists from the UserSqlProvider.
                         // This ensures the query uses the correct syntax for the target database.
-                        var userExistsCount = await connection.ExecuteScalarAsync<int>(_sql.CheckUserExistsSql, new { Id = userId }, transaction: transaction);
+                        int userExistsCount = await connection.ExecuteScalarAsync<int>(_sql.CheckUserExistsSql, new { Id = userId }, transaction: transaction);
 
                         // --- Check User Existence ---
                         // If the count returned is 0, the user does not exist in the database.
@@ -1472,7 +1479,7 @@ namespace Infrastructure.Repositories
 
                         // --- MODIFIED: Fetch Provider-Specific SQL for User Deletion ---
                         // Retrieve the SQL query for deleting the user record from the UserSqlProvider.
-                        var rowsAffected = await connection.ExecuteAsync(_sql.DeleteUserSql, new { Id = userId }, transaction: transaction);
+                        int rowsAffected = await connection.ExecuteAsync(_sql.DeleteUserSql, new { Id = userId }, transaction: transaction);
 
                         // --- Verify Deletion Success ---
                         // Check if the delete operation affected any rows. If not, it indicates a concurrency issue

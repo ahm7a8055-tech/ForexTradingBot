@@ -8,7 +8,6 @@ using Domain.Features.Forwarding.Entities;     // For ForwardingRule entity
 using Domain.Features.Forwarding.Repositories; // For IForwardingRuleRepository interface
 using Domain.Features.Forwarding.ValueObjects; // For MessageEditOptions, MessageFilterOptions, TextReplacement
 using Domain.Features.Fowarding.ValueObjects;
-using Microsoft.Data.SqlClient; // Added for SqlConnection (assuming SQL Server)
 // using Infrastructure.Data; // No longer directly using AppDbContext here
 using Microsoft.EntityFrameworkCore; // Still needed for DbUpdateConcurrencyException type check in Polly
 using Microsoft.Extensions.Configuration; // Added to get connection string
@@ -34,7 +33,7 @@ namespace Infrastructure.Features.Forwarding.Repositories
         private readonly string _connectionString; // Changed from AppDbContext to connection string
         private readonly ILogger<ForwardingRuleRepository> _logger;
         private readonly AsyncRetryPolicy _retryPolicy;
-        private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+        private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = false };
 
         /// <summary>
         /// Initializes a new instance of the ForwardingRuleRepository class.
@@ -64,8 +63,10 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
         #region Internal DTOs for Dapper Mapping
 
-        private NpgsqlConnection CreateConnection() => new(_connectionString);
-
+        private NpgsqlConnection CreateConnection()
+        {
+            return new(_connectionString);
+        }
 
         private class ForwardingRuleWithReplacementsDto
         {
@@ -127,25 +128,25 @@ namespace Infrastructure.Features.Forwarding.Repositories
             // Converts the DTO to the domain entity
             public ForwardingRule ToDomainEntity(IReadOnlyList<TextReplacement>? textReplacements = null)
             {
-                var editOptions = new MessageEditOptions(
+                MessageEditOptions editOptions = new(
                     EditOptions_PrependText, EditOptions_AppendText, textReplacements,
                     EditOptions_RemoveSourceForwardHeader, EditOptions_RemoveLinks, EditOptions_StripFormatting,
                     EditOptions_CustomFooter, EditOptions_DropAuthor, EditOptions_DropMediaCaptions,
                     EditOptions_NoForwards
                 );
-                var filterOptions = new MessageFilterOptions(
-           JsonSerializer.Deserialize<List<string>>(FilterOptions_AllowedMessageTypes, _jsonOptions) ?? new(),
-           JsonSerializer.Deserialize<List<string>>(FilterOptions_AllowedMimeTypes, _jsonOptions) ?? new(),
+                MessageFilterOptions filterOptions = new(
+           JsonSerializer.Deserialize<List<string>>(FilterOptions_AllowedMessageTypes, _jsonOptions) ?? [],
+           JsonSerializer.Deserialize<List<string>>(FilterOptions_AllowedMimeTypes, _jsonOptions) ?? [],
            FilterOptions_ContainsText, FilterOptions_ContainsTextIsRegex, (RegexOptions)FilterOptions_ContainsTextRegexOptions,
-           JsonSerializer.Deserialize<List<long>>(FilterOptions_AllowedSenderUserIds, _jsonOptions) ?? new(),
-           JsonSerializer.Deserialize<List<long>>(FilterOptions_BlockedSenderUserIds, _jsonOptions) ?? new(),
+           JsonSerializer.Deserialize<List<long>>(FilterOptions_AllowedSenderUserIds, _jsonOptions) ?? [],
+           JsonSerializer.Deserialize<List<long>>(FilterOptions_BlockedSenderUserIds, _jsonOptions) ?? [],
            FilterOptions_IgnoreEditedMessages, FilterOptions_IgnoreServiceMessages,
            FilterOptions_MinMessageLength, FilterOptions_MaxMessageLength
        );
 
                 return new ForwardingRule(
                     RuleName, IsEnabled, SourceChannelId,
-                    JsonSerializer.Deserialize<List<long>>(TargetChannelIds, _jsonOptions) ?? new(),
+                    JsonSerializer.Deserialize<List<long>>(TargetChannelIds, _jsonOptions) ?? [],
                     editOptions, filterOptions
                 );
             }
@@ -162,35 +163,41 @@ namespace Infrastructure.Features.Forwarding.Repositories
             public bool IsRegex { get; set; }
             public int RegexOptions { get; set; }
 
-            public TextReplacement ToDomainEntity() => new(Find, ReplaceWith, IsRegex, (RegexOptions)RegexOptions);
+            public TextReplacement ToDomainEntity()
+            {
+                return new(Find, ReplaceWith, IsRegex, (RegexOptions)RegexOptions);
+            }
         }
-        private static object CreateRuleParameters(ForwardingRule rule) => new
+        private static object CreateRuleParameters(ForwardingRule rule)
         {
-            rule.RuleName,
-            rule.IsEnabled,
-            rule.SourceChannelId,
-            TargetChannelIds = JsonSerializer.Serialize(rule.TargetChannelIds, _jsonOptions),
-            EditOptions_PrependText = rule.EditOptions.PrependText,
-            EditOptions_AppendText = rule.EditOptions.AppendText,
-            EditOptions_RemoveSourceForwardHeader = rule.EditOptions.RemoveSourceForwardHeader,
-            EditOptions_RemoveLinks = rule.EditOptions.RemoveLinks,
-            EditOptions_StripFormatting = rule.EditOptions.StripFormatting,
-            EditOptions_CustomFooter = rule.EditOptions.CustomFooter,
-            EditOptions_DropAuthor = rule.EditOptions.DropAuthor,
-            EditOptions_DropMediaCaptions = rule.EditOptions.DropMediaCaptions,
-            EditOptions_NoForwards = rule.EditOptions.NoForwards,
-            FilterOptions_AllowedMessageTypes = JsonSerializer.Serialize(rule.FilterOptions.AllowedMessageTypes, _jsonOptions),
-            FilterOptions_AllowedMimeTypes = JsonSerializer.Serialize(rule.FilterOptions.AllowedMimeTypes, _jsonOptions),
-            FilterOptions_ContainsText = rule.FilterOptions.ContainsText,
-            FilterOptions_ContainsTextIsRegex = rule.FilterOptions.ContainsTextIsRegex,
-            FilterOptions_ContainsTextRegexOptions = (int)rule.FilterOptions.ContainsTextRegexOptions,
-            FilterOptions_AllowedSenderUserIds = JsonSerializer.Serialize(rule.FilterOptions.AllowedSenderUserIds, _jsonOptions),
-            FilterOptions_BlockedSenderUserIds = JsonSerializer.Serialize(rule.FilterOptions.BlockedSenderUserIds, _jsonOptions),
-            FilterOptions_IgnoreEditedMessages = rule.FilterOptions.IgnoreEditedMessages,
-            FilterOptions_IgnoreServiceMessages = rule.FilterOptions.IgnoreServiceMessages,
-            FilterOptions_MinMessageLength = rule.FilterOptions.MinMessageLength,
-            FilterOptions_MaxMessageLength = rule.FilterOptions.MaxMessageLength
-        };
+            return new
+            {
+                rule.RuleName,
+                rule.IsEnabled,
+                rule.SourceChannelId,
+                TargetChannelIds = JsonSerializer.Serialize(rule.TargetChannelIds, _jsonOptions),
+                EditOptions_PrependText = rule.EditOptions.PrependText,
+                EditOptions_AppendText = rule.EditOptions.AppendText,
+                EditOptions_RemoveSourceForwardHeader = rule.EditOptions.RemoveSourceForwardHeader,
+                EditOptions_RemoveLinks = rule.EditOptions.RemoveLinks,
+                EditOptions_StripFormatting = rule.EditOptions.StripFormatting,
+                EditOptions_CustomFooter = rule.EditOptions.CustomFooter,
+                EditOptions_DropAuthor = rule.EditOptions.DropAuthor,
+                EditOptions_DropMediaCaptions = rule.EditOptions.DropMediaCaptions,
+                EditOptions_NoForwards = rule.EditOptions.NoForwards,
+                FilterOptions_AllowedMessageTypes = JsonSerializer.Serialize(rule.FilterOptions.AllowedMessageTypes, _jsonOptions),
+                FilterOptions_AllowedMimeTypes = JsonSerializer.Serialize(rule.FilterOptions.AllowedMimeTypes, _jsonOptions),
+                FilterOptions_ContainsText = rule.FilterOptions.ContainsText,
+                FilterOptions_ContainsTextIsRegex = rule.FilterOptions.ContainsTextIsRegex,
+                FilterOptions_ContainsTextRegexOptions = (int)rule.FilterOptions.ContainsTextRegexOptions,
+                FilterOptions_AllowedSenderUserIds = JsonSerializer.Serialize(rule.FilterOptions.AllowedSenderUserIds, _jsonOptions),
+                FilterOptions_BlockedSenderUserIds = JsonSerializer.Serialize(rule.FilterOptions.BlockedSenderUserIds, _jsonOptions),
+                FilterOptions_IgnoreEditedMessages = rule.FilterOptions.IgnoreEditedMessages,
+                FilterOptions_IgnoreServiceMessages = rule.FilterOptions.IgnoreServiceMessages,
+                FilterOptions_MinMessageLength = rule.FilterOptions.MinMessageLength,
+                FilterOptions_MaxMessageLength = rule.FilterOptions.MaxMessageLength
+            };
+        }
 
 
         #endregion
@@ -208,9 +215,12 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
         public async Task<ForwardingRule?> GetByIdAsync(string ruleName, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruleName)) return null;
+            if (string.IsNullOrWhiteSpace(ruleName))
+            {
+                return null;
+            }
 
-            var sanitizedRuleName = ruleName.Replace(Environment.NewLine, string.Empty);
+            string sanitizedRuleName = ruleName.Replace(Environment.NewLine, string.Empty);
             _logger.LogTrace("Fetching forwarding rule by RuleName: {RuleName}", sanitizedRuleName);
 
             // CORRECTED: SQL with quoted identifiers for PostgreSQL.
@@ -220,14 +230,17 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             return await _retryPolicy.ExecuteAsync(async () =>
             {
-                using var connection = CreateConnection();
-                using var multi = await connection.QueryMultipleAsync(sql, new { RuleName = ruleName });
+                using NpgsqlConnection connection = CreateConnection();
+                using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(sql, new { RuleName = ruleName });
 
-                var ruleDto = await multi.ReadFirstOrDefaultAsync<ForwardingRuleDbDto>();
-                if (ruleDto == null) return null;
+                ForwardingRuleDbDto? ruleDto = await multi.ReadFirstOrDefaultAsync<ForwardingRuleDbDto>();
+                if (ruleDto == null)
+                {
+                    return null;
+                }
 
-                var textReplacementDtos = await multi.ReadAsync<TextReplacementDbDto>();
-                var textReplacements = textReplacementDtos.Select(dto => dto.ToDomainEntity()).ToList();
+                IEnumerable<TextReplacementDbDto> textReplacementDtos = await multi.ReadAsync<TextReplacementDbDto>();
+                List<TextReplacement> textReplacements = textReplacementDtos.Select(dto => dto.ToDomainEntity()).ToList();
 
                 return ruleDto.ToDomainEntity(textReplacements);
             });
@@ -251,11 +264,11 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             return await _retryPolicy.ExecuteAsync(async () =>
             {
-                using var connection = CreateConnection();
-                using var multi = await connection.QueryMultipleAsync(sql);
+                using NpgsqlConnection connection = CreateConnection();
+                using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(sql);
 
-                var ruleDtos = await multi.ReadAsync<ForwardingRuleDbDto>();
-                var replacementsLookup = (await multi.ReadAsync<TextReplacementDbDto>()).ToLookup(r => r.ForwardingRuleName);
+                IEnumerable<ForwardingRuleDbDto> ruleDtos = await multi.ReadAsync<ForwardingRuleDbDto>();
+                ILookup<string, TextReplacementDbDto> replacementsLookup = (await multi.ReadAsync<TextReplacementDbDto>()).ToLookup(r => r.ForwardingRuleName);
 
                 return ruleDtos.Select(dto => dto.ToDomainEntity(replacementsLookup[dto.RuleName].Select(r => r.ToDomainEntity()).ToList())).ToList();
             });
@@ -279,11 +292,11 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             return await _retryPolicy.ExecuteAsync(async () =>
             {
-                using var connection = CreateConnection();
-                using var multi = await connection.QueryMultipleAsync(sql, new { SourceChannelId = sourceChannelId });
+                using NpgsqlConnection connection = CreateConnection();
+                using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(sql, new { SourceChannelId = sourceChannelId });
 
-                var ruleDtos = await multi.ReadAsync<ForwardingRuleDbDto>();
-                var replacementsLookup = (await multi.ReadAsync<TextReplacementDbDto>()).ToLookup(r => r.ForwardingRuleName);
+                IEnumerable<ForwardingRuleDbDto> ruleDtos = await multi.ReadAsync<ForwardingRuleDbDto>();
+                ILookup<string, TextReplacementDbDto> replacementsLookup = (await multi.ReadAsync<TextReplacementDbDto>()).ToLookup(r => r.ForwardingRuleName);
 
                 return ruleDtos.Select(dto => dto.ToDomainEntity(replacementsLookup[dto.RuleName].Select(r => r.ToDomainEntity()).ToList())).ToList();
             });
@@ -300,7 +313,7 @@ namespace Infrastructure.Features.Forwarding.Repositories
         public async Task<IEnumerable<ForwardingRule>> GetPaginatedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default)
         {
             // ... (validation is fine)
-            var offset = (pageNumber - 1) * pageSize;
+            int offset = (pageNumber - 1) * pageSize;
 
             // CORRECTED: PostgreSQL LIMIT/OFFSET syntax and quoted identifiers.
             const string sql = @"
@@ -313,11 +326,11 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             return await _retryPolicy.ExecuteAsync(async () =>
             {
-                using var connection = CreateConnection();
-                using var multi = await connection.QueryMultipleAsync(sql, new { PageSize = pageSize, Offset = offset });
+                using NpgsqlConnection connection = CreateConnection();
+                using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(sql, new { PageSize = pageSize, Offset = offset });
 
-                var ruleDtos = await multi.ReadAsync<ForwardingRuleDbDto>();
-                var replacementsLookup = (await multi.ReadAsync<TextReplacementDbDto>()).ToLookup(r => r.ForwardingRuleName);
+                IEnumerable<ForwardingRuleDbDto> ruleDtos = await multi.ReadAsync<ForwardingRuleDbDto>();
+                ILookup<string, TextReplacementDbDto> replacementsLookup = (await multi.ReadAsync<TextReplacementDbDto>()).ToLookup(r => r.ForwardingRuleName);
 
                 return ruleDtos.Select(dto => dto.ToDomainEntity(replacementsLookup[dto.RuleName].Select(r => r.ToDomainEntity()).ToList())).ToList();
             });
@@ -336,11 +349,11 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             return await _retryPolicy.ExecuteAsync(async (ct) => // Use the token provided by Polly
             {
-                using var connection = CreateConnection();
+                using NpgsqlConnection connection = CreateConnection();
 
                 // --- THIS IS THE FIX ---
                 // Create a CommandDefinition to explicitly pass the CancellationToken.
-                var command = new CommandDefinition(sql, cancellationToken: ct);
+                CommandDefinition command = new(sql, cancellationToken: ct);
 
                 return await connection.ExecuteScalarAsync<int>(command);
 
@@ -384,22 +397,23 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await using var connection = CreateConnection();
+                await using NpgsqlConnection connection = CreateConnection();
                 await connection.OpenAsync(cancellationToken);
-                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-                await connection.ExecuteAsync(insertRuleSql, CreateRuleParameters(rule), transaction);
+                _ = await connection.ExecuteAsync(insertRuleSql, CreateRuleParameters(rule), transaction);
 
                 if (rule.EditOptions.TextReplacements?.Any() == true)
                 {
-                    var replacementParams = rule.EditOptions.TextReplacements.Select(r => new {
+                    var replacementParams = rule.EditOptions.TextReplacements.Select(r => new
+                    {
                         ForwardingRuleName = rule.RuleName,
                         r.Find,
                         r.ReplaceWith,
                         r.IsRegex,
                         RegexOptions = (int)r.RegexOptions
                     });
-                    await connection.ExecuteAsync(insertReplacementsSql, replacementParams, transaction);
+                    _ = await connection.ExecuteAsync(insertReplacementsSql, replacementParams, transaction);
                 }
 
                 await transaction.CommitAsync(cancellationToken);
@@ -438,25 +452,29 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await using var connection = CreateConnection();
+                await using NpgsqlConnection connection = CreateConnection();
                 await connection.OpenAsync(cancellationToken);
-                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-                var rowsAffected = await connection.ExecuteAsync(updateRuleSql, CreateRuleParameters(rule), transaction);
-                if (rowsAffected == 0) throw new InvalidOperationException($"Concurrency conflict: Rule '{rule.RuleName}' not found for update.");
+                int rowsAffected = await connection.ExecuteAsync(updateRuleSql, CreateRuleParameters(rule), transaction);
+                if (rowsAffected == 0)
+                {
+                    throw new InvalidOperationException($"Concurrency conflict: Rule '{rule.RuleName}' not found for update.");
+                }
 
-                await connection.ExecuteAsync(deleteReplacementsSql, new { rule.RuleName }, transaction);
+                _ = await connection.ExecuteAsync(deleteReplacementsSql, new { rule.RuleName }, transaction);
 
                 if (rule.EditOptions.TextReplacements?.Any() == true)
                 {
-                    var replacementParams = rule.EditOptions.TextReplacements.Select(r => new {
+                    var replacementParams = rule.EditOptions.TextReplacements.Select(r => new
+                    {
                         ForwardingRuleName = rule.RuleName,
                         r.Find,
                         r.ReplaceWith,
                         r.IsRegex,
                         RegexOptions = (int)r.RegexOptions
                     });
-                    await connection.ExecuteAsync(insertReplacementsSql, replacementParams, transaction);
+                    _ = await connection.ExecuteAsync(insertReplacementsSql, replacementParams, transaction);
                 }
 
                 await transaction.CommitAsync(cancellationToken);
@@ -471,7 +489,10 @@ namespace Infrastructure.Features.Forwarding.Repositories
         /// <param name="cancellationToken">Cancellation token for asynchronous operation.</param>
         public async Task DeleteAsync(string ruleName, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruleName)) return;
+            if (string.IsNullOrWhiteSpace(ruleName))
+            {
+                return;
+            }
 
             // The DDL specifies ON DELETE CASCADE, so we only need to delete the parent rule.
             // This is atomic and handled by the database.
@@ -479,9 +500,12 @@ namespace Infrastructure.Features.Forwarding.Repositories
 
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                using var connection = CreateConnection();
-                var rowsAffected = await connection.ExecuteAsync(deleteSql, new { RuleName = ruleName });
-                if (rowsAffected == 0) _logger.LogWarning("Delete operation for RuleName {RuleName} did not affect any rows, it may have already been deleted.", ruleName);
+                using NpgsqlConnection connection = CreateConnection();
+                int rowsAffected = await connection.ExecuteAsync(deleteSql, new { RuleName = ruleName });
+                if (rowsAffected == 0)
+                {
+                    _logger.LogWarning("Delete operation for RuleName {RuleName} did not affect any rows, it may have already been deleted.", ruleName);
+                }
             });
         }
     }

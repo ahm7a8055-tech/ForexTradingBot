@@ -2,28 +2,24 @@
 using Application.Common.Interfaces;
 using Application.DTOs;
 using Application.Interfaces;
-// Explicitly use an alias for the domain entity User to avoid conflicts
-using DomainUser = Domain.Entities.User;
+using Domain.Entities;
 using Domain.Enums;
+using Hangfire;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Shared.Extensions;
 using System.Text.RegularExpressions;
 using Telegram.Bot;
-using Telegram.Bot.Exceptions;
-// Explicitly specify the Telegram.Bot.Types namespace for all its types
-using TGBotTypes = Telegram.Bot.Types;
+using Telegram.Bot.Types;
+using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Application.CommandHandlers.MainMenu;
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Formatters;
-using TelegramPanel.Infrastructure;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
-using Domain.Entities;
-using Telegram.Bot.Types.ReplyMarkups;
-using Telegram.Bot.Extensions;
-using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types;
-using Hangfire;
+// Explicitly use an alias for the domain entity User to avoid conflicts
+using DomainUser = Domain.Entities.User;
+// Explicitly specify the Telegram.Bot.Types namespace for all its types
+using TGBotTypes = Telegram.Bot.Types;
 #endregion
 
 namespace TelegramPanel.Application.CommandHandlers.Entry
@@ -67,8 +63,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         {
             return update.Type == UpdateType.Message &&
                 update.Message?.Text?.Trim().Equals("/start", StringComparison.OrdinalIgnoreCase) == true
-                ? true
-                : update.Type == UpdateType.CallbackQuery &&
+|| update.Type == UpdateType.CallbackQuery &&
                 update.CallbackQuery?.Data == ShowMainMenuCallback;
         }
 
@@ -93,9 +88,9 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private async Task HandleStartCommand(TGBotTypes.User telegramUser, long chatId, CancellationToken cancellationToken)
         {
-            using var scope = _scopeFactory.CreateScope();
-            var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
-            var registrationLockKey = $"lock:register:{telegramUser.Id}";
+            using IServiceScope scope = _scopeFactory.CreateScope();
+            ICacheService cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
+            string registrationLockKey = $"lock:register:{telegramUser.Id}";
 
             string? lockToken = await cacheService.AcquireLockAsync(registrationLockKey, TimeSpan.FromSeconds(30));
             if (lockToken == null)
@@ -106,16 +101,16 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
 
             try
             {
-                var sanitizedFirstName = _logSanitizer.Sanitize(telegramUser.FirstName);
+                string sanitizedFirstName = _logSanitizer.Sanitize(telegramUser.FirstName);
                 _logger.LogInformation("Lock acquired for UserID {UserId}. Sending initial welcome message to {SanitizedFirstName}.", telegramUser.Id, sanitizedFirstName);
-                var sentMessage = await SendInitialWelcomeMessageAsync(chatId, telegramUser.FirstName, cancellationToken);
+                Message sentMessage = await SendInitialWelcomeMessageAsync(chatId, telegramUser.FirstName, cancellationToken);
 
                 _ = Task.Run(() => ProcessUserRegistrationAsync(telegramUser, sentMessage.MessageId, registrationLockKey, lockToken, cancellationToken), cancellationToken);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send initial welcome message to UserID {UserId}. Releasing lock.", telegramUser.Id);
-                await cacheService.ReleaseLockAsync(registrationLockKey, lockToken);
+                _ = await cacheService.ReleaseLockAsync(registrationLockKey, lockToken);
             }
         }
 
@@ -126,13 +121,13 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
             long userId = telegramUser.Id;
 
             // We create a new scope for this background task to ensure all services have the correct lifetime.
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var userService = scope.ServiceProvider.GetRequiredService<IUserService>();
-            var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
-            var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
-            var messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
-            var scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<StartCommandHandler>>();
-            var sanitizedUsernameForLogs = _logSanitizer.Sanitize(telegramUser.Username ?? telegramUser.FirstName);
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+            IUserService userService = scope.ServiceProvider.GetRequiredService<IUserService>();
+            IUserRepository userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+            ICacheService cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
+            ITelegramMessageSender messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
+            ILogger<StartCommandHandler> scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<StartCommandHandler>>();
+            string sanitizedUsernameForLogs = _logSanitizer.Sanitize(telegramUser.Username ?? telegramUser.FirstName);
 
             try
             {
@@ -142,7 +137,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                 // --- FIX APPLIED HERE: Robust Two-Step User Fetch ---
                 // STEP 1: Use the service layer to perform a safe check. This can hit a cache
                 // and its DTO handles type conversion correctly.
-                var userDto = await userService.GetUserByTelegramIdAsync(userId.ToString(), cancellationToken);
+                UserDto? userDto = await userService.GetUserByTelegramIdAsync(userId.ToString(), cancellationToken);
 
                 if (userDto != null)
                 {
@@ -157,10 +152,10 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                     // In either case, the correct action is to register them.
                     scopedLogger.LogInformation("User {UserId} ({SanitizedUsername}) is confirmed new or inconsistent. Proceeding with registration.", userId, sanitizedUsernameForLogs);
 
-                    var newUserEntity = CreateNewUserEntity(telegramUser);
+                    DomainUser newUserEntity = CreateNewUserEntity(telegramUser);
 
                     // The RegisterUserAsync should handle the repository AddAsync call.
-                    await userService.RegisterUserAsync(
+                    _ = await userService.RegisterUserAsync(
                         new RegisterUserDto { Username = newUserEntity.Username, TelegramId = newUserEntity.TelegramId, Email = newUserEntity.Email },
                         cancellationToken,
                         userEntityToRegister: newUserEntity
@@ -190,7 +185,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
             {
                 scopedLogger.LogWarning(ex, "Registration attempted for already existing user {UserId}. Showing main menu.", userId);
                 // Try to fetch the user entity again
-                var existingUserDto = await userService.GetUserByTelegramIdAsync(userId.ToString(), cancellationToken);
+                UserDto? existingUserDto = await userService.GetUserByTelegramIdAsync(userId.ToString(), cancellationToken);
                 string username = existingUserDto?.Username ?? "User";
                 await EditWelcomeMessageWithDetailsAsync(userId, messageId, username, true, messageSender, cancellationToken);
             }
@@ -201,7 +196,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
             }
             finally
             {
-                await cacheService.ReleaseLockAsync(lockKey, lockToken);
+                _ = await cacheService.ReleaseLockAsync(lockKey, lockToken);
                 scopedLogger.LogTrace("Registration lock for UserID {UserId} released.", userId);
             }
         }
@@ -209,12 +204,12 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         // --- FIX: Use DomainUser alias and Telegram.Bot.Types.User explicitly ---
         private DomainUser CreateNewUserEntity(TGBotTypes.User telegramUser)
         {
-            var telegramUserId = telegramUser.Id.ToString();
+            string telegramUserId = telegramUser.Id.ToString();
             string effectiveUsername = GetEffectiveUsername(telegramUser);
-            var sanitizedUsername = _logSanitizer.Sanitize(effectiveUsername);
+            string sanitizedUsername = _logSanitizer.Sanitize(effectiveUsername);
 
-            var userGuid = Guid.NewGuid();
-            var newUser = new DomainUser
+            Guid userGuid = Guid.NewGuid();
+            DomainUser newUser = new()
             {
                 Id = userGuid,
                 Username = sanitizedUsername,
@@ -226,10 +221,9 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                 EnableGeneralNotifications = true,
                 EnableVipSignalNotifications = false,
                 EnableRssNewsNotifications = true,
-                PreferredLanguage = SanitizeLanguageCode(telegramUser.LanguageCode)
+                PreferredLanguage = SanitizeLanguageCode(telegramUser.LanguageCode),
+                TokenWallet = new TokenWallet(Guid.NewGuid(), userGuid, 0.0m, true, DateTime.UtcNow, DateTime.UtcNow)
             };
-
-            newUser.TokenWallet = new TokenWallet(Guid.NewGuid(), userGuid, 0.0m, true, DateTime.UtcNow, DateTime.UtcNow);
             return newUser;
         }
 
@@ -246,8 +240,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
 
         private string SanitizeLanguageCode(string? langCode)
         {
-            if (string.IsNullOrWhiteSpace(langCode)) return "en";
-            return Regex.IsMatch(langCode, @"^[a-zA-Z]{2}(-[a-zA-Z]{2})?$") ? langCode : "en";
+            return string.IsNullOrWhiteSpace(langCode) ? "en" : Regex.IsMatch(langCode, @"^[a-zA-Z]{2}(-[a-zA-Z]{2})?$") ? langCode : "en";
         }
 
         // In StartCommandHandler.cs
@@ -255,12 +248,12 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private async Task HandleShowMainMenuCallback(TGBotTypes.CallbackQuery callbackQuery, TGBotTypes.User user, TGBotTypes.Message originalMessage, CancellationToken cancellationToken)
         {
-            var chatId = originalMessage.Chat.Id;
-            var messageId = originalMessage.MessageId;
+            long chatId = originalMessage.Chat.Id;
+            _ = originalMessage.MessageId;
 
-            using var scope = _scopeFactory.CreateScope();
-            var messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
-            var scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<StartCommandHandler>>();
+            using IServiceScope scope = _scopeFactory.CreateScope();
+            ITelegramMessageSender messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
+            ILogger<StartCommandHandler> scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<StartCommandHandler>>();
 
             scopedLogger.LogInformation("Handling '{Callback}' for UserID: {UserId}. Strategy: Delete and Send New.",
                 ShowMainMenuCallback, user.Id);
@@ -272,10 +265,10 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
 
 
                 // 2. Prepare the content for the new main menu.
-                var effectiveUsername = GetEffectiveUsername(user);
-                var welcomeText = $"🎉 *Welcome back, {TelegramMessageFormatter.EscapeMarkdownV2(effectiveUsername)}!*";
-                var messageBody = GenerateWelcomeMessageBody(welcomeText, isExistingUser: true);
-                var keyboard = GetMainMenuKeyboard();
+                string effectiveUsername = GetEffectiveUsername(user);
+                string welcomeText = $"🎉 *Welcome back, {TelegramMessageFormatter.EscapeMarkdownV2(effectiveUsername)}!*";
+                string messageBody = GenerateWelcomeMessageBody(welcomeText, isExistingUser: true);
+                InlineKeyboardMarkup keyboard = GetMainMenuKeyboard();
 
                 // 3. Send the new, text-based main menu.
                 await messageSender.SendTextMessageAsync(
@@ -287,7 +280,10 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                 );
                 // --- END OF TARGETED FIX ---
 
-                if (_stateMachine != null) await _stateMachine.ClearStateAsync(user.Id, cancellationToken);
+                if (_stateMachine != null)
+                {
+                    await _stateMachine.ClearStateAsync(user.Id, cancellationToken);
+                }
             }
             catch (Exception ex)
             {
@@ -298,12 +294,11 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
 
         private Task<TGBotTypes.Message> SendInitialWelcomeMessageAsync(long chatId, string firstName, CancellationToken cancellationToken)
         {
-            var sanitizedFirstName = _logSanitizer.Sanitize(firstName);
-            var loadingCaption = $"Hello {TelegramMessageFormatter.EscapeMarkdownV2(sanitizedFirstName)}! 👋\n\n" +
+            string sanitizedFirstName = _logSanitizer.Sanitize(firstName);
+            string loadingCaption = $"Hello {TelegramMessageFormatter.EscapeMarkdownV2(sanitizedFirstName)}! 👋\n\n" +
                                  "🌟 *Welcome to the Forex AI Analyzer*\n\n" +
                                  "Initializing your profile, please wait...";
-
-            var photoUrl = TGBotTypes.InputFile.FromUri("https://i.postimg.cc/CL8sSt8h/Chat-GPT-Image-Jun-20-2025-01-07-32-AM.png");
+            _ = TGBotTypes.InputFile.FromUri("https://i.postimg.cc/CL8sSt8h/Chat-GPT-Image-Jun-20-2025-01-07-32-AM.png");
 
             return _botClient.SendMessage(
                  chatId: chatId,
@@ -316,15 +311,15 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private Task EditWelcomeMessageWithDetailsAsync(long chatId, int messageId, string username, bool isExistingUser, ITelegramMessageSender messageSender, CancellationToken cancellationToken)
         {
-            var sanitizedUsername = _logSanitizer.Sanitize(username);
+            string sanitizedUsername = _logSanitizer.Sanitize(username);
 
             // Determine the final welcome header.
-            var welcomeHeader = isExistingUser
+            string welcomeHeader = isExistingUser
                 ? $"🎉 *Welcome back, {TelegramMessageFormatter.EscapeMarkdownV2(sanitizedUsername)}!*"
                 : $"Hello {TelegramMessageFormatter.EscapeMarkdownV2(sanitizedUsername)}! 👋\n\n🌟 *Welcome to the Forex AI Analyzer*";
 
             // Generate the full message body, which will become the new caption.
-            var finalCaption = GenerateWelcomeMessageBody(welcomeHeader, isExistingUser);
+            string finalCaption = GenerateWelcomeMessageBody(welcomeHeader, isExistingUser);
 
             // --- THIS IS THE FIX ---
             // Use EditMessageCaptionAsync to change the caption of a message that already has media.
@@ -332,17 +327,22 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
             return messageSender.EditMessageTextAsync(
                 chatId: chatId,
                 messageId: messageId,
-                text:finalCaption,
+                text: finalCaption,
                 parseMode: TGBotTypes.Enums.ParseMode.Markdown,
-                replyMarkup: (InlineKeyboardMarkup)GetMainMenuKeyboard(), // Cast to the correct type
+                replyMarkup: GetMainMenuKeyboard(), // Cast to the correct type
                 cancellationToken: cancellationToken);
         }
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
-        private string GenerateWelcomeMessageBody(string welcomeHeader, bool isExistingUser) =>
-           $"{welcomeHeader}\n\nYour trusted companion for trading signals and market analysis.\n\n📊 *Available Features:*\n• 📈 Real-time alerts & signals\n• 💎 Professional trading tools\n• 📰 In-depth news analysis\n" +
+        private string GenerateWelcomeMessageBody(string welcomeHeader, bool isExistingUser)
+        {
+            return $"{welcomeHeader}\n\nYour trusted companion for trading signals and market analysis.\n\n📊 *Available Features:*\n• 📈 Real-time alerts & signals\n• 💎 Professional trading tools\n• 📰 In-depth news analysis\n" +
            (isExistingUser ? "• 💼 Portfolio tracking\n• 🔔 Customizable notifications\n\n" : "• 💼 Portfolio tracking\n\n") +
            "Use the menu below or type /help for more information.";
+        }
 
-        private InlineKeyboardMarkup GetMainMenuKeyboard() => MenuCommandHandler.GetMainMenuMarkup().keyboard;
+        private InlineKeyboardMarkup GetMainMenuKeyboard()
+        {
+            return MenuCommandHandler.GetMainMenuMarkup().keyboard;
+        }
     }
 }

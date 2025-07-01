@@ -47,7 +47,7 @@ namespace TelegramPanel.Application.Pipeline
         public async Task InvokeAsync(TGBotTypes.Update update, TelegramPipelineDelegate next, CancellationToken cancellationToken)
         {
             #region Update Validation
-            var telegramUser = update.Message?.From ?? update.CallbackQuery?.From;
+            TGBotTypes.User? telegramUser = update.Message?.From ?? update.CallbackQuery?.From;
 
             if (telegramUser is null)
             {
@@ -70,18 +70,18 @@ namespace TelegramPanel.Application.Pipeline
         private async Task AuthenticateAndAuthorizeAsync(TGBotTypes.Update update, TGBotTypes.User telegramUser, TelegramPipelineDelegate next, CancellationToken cancellationToken)
         {
             #region Dependency Resolution
-            await using var scope = _serviceProvider.CreateAsyncScope();
-            var userService = scope.ServiceProvider.GetRequiredService<IUserService>();
-            var userContext = scope.ServiceProvider.GetRequiredService<IUserContext>();
-            var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
-            var settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+            await using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
+            IUserService userService = scope.ServiceProvider.GetRequiredService<IUserService>();
+            IUserContext userContext = scope.ServiceProvider.GetRequiredService<IUserContext>();
+            IUserRepository userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+            ISettingsService settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
             #endregion
 
             try
             {
                 // --- STEP 1: AUTHENTICATION ---
                 #region Authentication Flow
-                var userDto = await userService.GetUserByTelegramIdAsync(telegramUser.Id.ToString(), cancellationToken);
+                global::Application.DTOs.UserDto? userDto = await userService.GetUserByTelegramIdAsync(telegramUser.Id.ToString(), cancellationToken);
 
                 // For the /start command, a user might not exist yet.
                 // This is a special case: we let them proceed to the StartCommandHandler
@@ -101,13 +101,13 @@ namespace TelegramPanel.Application.Pipeline
                     return;
                 }
 
-                var userEntity = await userRepository.GetByIdAsync(userDto.Id, cancellationToken);
+                Domain.Entities.User? userEntity = await userRepository.GetByIdAsync(userDto.Id, cancellationToken);
                 if (userEntity is null)
                 {
                     // This is a data inconsistency (cache has user, DB doesn't).
                     _logger.LogCritical("Data Inconsistency: User DTO found for UserID {UserId}, but the full domain entity was not. Invalidating cache.", telegramUser.Id);
-                    var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
-                    await cacheService.RemoveAsync($"user:telegram_id:{telegramUser.Id}");
+                    ICacheService cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
+                    _ = await cacheService.RemoveAsync($"user:telegram_id:{telegramUser.Id}");
                     await HandleUnauthenticatedAccessAsync(telegramUser.Id, scope, cancellationToken);
                     return;
                 }
@@ -117,13 +117,13 @@ namespace TelegramPanel.Application.Pipeline
 
                 // --- STEP 2: AUTHORIZATION (FORCE JOIN CHECK) ---
                 #region Force Join Channel Check
-                var forceJoinSettings = await settingsService.GetForceJoinSettingsAsync(cancellationToken);
+                ForceJoinSettingsDto forceJoinSettings = await settingsService.GetForceJoinSettingsAsync(cancellationToken);
 
                 if (forceJoinSettings is { IsEnabled: true } && forceJoinSettings.ChannelId != 0)
                 {
                     try
                     {
-                        var chatMember = await _botClient.GetChatMember(
+                        TGBotTypes.ChatMember chatMember = await _botClient.GetChatMember(
                             chatId: forceJoinSettings.ChannelId, // --- USE ID ---
                             userId: telegramUser.Id,
                             cancellationToken: cancellationToken);
@@ -171,11 +171,11 @@ namespace TelegramPanel.Application.Pipeline
         private async ValueTask HandleNotAMemberAsync(long telegramId, ForceJoinSettingsDto settings, AsyncServiceScope scope, CancellationToken cancellationToken)
         {
             _logger.LogWarning("Access denied for UserID {UserId} due to not being a member of required channel {ChannelId}.", telegramId, settings.ChannelId);
-            var messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
+            ITelegramMessageSender messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
 
             // --- 1. DEFINE THE MESSAGE TEXT ---
             // Use the custom message from settings, or a default one if it's not set.
-            var messageText = !string.IsNullOrWhiteSpace(settings.Message)
+            string messageText = !string.IsNullOrWhiteSpace(settings.Message)
                 ? settings.Message
                 : "⛔️ **Access Restricted**\n\nTo use this bot, you must first join our official channel.";
 
@@ -186,7 +186,7 @@ namespace TelegramPanel.Application.Pipeline
             string channelUrl;
             if (settings.ChannelLink.StartsWith("@"))
             {
-                channelUrl = $"https://t.me/{settings.ChannelLink.Substring(1)}";
+                channelUrl = $"https://t.me/{settings.ChannelLink[1..]}";
             }
             else if (settings.ChannelLink.StartsWith("https://"))
             {
@@ -204,8 +204,8 @@ namespace TelegramPanel.Application.Pipeline
                 _logger.LogWarning("The configured ChannelLink '{ChannelLink}' is not a standard URL or username. The join button may not work for all users.", channelUrl);
             }
 
-            var joinButton = InlineKeyboardButton.WithUrl("✅ Join Channel", channelUrl);
-            var keyboard = new InlineKeyboardMarkup(joinButton);
+            InlineKeyboardButton joinButton = InlineKeyboardButton.WithUrl("✅ Join Channel", channelUrl);
+            InlineKeyboardMarkup keyboard = new(joinButton);
 
             // --- 3. SEND THE MESSAGE WITH THE BUTTON ---
             try
@@ -226,7 +226,7 @@ namespace TelegramPanel.Application.Pipeline
         private async ValueTask HandleUnauthenticatedAccessAsync(long telegramId, AsyncServiceScope scope, CancellationToken cancellationToken)
         {
             _logger.LogWarning("Unauthenticated access attempt by UserID {UserId}. Access denied.", telegramId);
-            var messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
+            ITelegramMessageSender messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
 
             try
             {
@@ -245,7 +245,7 @@ namespace TelegramPanel.Application.Pipeline
 
         private async ValueTask HandleCriticalFailureAsync(long telegramId, AsyncServiceScope scope, string message, CancellationToken cancellationToken)
         {
-            var messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
+            ITelegramMessageSender messageSender = scope.ServiceProvider.GetRequiredService<ITelegramMessageSender>();
             try
             {
                 await messageSender.SendTextMessageAsync(

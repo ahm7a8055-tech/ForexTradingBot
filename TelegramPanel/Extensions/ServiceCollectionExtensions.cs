@@ -3,23 +3,20 @@ using Application.Common.Interfaces; // For INotificationService
 using Application.Common.Interfaces.Fred;
 using Application.Features.Forwarding.Interfaces;
 using Application.Features.Forwarding.Services;
-using Application.Interfaces;
 using Application.Services.FredApi;
 using Domain.Features.Forwarding.Entities;
-using Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog;
 using StackExchange.Redis;
-using System;
 using Telegram.Bot;
-using TelegramPanel.Application.CommandHandlers.Admin;
 using TelegramPanel.Application.CommandHandlers.Entry;
 using TelegramPanel.Application.CommandHandlers.Features.Analysis;
 using TelegramPanel.Application.CommandHandlers.Features.CoinGecko;
 using TelegramPanel.Application.CommandHandlers.Features.EconomicCalendar;
+using TelegramPanel.Application.CommandHandlers.Settings;
 using TelegramPanel.Application.Interfaces;    // For ITelegram...Handler interfaces
 using TelegramPanel.Application.Pipeline;
 using TelegramPanel.Application.States;
@@ -27,6 +24,7 @@ using TelegramPanel.Infrastructure;         // For concrete service implementati
 using TelegramPanel.Infrastructure.Services; // For concrete service implementations like TelegramMessageSender
 using TelegramPanel.Queue;
 using TelegramPanel.Queue.Models;
+using TelegramPanel.Queue.Models.Interface;
 using TelegramPanel.Settings;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
 
@@ -47,7 +45,7 @@ namespace TelegramPanel.Extensions
             // 2. Register ITelegramBotClient
             _ = services.AddSingleton<ITelegramBotClient>(serviceProvider =>
             {
-                var settings = serviceProvider.GetRequiredService<IOptions<TelegramPanelSettings>>().Value;
+                TelegramPanelSettings settings = serviceProvider.GetRequiredService<IOptions<TelegramPanelSettings>>().Value;
                 return string.IsNullOrWhiteSpace(settings.BotToken)
                     ? throw new ArgumentNullException(nameof(settings.BotToken), "TelegramPanel: Bot Token is not configured.")
                     : (ITelegramBotClient)new TelegramBotClient(settings.BotToken);
@@ -66,23 +64,23 @@ namespace TelegramPanel.Extensions
 
             // 6. Register ITelegramUpdateJobService for Hangfire
             _ = services.AddScoped<IDirectMessageSender, DirectTelegramMessageSender>();
-       
+
             // 7. Register ITelegramUpdateJobService for Hangfire
             _ = services.AddSingleton<ITelegramUpdateChannel>(serviceProvider =>
             {
-                var queueOptions = serviceProvider.GetRequiredService<IOptions<UpdateQueueOptions>>();
+                IOptions<UpdateQueueOptions> queueOptions = serviceProvider.GetRequiredService<IOptions<UpdateQueueOptions>>();
                 // 1. Get the necessary services from the DI container.
-                var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+                ILoggerFactory loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
 
                 // 2. Try to get the Redis connection. Use GetService, which returns null
                 // if the service is not registered, preventing a crash.
-                var redisConnection = serviceProvider.GetService<IConnectionMultiplexer>();
+                IConnectionMultiplexer? redisConnection = serviceProvider.GetService<IConnectionMultiplexer>();
 
                 // 3. The DECISION LOGIC.
                 if (redisConnection != null && redisConnection.IsConnected)
                 {
                     // --- Strategy 1: Redis is available and connected ---
-                    var redisLogger = loggerFactory.CreateLogger<RedisUpdateChannel>();
+                    ILogger<RedisUpdateChannel> redisLogger = loggerFactory.CreateLogger<RedisUpdateChannel>();
                     Log.Information("✅ Redis connection is active. Registering RedisUpdateChannel for the queue.");
 
                     // Create and return the Redis-based implementation.
@@ -91,7 +89,7 @@ namespace TelegramPanel.Extensions
                 else
                 {
                     // --- Strategy 2: Redis is not available, fall back to in-memory ---
-                    var inMemoryLogger = loggerFactory.CreateLogger<TelegramUpdateChannel>();
+                    ILogger<TelegramUpdateChannel> inMemoryLogger = loggerFactory.CreateLogger<TelegramUpdateChannel>();
                     Log.Warning("⚠️ Redis connection is NOT active or not registered. Falling back to In-Memory queue. Note: Updates will be lost on application restart.");
 
                     // Create and return the original, in-memory implementation.
@@ -142,7 +140,7 @@ namespace TelegramPanel.Extensions
             // 5. Register ALL ITelegramCommandHandler implementations from the assembly
 
             Log.Information("Scanning TelegramPanel.Application assembly for Handlers and States...");
-            services.Scan(scan => scan
+            _ = services.Scan(scan => scan
                 // Define the assembly to scan. Use a class that is definitely in the right project.
                 .FromAssemblyOf<StartCommandHandler>()
 
@@ -189,11 +187,11 @@ namespace TelegramPanel.Extensions
             // - MarketAnalysisCallbackHandler (if it implements ITelegramCallbackQueryHandler)
             // - FundamentalAnalysisCallbackHandler (if it implements ITelegramCallbackQueryHandler)
             // - Any other callback handlers in that assembly.
-            services.AddScoped<TelegramPanel.Application.CommandHandlers.Features.Cloudflare.CloudflareRadarInitiationHandler>();
-            services.AddScoped<TelegramPanel.Application.CommandHandlers.Features.Cloudflare.CloudflareRadarCallbackHandler>();
+            _ = services.AddScoped<TelegramPanel.Application.CommandHandlers.Features.Cloudflare.CloudflareRadarInitiationHandler>();
+            _ = services.AddScoped<TelegramPanel.Application.CommandHandlers.Features.Cloudflare.CloudflareRadarCallbackHandler>();
 
             // Register Services
-            services.AddScoped<ICloudflareRadarService,CloudflareRadarService>();
+            _ = services.AddScoped<ICloudflareRadarService, CloudflareRadarService>();
             // ------------------- 6. Register State Machine & States -------------------
             _ = services.AddSingleton<IUserConversationStateService, InMemoryUserConversationStateService>();
             _ = services.AddScoped<ITelegramStateMachine, TelegramStateMachine>();
@@ -202,13 +200,13 @@ namespace TelegramPanel.Extensions
                 .AddClasses(classes => classes.AssignableTo<ITelegramState>().Where(c => !c.IsAbstract && c.IsClass))
                 .AsImplementedInterfaces()
                 .WithScopedLifetime());
-            services.AddScoped<ITelegramCallbackQueryHandler, BotSettingsCallbackHandler>();
+            _ = services.AddScoped<ITelegramCallbackQueryHandler, BotSettingsCallbackHandler>();
             // ------------------- 7. Register INotificationService Implementation -------------------
             _ = services.AddScoped<INotificationService, TelegramNotificationService>();
             _ = services.AddScoped<ITelegramCallbackQueryHandler, CryptoCallbackHandler>();
             // ------------------- 8. Register Hosted Services -------------------
             _ = services.AddHostedService<TelegramBotService>();
-          
+
             _ = services.AddSingleton<IQueueMetricsService, ConsoleQueueMetricsService>(); // Register the metrics service
             _ = services.AddHostedService<UpdateQueueConsumerService>();
 

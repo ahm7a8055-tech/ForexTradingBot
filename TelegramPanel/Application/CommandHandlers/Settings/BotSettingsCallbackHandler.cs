@@ -6,14 +6,12 @@ using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Formatters;
-using TelegramPanel.Infrastructure;
 using TelegramPanel.Infrastructure.Helper;
 using TelegramPanel.Settings;
 // Note: You need a constant for "admin_panel_main" or to make it public in AdminCallbackHandler
-using static TelegramPanel.Application.CommandHandlers.Admin.AdminCallbackHandler;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
 
-namespace TelegramPanel.Application.CommandHandlers.Admin
+namespace TelegramPanel.Application.CommandHandlers.Settings
 {
     /// <summary>
     /// Handles callbacks for the main "Bot Settings" menu in the admin panel.
@@ -47,14 +45,14 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-            var callbackQuery = update.CallbackQuery!;
+            CallbackQuery callbackQuery = update.CallbackQuery!;
             await _messageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
             _logger.LogInformation("Admin {UserId} accessed bot settings menu.", callbackQuery.From.Id);
 
-            var text = TelegramMessageFormatter.Bold("⚙️ Bot Settings");
+            string text = TelegramMessageFormatter.Bold("⚙️ Bot Settings");
             text += "\n\nSelect a setting to configure:";
 
-            var keyboard = MarkupBuilder.CreateInlineKeyboard(
+            InlineKeyboardMarkup? keyboard = MarkupBuilder.CreateInlineKeyboard(
                 new[] // Row 1: Feature Settings
                 {
                     InlineKeyboardButton.WithCallbackData("🛂 Force Join", "admin_forcejoin_menu")

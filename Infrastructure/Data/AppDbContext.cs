@@ -2,7 +2,6 @@
 using Application.Common.Interfaces;
 using Domain.Entities;
 using Microsoft.EntityFrameworkCore;
-using System.Reflection; // برای ApplyConfigurationsFromAssembly
 
 namespace Infrastructure.Data
 {
@@ -12,7 +11,7 @@ namespace Infrastructure.Data
     /// و پیکربندی مدل داده‌ای با استفاده از Fluent API است.
     /// همچنین اینترفیس <see cref="IAppDbContext"/> را برای تسهیل تست و تزریق وابستگی پیاده‌سازی می‌کند.
     /// </summary>
-    
+
     public class AppDbContext : DbContext, IAppDbContext
     {
         /// <summary>
@@ -119,7 +118,7 @@ namespace Infrastructure.Data
 
             // This line will now find and apply all your IEntityTypeConfiguration files,
             // including the ForwardingRuleConfiguration.
-            modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+            _ = modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
         }
     }
 }

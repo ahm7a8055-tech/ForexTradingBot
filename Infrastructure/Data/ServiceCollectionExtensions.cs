@@ -8,41 +8,34 @@ using Application.Common.Interfaces.Fred;
 using Application.Features.Crypto.Services.CoinGecko;
 using Application.Interfaces;
 using Application.Services;
+// --- Third-Party ---
+using Hangfire;
+using Hangfire.MemoryStorage;
 using Hangfire.PostgreSql;
+using Hangfire.Storage.SQLite;
 // --- Infrastructure ---
 using Infrastructure.Caching;
 using Infrastructure.ExternalServices;
-using Infrastructure.Features.Forwarding.Extensions; // Assuming this is the correct namespace for your feature
 using Infrastructure.Hangfire;
 using Infrastructure.Persistence; // For DbConnectionFactory
-using Infrastructure.Repositories;
+using Infrastructure.Data;
 using Infrastructure.Services;
 using Infrastructure.Services.Admin;
 using Infrastructure.Services.Fmp;
-
 // --- Microsoft ---
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-
-// --- Third-Party ---
-using Hangfire;
-
 using Polly;
 using Polly.Extensions.Http;
-using StackExchange.Redis;
-using Infrastructure.Persistence.Configurations;
 using Polly.Retry;
-using Shared.Maintenance;
-using Hangfire.MemoryStorage;
-using System.Net.Http.Headers;
-using System.Net;
-using Hangfire.Storage.SQLite;
 using Serilog;
-using TL;
-using TelegramPanel.Application.Interfaces;
-using TelegramPanel.Application.States.Admin;
+using StackExchange.Redis;
+using System.Net;
+using System.Net.Http.Headers;
+using Infrastructure.Persistence.Configurations;
+using Infrastructure.Repositories;
 #endregion
 
 namespace Infrastructure.Data
@@ -57,15 +50,15 @@ namespace Infrastructure.Data
             // --- 1. DATABASE AND HANGFIRE CONFIGURATION ---
             // =================================================================
             #region Database and Hangfire Setup
-            services.AddSingleton<DbProviderService>();
-            services.AddSingleton<UserSqlProvider>();
+            _ = services.AddSingleton<DbProviderService>();
+            _ = services.AddSingleton<UserSqlProvider>();
             if (isSmokeTest)
             {
                 // For smoke tests, use a fast, in-memory database
-                services.AddDbContext<AppDbContext>(options => options.UseInMemoryDatabase("SmokeTestDatabase"));
+                _ = services.AddDbContext<AppDbContext>(options => options.UseInMemoryDatabase("SmokeTestDatabase"));
 
                 // Use in-memory storage for Hangfire during smoke tests
-                services.AddHangfire(config => config.UseMemoryStorage());
+                _ = services.AddHangfire(config => config.UseMemoryStorage());
             }
             else // Not a smoke test, configure for real environments
             {
@@ -84,12 +77,18 @@ namespace Infrastructure.Data
                 {
                     // Try to detect provider from connection string
                     if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                    {
                         dbProvider = "postgres";
+                    }
                     else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                    {
                         dbProvider = "sqlserver";
+                    }
                     else
+                    {
                         dbProvider = "sqlite"; // Default fallback only if we can't detect
-                    
+                    }
+
                     Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
                 }
 
@@ -99,31 +98,31 @@ namespace Infrastructure.Data
                 {
 
                     case "sqlite":
-                        services.AddDbContext<AppDbContext>(opts =>
+                        _ = services.AddDbContext<AppDbContext>(opts =>
                             opts.UseSqlite(connectionString, sqlite =>
                                 sqlite.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
 
                         // --- ADDED: Hangfire config for SQLite ---
-                        services.AddHangfire(config => config.UseSQLiteStorage(connectionString));
+                        _ = services.AddHangfire(config => config.UseSQLiteStorage(connectionString));
                         break;
 
                     case "postgres":
                     case "postgresql":
-                        services.AddDbContextPool<AppDbContext>(opts =>
+                        _ = services.AddDbContextPool<AppDbContext>(opts =>
                             opts.UseNpgsql(connectionString, npgsql =>
                                 npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)),
                             poolSize: 32);
 
                         // --- MODIFIED THIS SECTION ---
-                        services.AddHangfire(config =>
+                        _ = services.AddHangfire(config =>
                     {
-                        config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+                        _ = config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
                         {
                             TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
                         });
 
                         // Configure Hangfire to use PostgreSQL storage with tuned options:
-                        config.UsePostgreSqlStorage(
+                        _ = config.UsePostgreSqlStorage(
                             options => options.UseNpgsqlConnection(connectionString),
                             new PostgreSqlStorageOptions // <-- This is now recognized
                             {
@@ -135,80 +134,80 @@ namespace Infrastructure.Data
                         );
                         Log.Information("✅ Hangfire successfully configured with PostgreSQL storage and tuned intervals.");
                     });
-                    break;
+                        break;
                         break;
                     case "sqlserver":
-                        services.AddDbContext<AppDbContext>(opts =>
+                        _ = services.AddDbContext<AppDbContext>(opts =>
                             opts.UseSqlServer(connectionString, sql =>
                                 sql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
 
                         // --- ADDED: Hangfire config for SQL Server ---
-                        services.AddHangfire(config => config.UseSqlServerStorage(connectionString));
+                        _ = services.AddHangfire(config => config.UseSqlServerStorage(connectionString));
                         break;
 
                     default:
                         throw new NotSupportedException($"Unsupported DatabaseProvider: '{dbProvider}'.");
-            }
+                }
 
-            // --- 2. Configure Hangfire with a Resilient Fallback ---
-            services.AddHangfire(config =>
-                {
-                    config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+                // --- 2. Configure Hangfire with a Resilient Fallback ---
+                _ = services.AddHangfire(config =>
                     {
-                        TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
-                    });
-
-                    try
-                    {
-                        Log.Information("Attempting to configure Hangfire with '{DbProvider}' database storage.", dbProvider);
-                        switch (dbProvider)
+                        _ = config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
                         {
-                            case "sqlite":
-                                config.UseSQLiteStorage(connectionString);
-                                Log.Information("✅ Hangfire successfully configured with SQLite storage.");
-                                break;
+                            TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
+                        });
 
-                            case "postgres":
-                            case "postgresql":
-                                config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString));
-                                Log.Information("✅ Hangfire successfully configured with PostgreSQL storage.");
-                                break;
+                        try
+                        {
+                            Log.Information("Attempting to configure Hangfire with '{DbProvider}' database storage.", dbProvider);
+                            switch (dbProvider)
+                            {
+                                case "sqlite":
+                                    _ = config.UseSQLiteStorage(connectionString);
+                                    Log.Information("✅ Hangfire successfully configured with SQLite storage.");
+                                    break;
 
-                            case "sqlserver":
-                                config.UseSqlServerStorage(connectionString);
-                                Log.Information("✅ Hangfire successfully configured with SQL Server storage.");
-                                break;
+                                case "postgres":
+                                case "postgresql":
+                                    _ = config.UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString));
+                                    Log.Information("✅ Hangfire successfully configured with PostgreSQL storage.");
+                                    break;
 
-                            default:
-                                // This case should ideally not be hit due to the check above, but as a safeguard:
-                                Log.Warning("Unsupported Hangfire DB provider '{DbProvider}'. Falling back to in-memory storage.", dbProvider);
-                                config.UseMemoryStorage();
-                                break;
+                                case "sqlserver":
+                                    _ = config.UseSqlServerStorage(connectionString);
+                                    Log.Information("✅ Hangfire successfully configured with SQL Server storage.");
+                                    break;
+
+                                default:
+                                    // This case should ideally not be hit due to the check above, but as a safeguard:
+                                    Log.Warning("Unsupported Hangfire DB provider '{DbProvider}'. Falling back to in-memory storage.", dbProvider);
+                                    _ = config.UseMemoryStorage();
+                                    break;
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        // --- THIS IS THE FALLBACK LOGIC ---
-                        Log.Error(ex, "FAILED to configure Hangfire with database storage. The database may be offline or the connection string is invalid. FALLING BACK TO IN-MEMORY STORAGE.");
-                        Log.Warning("Hangfire jobs will NOT be persisted. They will be lost if the application restarts.");
+                        catch (Exception ex)
+                        {
+                            // --- THIS IS THE FALLBACK LOGIC ---
+                            Log.Error(ex, "FAILED to configure Hangfire with database storage. The database may be offline or the connection string is invalid. FALLING BACK TO IN-MEMORY STORAGE.");
+                            Log.Warning("Hangfire jobs will NOT be persisted. They will be lost if the application restarts.");
 
-                        // Re-configure with MemoryStorage on failure
-                        config.UseMemoryStorage();
-                    }
-                });
+                            // Re-configure with MemoryStorage on failure
+                            _ = config.UseMemoryStorage();
+                        }
+                    });
             }
 
             // This original line registers the IHangfireCleaner.
-            services.AddTransient<IHangfireCleaner, HangfireCleaner>();
+            _ = services.AddTransient<IHangfireCleaner, HangfireCleaner>();
 
             // ✅ UPGRADE: Re-registering with Scoped lifetime. Scoped is safer for services doing database work
             // within a request or job, ensuring they get fresh dependencies. This new registration
             // will be used by the DI container instead of the Transient one above for new resolutions.
-            services.AddScoped<IHangfireCleaner, HangfireCleaner>();
+            _ = services.AddScoped<IHangfireCleaner, HangfireCleaner>();
 
-            services.AddSingleton<UserSqlProvider>();
+            _ = services.AddSingleton<UserSqlProvider>();
             // Register the Scoped DbContext interface.
-            services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
+            _ = services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
 
             #endregion
 
@@ -218,7 +217,7 @@ namespace Infrastructure.Data
             #region Dapper Connection Factory
 
             // This is the key to making Dapper repositories database-agnostic.
-            services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
+            _ = services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 
             #endregion
 
@@ -227,8 +226,8 @@ namespace Infrastructure.Data
             // =================================================================
             #region Caching and External Services
 
-            services.AddMemoryCache();
-            services.AddSingleton(typeof(IMemoryCacheService<>), typeof(MemoryCacheService<>));
+            _ = services.AddMemoryCache();
+            _ = services.AddSingleton(typeof(IMemoryCacheService<>), typeof(MemoryCacheService<>));
             string? redisConnectionString = configuration.GetConnectionString("Redis");
             if (!string.IsNullOrWhiteSpace(redisConnectionString))
             {
@@ -236,7 +235,7 @@ namespace Infrastructure.Data
                 {
 
                     // Redis IS configured. Register the real ConnectionMultiplexer.
-                    services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(redisConnectionString));
+                    _ = services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(redisConnectionString));
                     Console.WriteLine("✅ Redis is configured and will be used for distributed caching and features."); // Using Console for early startup info
                 }
                 catch (RedisConnectionException ex)
@@ -262,12 +261,12 @@ namespace Infrastructure.Data
                .OrResult(msg => msg.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)));
 
-          
-            services.Configure<RssReaderServiceSettings>(configuration.GetSection(RssReaderServiceSettings.ConfigurationSectionName));
-            services.AddHttpClient(RssReaderService.HttpClientNamedClient, (serviceProvider, client) =>
+
+            _ = services.Configure<RssReaderServiceSettings>(configuration.GetSection(RssReaderServiceSettings.ConfigurationSectionName));
+            _ = services.AddHttpClient(RssReaderService.HttpClientNamedClient, (serviceProvider, client) =>
             {
                 // Configure default headers for every request made by this client.
-                var settings = serviceProvider.GetRequiredService<IOptions<RssReaderServiceSettings>>().Value;
+                RssReaderServiceSettings settings = serviceProvider.GetRequiredService<IOptions<RssReaderServiceSettings>>().Value;
                 client.DefaultRequestHeaders.UserAgent.ParseAdd(settings.UserAgent);
                 client.DefaultRequestHeaders.Accept.Clear();
                 client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xml"));
@@ -277,9 +276,9 @@ namespace Infrastructure.Data
             {
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
             });
-            services.AddHttpClient<ICoinGeckoApiClient, CoinGeckoApiClient>().AddPolicyHandler(retryPolicy);
-            services.AddHttpClient<IFmpApiClient, FmpApiClient>().AddPolicyHandler(retryPolicy);
-            services.AddHttpClient<IFredApiClient, FredApiClient>();
+            _ = services.AddHttpClient<ICoinGeckoApiClient, CoinGeckoApiClient>().AddPolicyHandler(retryPolicy);
+            _ = services.AddHttpClient<IFmpApiClient, FmpApiClient>().AddPolicyHandler(retryPolicy);
+            _ = services.AddHttpClient<IFredApiClient, FredApiClient>();
 
             #endregion
 
@@ -288,32 +287,32 @@ namespace Infrastructure.Data
             // =================================================================
             #region Application Services and Repositories
 
-            services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
+            _ = services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
 
             // This line is redundant if TelegramUserApiClient is only resolved via its interface.
             // Leaving it in as requested. The DI will create a separate singleton instance for this registration.
-            services.AddSingleton<TelegramUserApiClient>();
+            _ = services.AddSingleton<TelegramUserApiClient>();
 
-            services.AddHostedService<TelegramUserApiInitializationService>();
+            _ = services.AddHostedService<TelegramUserApiInitializationService>();
 
             // All these registrations are correct.
-            services.AddScoped<IRssFetchingCoordinatorService, RssFetchingCoordinatorService>();
-            services.AddScoped<IRssReaderService, RssReaderService>();
-            services.AddTransient<INotificationJobScheduler, HangfireJobScheduler>();
-            services.AddScoped<INotificationDispatchService, NotificationDispatchService>();
-            services.AddScoped<IAdminService, AdminService>();
-            services.AddScoped<ISettingsService, SettingsService>();
-            services.AddScoped<INewsItemRepository, NewsItemRepository>();
-            services.AddScoped<IUserRepository, UserRepository>();
-            services.AddScoped<ITokenWalletRepository, TokenWalletRepository>();
-            services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
-            services.AddScoped<ISignalRepository, SignalRepository>();
-            services.AddScoped<ISignalCategoryRepository, SignalCategoryRepository>();
-            services.AddScoped<IRssSourceRepository, RssSourceRepository>();
-            services.AddScoped<IUserSignalPreferenceRepository, UserSignalPreferenceRepository>();
-            services.AddScoped<ISignalAnalysisRepository, SignalAnalysisRepository>();
-            services.AddScoped<ITransactionRepository, TransactionRepository>();
-            
+            _ = services.AddScoped<IRssFetchingCoordinatorService, RssFetchingCoordinatorService>();
+            _ = services.AddScoped<IRssReaderService, RssReaderService>();
+            _ = services.AddTransient<INotificationJobScheduler, HangfireJobScheduler>();
+            _ = services.AddScoped<INotificationDispatchService, NotificationDispatchService>();
+            _ = services.AddScoped<IAdminService, AdminService>();
+            _ = services.AddScoped<ISettingsService, SettingsService>();
+            _ = services.AddScoped<INewsItemRepository, NewsItemRepository>();
+            _ = services.AddScoped<IUserRepository, UserRepository>();
+            _ = services.AddScoped<ITokenWalletRepository, TokenWalletRepository>();
+            _ = services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
+            _ = services.AddScoped<ISignalRepository, SignalRepository>();
+            _ = services.AddScoped<ISignalCategoryRepository, SignalCategoryRepository>();
+            _ = services.AddScoped<IRssSourceRepository, RssSourceRepository>();
+            _ = services.AddScoped<IUserSignalPreferenceRepository, UserSignalPreferenceRepository>();
+            _ = services.AddScoped<ISignalAnalysisRepository, SignalAnalysisRepository>();
+            _ = services.AddScoped<ITransactionRepository, TransactionRepository>();
+
 
             #endregion
 

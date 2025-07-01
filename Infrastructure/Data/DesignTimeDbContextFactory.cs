@@ -1,5 +1,4 @@
 ﻿// In Infrastructure/Data/DesignTimeDbContextFactory.cs
-using Infrastructure.Data; // Already here, which is good.
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
@@ -18,10 +17,10 @@ namespace Infrastructure.Data
                 throw new InvalidOperationException("The direct connection string is empty. Please set it in DesignTimeDbContextFactory.cs.");
             }
 
-            var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
+            DbContextOptionsBuilder<AppDbContext> optionsBuilder = new();
 
             // This is the crucial line that tells EF Core to use PostgreSQL.
-            optionsBuilder.UseNpgsql(directConnectionString);
+            _ = optionsBuilder.UseNpgsql(directConnectionString);
 
             return new AppDbContext(optionsBuilder.Options);
         }

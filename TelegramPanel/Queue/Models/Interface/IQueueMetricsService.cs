@@ -1,5 +1,5 @@
 ﻿// The namespace must match the folder structure for clarity.
-namespace TelegramPanel.Queue.Models
+namespace TelegramPanel.Queue.Models.Interface
 {
     public interface IQueueMetricsService
     {

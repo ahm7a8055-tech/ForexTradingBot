@@ -29,10 +29,13 @@ namespace TelegramPanel.Application.States.Admin
 
         public async Task<string?> ProcessUpdateAsync(Update update, CancellationToken cancellationToken = default)
         {
-            if (update.Message?.Text == null) return Name;
+            if (update.Message?.Text == null)
+            {
+                return Name;
+            }
 
-            var chatId = update.Message.Chat.Id;
-            var text = update.Message.Text.Trim();
+            long chatId = update.Message.Chat.Id;
+            string text = update.Message.Text.Trim();
 
             if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
             {
@@ -40,7 +43,7 @@ namespace TelegramPanel.Application.States.Admin
                 return null; // Exit state
             }
 
-            var settings = await _adminService.GetForceJoinSettingsAsync(cancellationToken);
+            global::Application.DTOs.Settings.ForceJoinSettingsDto settings = await _adminService.GetForceJoinSettingsAsync(cancellationToken);
             settings.Message = text;
             await _adminService.UpdateForceJoinSettingsAsync(settings, cancellationToken);
 

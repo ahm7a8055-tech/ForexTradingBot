@@ -35,7 +35,7 @@ namespace TelegramPanel.Application.States.Admin
         public Task<string?> GetEntryMessageAsync(long chatId, Update? triggerUpdate = null, CancellationToken cancellationToken = default)
         {
             // --- UPGRADED PROMPT to explain both options ---
-            var text = "Please provide the target channel using one of the following methods:\n\n" +
+            string text = "Please provide the target channel using one of the following methods:\n\n" +
                        "1️⃣ **Forward a message** from the channel to me (recommended).\n\n" +
                        "2️⃣ **Send the channel's numeric ID** directly (e.g., `-1001234567890`).\n\n" +
                        "Type /cancel to abort.";
@@ -44,10 +44,13 @@ namespace TelegramPanel.Application.States.Admin
 
         public async Task<string?> ProcessUpdateAsync(Update update, CancellationToken cancellationToken = default)
         {
-            var message = update.Message;
-            if (message == null) return Name; // Stay in this state if it's not a message
+            Message? message = update.Message;
+            if (message == null)
+            {
+                return Name; // Stay in this state if it's not a message
+            }
 
-            var adminChatId = message.Chat.Id;
+            long adminChatId = message.Chat.Id;
 
             // Handle cancellation first
             if (message.Text?.Equals("/cancel", StringComparison.OrdinalIgnoreCase) == true)
@@ -69,9 +72,9 @@ namespace TelegramPanel.Application.States.Admin
                 try
                 {
                     // Verify the ID by fetching channel info. This also confirms the bot has access.
-                    var channelInfo = await _botClient.GetChat(channelId, cancellationToken);
+                    ChatFullInfo channelInfo = await _botClient.GetChat(channelId, cancellationToken);
 
-                    if (channelInfo.Type != ChatType.Channel && channelInfo.Type != ChatType.Supergroup)
+                    if (channelInfo.Type is not ChatType.Channel and not ChatType.Supergroup)
                     {
                         await _messageSender.SendTextMessageAsync(adminChatId, $"❌ The ID `{channelId}` belongs to a `{channelInfo.Type}`, not a channel or supergroup. Please provide a valid channel ID.", parseMode: ParseMode.MarkdownV2, cancellationToken: cancellationToken);
                         return Name; // Stay in state
@@ -80,10 +83,10 @@ namespace TelegramPanel.Application.States.Admin
                     await UpdateSettingsAndReplyAsync(adminChatId, channelInfo, cancellationToken);
                     return null; // Success, exit state
                 }
-                catch (ApiRequestException ex)
+                catch (ApiRequestException)
                 {
                     // Handle cases where the ID is invalid or the bot can't access the chat.
-                 
+
                     await _messageSender.SendTextMessageAsync(adminChatId, $"❌ Could not access channel with ID `{channelId}`. Please ensure the ID is correct and that the bot is an administrator in that channel.", parseMode: ParseMode.MarkdownV2, cancellationToken: cancellationToken);
                     return Name; // Stay in state
                 }
@@ -99,7 +102,7 @@ namespace TelegramPanel.Application.States.Admin
         /// </summary>
         private async Task UpdateSettingsAndReplyAsync(long adminChatId, Chat channel, CancellationToken cancellationToken)
         {
-            var settings = await _adminService.GetForceJoinSettingsAsync(cancellationToken);
+            global::Application.DTOs.Settings.ForceJoinSettingsDto settings = await _adminService.GetForceJoinSettingsAsync(cancellationToken);
             settings.ChannelId = channel.Id;
 
             // Store a user-friendly link. Prefer the public username if it exists.
@@ -109,7 +112,7 @@ namespace TelegramPanel.Application.States.Admin
 
             await _adminService.UpdateForceJoinSettingsAsync(settings, cancellationToken);
 
-            var successMessage = $"✅ Force Join channel updated successfully!\n\n" +
+            string successMessage = $"✅ Force Join channel updated successfully!\n\n" +
                                  $"**Title:** {TelegramMessageFormatter.EscapeMarkdownV2(channel.Title)}\n" +
                                  $"**ID:** `{channel.Id}`\n" +
                                  $"**Link:** `{settings.ChannelLink}`";

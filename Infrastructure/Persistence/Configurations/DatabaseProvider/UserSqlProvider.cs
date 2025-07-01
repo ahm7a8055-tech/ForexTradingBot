@@ -1,9 +1,8 @@
 ﻿// File: Infrastructure/Persistence/Repositories/UserSqlProvider.cs
 
 using Infrastructure.Data;
-using System;
 
-namespace Infrastructure.Repositories
+namespace Infrastructure.Persistence.Configurations
 {
     /// <summary>
     /// Provides a comprehensive and database-specific set of SQL queries for all user-related operations.

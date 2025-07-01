@@ -29,7 +29,7 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
         _logger = logger;
         _redisDb = redis.GetDatabase();
 
-        var queueOptions = options.Value;
+        UpdateQueueOptions queueOptions = options.Value;
         _mainQueueKey = queueOptions.QueueName;
         _processingQueueKey = $"{queueOptions.QueueName}:processing:{_consumerId}";
         _deadLetterQueueKey = queueOptions.DeadLetterQueueName;
@@ -52,8 +52,8 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
         {
             try
             {
-                var jsonUpdate = JsonConvert.SerializeObject(update);
-                await _redisDb.ListLeftPushAsync(_mainQueueKey, jsonUpdate);
+                string jsonUpdate = JsonConvert.SerializeObject(update);
+                _ = await _redisDb.ListLeftPushAsync(_mainQueueKey, jsonUpdate);
             }
             catch (JsonException jsonEx)
             {
@@ -69,14 +69,18 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            RedisValue redisValue = default;
+            RedisValue redisValue;
             try
             {
                 redisValue = await _redisDb.ListRightPopLeftPushAsync(_mainQueueKey, _processingQueueKey);
             }
             catch (Exception ex) when (ex is RedisConnectionException or OperationCanceledException)
             {
-                if (ex is OperationCanceledException) break;
+                if (ex is OperationCanceledException)
+                {
+                    break;
+                }
+
                 _logger.LogError(ex, "Connection to Redis lost while popping from queue. Retrying...");
                 await Task.Delay(2000, cancellationToken);
                 continue;
@@ -84,7 +88,7 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
 
             if (redisValue.HasValue)
             {
-                Update? update = null;
+                Update? update;
                 try
                 {
                     update = JsonConvert.DeserializeObject<Update>(redisValue!);
@@ -95,7 +99,7 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
 
                     // --- FIX APPLIED HERE ---
                     // The correct enum is ListSide, not RedisSide.
-                    await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
+                    _ = await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
                     continue;
                 }
 
@@ -112,7 +116,7 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
 
     public async Task AcknowledgeAsync(QueueMessage message, CancellationToken cancellationToken = default)
     {
-        await _redisDb.ListRemoveAsync(_processingQueueKey, message.RawValue, 1);
+        _ = await _redisDb.ListRemoveAsync(_processingQueueKey, message.RawValue, 1);
         _logger.LogTrace("Acknowledged message for UpdateId {UpdateId}.", message.DeserializedUpdate?.Id);
     }
 

@@ -1,7 +1,9 @@
 ﻿// File: Application/Interfaces/ICloudflareRadarService.cs
+
+// File: Application/Interfaces/ICloudflareRadarService.cs
 using Shared.Results;
 
-namespace Application.Interfaces
+namespace TelegramPanel.Application.Interfaces
 {
     #region DTOs (Data Transfer Objects) - Ultimate Version
 

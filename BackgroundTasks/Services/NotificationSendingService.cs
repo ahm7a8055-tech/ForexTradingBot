@@ -8,13 +8,11 @@ using Application.DTOs;
 using Application.DTOs.Notifications;
 using Application.Interfaces;
 using Domain.Entities;
-using Domain.Enums; // For UserLevel enum
 using Hangfire;
 using Polly;
 using Polly.Retry;
 using Shared.Extensions;
 using StackExchange.Redis;
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -132,7 +130,7 @@ namespace BackgroundTasks.Services
              */
 
              // Handle Telegram Server-side Errors (5xx)
-             if (ex.ErrorCode >= 500 && ex.ErrorCode < 600)
+             if (ex.ErrorCode is >= 500 and < 600)
              {
                  _logger.LogDebug("Detected Telegram API Server Error ({ErrorCode}).", ex.ErrorCode);
                  return true;
@@ -390,7 +388,7 @@ namespace BackgroundTasks.Services
             CancellationToken cancellationToken = jobCancellationToken.ShutdownToken;
             long targetUserId = -1;
 
-            using var logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex });
+            using IDisposable? logScope = _logger.BeginScope(new Dictionary<string, object?> { ["UserIndex"] = userIndex });
 
             try
             {
@@ -403,12 +401,12 @@ namespace BackgroundTasks.Services
                 }
 
                 // --- NEW: AUTHORIZATION (FORCE JOIN CHECK) ---
-                var forceJoinSettings = await _settingsService.GetForceJoinSettingsAsync(cancellationToken);
+                Application.DTOs.Settings.ForceJoinSettingsDto forceJoinSettings = await _settingsService.GetForceJoinSettingsAsync(cancellationToken);
                 if (forceJoinSettings is { IsEnabled: true } && forceJoinSettings.ChannelId != 0)
                 {
                     try
                     {
-                        var chatMember = await _botClient.GetChatMember(forceJoinSettings.ChannelId, targetUserId, cancellationToken);
+                        ChatMember chatMember = await _botClient.GetChatMember(forceJoinSettings.ChannelId, targetUserId, cancellationToken);
                         if (chatMember.Status is ChatMemberStatus.Left or ChatMemberStatus.Kicked)
                         {
                             _logger.LogInformation("SKIP: User {TargetUserId} is not a member of the required channel {ChannelId}. Halting notification.", targetUserId, forceJoinSettings.ChannelId);
@@ -474,33 +472,26 @@ namespace BackgroundTasks.Services
                 stackTrace);
             // =================================================================================
 
-            var keyboard = BuildTelegramKeyboard(payload.Buttons);
+            InlineKeyboardMarkup? keyboard = BuildTelegramKeyboard(payload.Buttons);
             _logger.LogDebug("Handing off payload to ITelegramMessageSender for User {UserId}", payload.TargetTelegramUserId);
 
             try
             {
-                Task sendTask;
-                if (!string.IsNullOrWhiteSpace(payload.ImageUrlOrDefault))
-                {
-                    sendTask = _telegramMessageSender.SendPhotoAsync(
+                Task sendTask = !string.IsNullOrWhiteSpace(payload.ImageUrlOrDefault)
+                    ? _telegramMessageSender.SendPhotoAsync(
                         chatId: payload.TargetTelegramUserId,
                         photoUrlOrFileId: payload.ImageUrlOrDefault ?? "https://i.postimg.cc/3RmJjBjY/Breaking-News.jpg",
                         caption: payload.MessageText,
                         parseMode: ParseMode.MarkdownV2,
                         replyMarkup: keyboard,
-                        cancellationToken: cancellationToken);
-                }
-                else
-                {
-                    sendTask = _telegramMessageSender.SendTextMessageAsync(
+                        cancellationToken: cancellationToken)
+                    : _telegramMessageSender.SendTextMessageAsync(
                         chatId: payload.TargetTelegramUserId,
                         text: payload.MessageText,
                         parseMode: ParseMode.MarkdownV2,
                         replyMarkup: keyboard,
                         cancellationToken: cancellationToken,
                         linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true });
-                }
-
                 await sendTask;
 
                 _logger.LogInformation("✅ Successfully sent notification to User {UserId}", payload.TargetTelegramUserId);
@@ -521,14 +512,14 @@ namespace BackgroundTasks.Services
         {
             RedisValue serializedUserIds = await _redisDb.StringGetAsync(cacheKey);
             if (!serializedUserIds.HasValue) { return (null, -1); }
-            var allUserIds = JsonSerializer.Deserialize<List<long>>(serializedUserIds.ToString());
+            List<long>? allUserIds = JsonSerializer.Deserialize<List<long>>(serializedUserIds.ToString());
             if (allUserIds == null || index >= allUserIds.Count)
             {
                 _logger.LogError("Job aborted: User index {UserIndex} out of bounds for list (Size: {ListSize}).", index, allUserIds?.Count ?? 0);
                 return (null, -1);
             }
             long targetUserId = allUserIds[index];
-            var user = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), ct);
+            UserDto? user = await _userService.GetUserByTelegramIdAsync(targetUserId.ToString(), ct);
             return (user, targetUserId);
         }
 
@@ -555,7 +546,10 @@ namespace BackgroundTasks.Services
         /// <returns>A string safe to be sent with ParseMode.MarkdownV2.</returns>
         private string EscapeTelegramMarkdownV2(string text)
         {
-            if (string.IsNullOrEmpty(text)) return "";
+            if (string.IsNullOrEmpty(text))
+            {
+                return "";
+            }
 
             // This regex pattern matches any single character that is one of the special characters
             // required to be escaped for MarkdownV2.
@@ -600,7 +594,11 @@ namespace BackgroundTasks.Services
                         return true;
                     default:
                         // Check if it's a deadlock error (can sometimes be transient and retryable)
-                        if (sqlEx.Message.Contains("deadlock", StringComparison.OrdinalIgnoreCase)) return true;
+                        if (sqlEx.Message.Contains("deadlock", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+
                         break;
                 }
             }
@@ -618,7 +616,7 @@ namespace BackgroundTasks.Services
             // Redis Exceptions (StackExchange.Redis specific)
             if (e is StackExchange.Redis.RedisConnectionException ||
                 e is StackExchange.Redis.RedisTimeoutException ||
-                e is StackExchange.Redis.RedisServerException && e.Message.Contains("LOADING", StringComparison.OrdinalIgnoreCase)) // Redis is loading data
+                (e is StackExchange.Redis.RedisServerException && e.Message.Contains("LOADING", StringComparison.OrdinalIgnoreCase))) // Redis is loading data
             {
                 return true;
             }
@@ -627,7 +625,7 @@ namespace BackgroundTasks.Services
             if (e is ApiRequestException apiEx)
             {
                 // Treat server errors (5xx) and potentially rate limits (429) as transient
-                if (apiEx.ErrorCode >= 500 || apiEx.ErrorCode == 429) // 429 Too Many Requests might indicate a temporary API limit
+                if (apiEx.ErrorCode is >= 500 or 429) // 429 Too Many Requests might indicate a temporary API limit
                 {
                     // Note: Your internal rate limiter handles user-specific limits *before* calling SendToTelegramAsync.
                     // A 429 from Telegram would be a global or application-wide limit, or maybe specific to the bot.
@@ -638,17 +636,17 @@ namespace BackgroundTasks.Services
             }
 
             // General Network/HTTP Exceptions
-            if (e is System.Net.Sockets.SocketException ||
-                e is System.IO.IOException || // Could indicate network stream issues
-                e is System.Net.Http.HttpRequestException) // Generic HTTP client errors
+            if (e is System.Net.Sockets.SocketException or
+                System.IO.IOException or // Could indicate network stream issues
+                System.Net.Http.HttpRequestException) // Generic HTTP client errors
             {
                 return true;
             }
 
             // Timeout/Cancellation Exceptions
-            if (e is System.TimeoutException ||
-                e is System.Threading.Tasks.TaskCanceledException || // Often results from timeouts
-                e is OperationCanceledException) // General cancellation
+            if (e is System.TimeoutException or
+                System.Threading.Tasks.TaskCanceledException or // Often results from timeouts
+                OperationCanceledException) // General cancellation
             {
                 // Filter out intentional cancellations if needed, but for background jobs
                 // cancellation often implies a timeout or shutdown, which might be transient.
@@ -705,9 +703,9 @@ namespace BackgroundTasks.Services
 
             _logger.LogTrace("Building Telegram keyboard with {ButtonCount} initial buttons.", buttons.Count);
 
-            var validButtons = new List<InlineKeyboardButton>();
+            List<InlineKeyboardButton> validButtons = new();
 
-            foreach (var button in buttons)
+            foreach (NotificationButton button in buttons)
             {
                 if (string.IsNullOrWhiteSpace(button.Text) || string.IsNullOrWhiteSpace(button.CallbackDataOrUrl))
                 {
@@ -716,7 +714,7 @@ namespace BackgroundTasks.Services
 
                 if (button.IsUrl)
                 {
-                    if (Uri.TryCreate(button.CallbackDataOrUrl, UriKind.Absolute, out var validUri))
+                    if (Uri.TryCreate(button.CallbackDataOrUrl, UriKind.Absolute, out Uri? validUri))
                     {
                         validButtons.Add(InlineKeyboardButton.WithUrl(button.Text, validUri.ToString()));
                     }
@@ -750,7 +748,7 @@ namespace BackgroundTasks.Services
             // == THE FIX: Create a List<List<InlineKeyboardButton>> instead of a List<InlineKeyboardButton[]>.
             // This is a more standard structure that prevents deserialization errors in Hangfire.
             // =========================================================================================
-            var keyboardRows = validButtons
+            List<List<InlineKeyboardButton>> keyboardRows = validButtons
                 .Select(b => new List<InlineKeyboardButton> { b }) // <-- THE CHANGE IS HERE
                 .ToList();
 
@@ -786,7 +784,7 @@ namespace BackgroundTasks.Services
                     // Check if payload.ImageUrlOrDefault is populated (it will be, either from RSS or default).
                     if (!string.IsNullOrWhiteSpace(payload.ImageUrlOrDefault))
                     {
-                        await _botClient.SendPhoto(
+                        _ = await _botClient.SendPhoto(
                             chatId: payload.TargetTelegramUserId,
                             photo: new InputFileUrl(payload.ImageUrlOrDefault),
                             caption: payload.MessageText, // <<< FIX: Using pre-calculated sanitized message >>>
@@ -798,9 +796,9 @@ namespace BackgroundTasks.Services
                     {
                         // If ImageUrlOrDefault is *still* null/empty after the dispatch logic,
                         // send a plain text message. This is a fallback in case the default image URL was also invalid.
-                        await _botClient.SendMessage(
+                        _ = await _botClient.SendMessage(
                             chatId: payload.TargetTelegramUserId,
-                            text:payload.MessageText,
+                            text: payload.MessageText,
                             parseMode: ParseMode.MarkdownV2,
                             replyMarkup: finalKeyboard,
                             linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true },
@@ -811,7 +809,7 @@ namespace BackgroundTasks.Services
                 _logger.LogInformation("Notification sent successfully to User {UserId}", payload.TargetTelegramUserId);
             }
             // YOUR EXCELLENT ERROR HANDLING REMAINS IDENTICAL. NO CHANGES NEEDED HERE.
-            catch (ApiRequestException apiEx) when (apiEx.ErrorCode >= 400 && apiEx.ErrorCode < 500 && apiEx.ErrorCode != 429)
+            catch (ApiRequestException apiEx) when (apiEx.ErrorCode is >= 400 and < 500 and not 429)
             {
                 _logger.LogCritical(apiEx, "PERMANENT Send Failure for User {UserId}. ErrorCode: {ErrorCode}. API Message: '{ApiMessage}'.",
                     payload.TargetTelegramUserId, apiEx.ErrorCode, apiEx.Message);
@@ -952,7 +950,7 @@ namespace BackgroundTasks.Services
         /// </returns>
         private string BuildMessageText(NewsItem newsItem)
         {
-            var messageTextBuilder = new StringBuilder();
+            StringBuilder messageTextBuilder = new();
 
             // Escape title, source, and summary as they are plain text within Markdown.
             string title = TelegramMessageFormatter.EscapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
@@ -963,17 +961,17 @@ namespace BackgroundTasks.Services
             string summary = TelegramMessageFormatter.EscapeMarkdownV2(summaryNoNewlines);
             string? link = newsItem.Link?.Trim();
 
-            messageTextBuilder.AppendLine($"*{title}*");
-            messageTextBuilder.AppendLine($"_Source: {sourceName}_");
+            _ = messageTextBuilder.AppendLine($"*{title}*");
+            _ = messageTextBuilder.AppendLine($"_Source: {sourceName}_");
 
             if (!string.IsNullOrWhiteSpace(summary))
             {
-                messageTextBuilder.Append($"\n{summary}");
+                _ = messageTextBuilder.Append($"\n{summary}");
             }
 
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                messageTextBuilder.Append($"\n\n[Read Full Article]({link})");
+                _ = messageTextBuilder.Append($"\n\n[Read Full Article]({link})");
             }
 
             return messageTextBuilder.ToString().Trim();

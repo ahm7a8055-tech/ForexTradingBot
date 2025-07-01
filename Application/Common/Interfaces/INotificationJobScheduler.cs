@@ -1,7 +1,5 @@
 ﻿// File: Application/Common/Interfaces/INotificationJobScheduler.cs
-using System;
 using System.Linq.Expressions;
-using System.Threading.Tasks;
 
 namespace Application.Common.Interfaces
 {

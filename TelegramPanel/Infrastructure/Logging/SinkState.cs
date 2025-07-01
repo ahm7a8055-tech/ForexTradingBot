@@ -5,7 +5,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Infrastructure.Logging
+namespace TelegramPanel.Infrastructure.Logging
 {
     /// <summary>
     /// Manages the state for the God Mode sink, primarily for intelligent error deduplication and throttling.
@@ -34,10 +34,10 @@ namespace Infrastructure.Logging
         /// <returns>True if the notification should be suppressed; otherwise, false.</returns>
         public bool ShouldThrottle(LogEvent logEvent, out int occurrenceCount)
         {
-            var errorSignature = CreateErrorSignature(logEvent);
+            string errorSignature = CreateErrorSignature(logEvent);
             occurrenceCount = 1;
 
-            if (_errorCache.TryGetValue(errorSignature, out var occurrence))
+            if (_errorCache.TryGetValue(errorSignature, out ErrorOccurrence? occurrence))
             {
                 occurrence.Count++;
                 occurrenceCount = occurrence.Count;
@@ -53,7 +53,7 @@ namespace Infrastructure.Logging
             }
 
             // This is a new, unique error.
-            _errorCache.TryAdd(errorSignature, new ErrorOccurrence());
+            _ = _errorCache.TryAdd(errorSignature, new ErrorOccurrence());
             return false;
         }
 
@@ -62,17 +62,17 @@ namespace Infrastructure.Logging
         /// </summary>
         private string CreateErrorSignature(LogEvent logEvent)
         {
-            var sb = new StringBuilder();
-            sb.Append(logEvent.Exception?.GetType().Name);
-            sb.Append(logEvent.MessageTemplate.Text);
+            StringBuilder sb = new();
+            _ = sb.Append(logEvent.Exception?.GetType().Name);
+            _ = sb.Append(logEvent.MessageTemplate.Text);
 
-            if (logEvent.Properties.TryGetValue("Caller", out var caller))
+            if (logEvent.Properties.TryGetValue("Caller", out LogEventPropertyValue? caller))
             {
-                sb.Append(caller.ToString("l", null));
+                _ = sb.Append(caller.ToString("l", null));
             }
 
-            using var sha256 = SHA256.Create();
-            var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
+            using SHA256 sha256 = SHA256.Create();
+            byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
             return Convert.ToBase64String(hashBytes);
         }
     }

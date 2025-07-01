@@ -31,7 +31,7 @@ namespace TelegramPanel.Queue
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _maxRetryAttempts = 3;
 
-            var options = new BoundedChannelOptions(capacity)
+            BoundedChannelOptions options = new(capacity)
             {
                 // ✅ تغییر مهم: بازگشت به Wait. این تضمین می‌کند که هیچ آپدیتی در صف داخلی از دست نمی‌رود.
                 // مدیریت بلاک شدن این WriteAsync (اگر Channel پر باشد) به لایه فراخواننده (TelegramBotService) واگذار می‌شود.
@@ -71,7 +71,7 @@ namespace TelegramPanel.Queue
 
         public async IAsyncEnumerable<QueueMessage> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await foreach (var update in _channel.Reader.ReadAllAsync(cancellationToken))
+            await foreach (Update update in _channel.Reader.ReadAllAsync(cancellationToken))
             {
                 // Wrap the Update in a QueueMessage. The raw value is null because there's no Redis value.
                 yield return new QueueMessage(update, default);
@@ -112,6 +112,6 @@ namespace TelegramPanel.Queue
             }).ConfigureAwait(false);
         }
 
-    
+
     }
 }

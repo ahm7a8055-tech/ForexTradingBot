@@ -88,7 +88,7 @@ namespace TelegramPanel.Infrastructure
                     // ابتدا هرگونه Webhook قبلی را حذف می‌کنیم تا از تداخل جلوگیری شود.
                     await TryDeleteWebhookAsync(_cancellationTokenSourceForPolling.Token, "Preparing for new Webhook setup.");
 
-                    var allowedUpdatesForWebhook = _settings.AllowedUpdates?.ToArray() ?? Array.Empty<UpdateType>();
+                    UpdateType[] allowedUpdatesForWebhook = _settings.AllowedUpdates?.ToArray() ?? Array.Empty<UpdateType>();
 
                     try
                     {
@@ -103,7 +103,7 @@ namespace TelegramPanel.Infrastructure
                             secretToken: _settings.WebhookSecretToken,
                             cancellationToken: _cancellationTokenSourceForPolling.Token);
 
-                        var webhookInfo = await _botClient.GetWebhookInfo(cancellationToken: _cancellationTokenSourceForPolling.Token);
+                        WebhookInfo? webhookInfo = await _botClient.GetWebhookInfo(cancellationToken: _cancellationTokenSourceForPolling.Token);
                         if (webhookInfo != null && webhookInfo.Url.Equals(_settings.WebhookAddress, StringComparison.OrdinalIgnoreCase))
                         {
                             _logger.LogInformation("Webhook configured successfully to: {WebhookAddress}. Pending updates: {PendingUpdates}. Last error: {LastErrorMsg} at {LastErrorDate}",
@@ -146,7 +146,7 @@ namespace TelegramPanel.Infrastructure
                 try
                 {
                     // Double check webhook is deleted before starting polling
-                    var webhookInfo = await _botClient.GetWebhookInfo(cancellationToken: _cancellationTokenSourceForPolling.Token);
+                    WebhookInfo webhookInfo = await _botClient.GetWebhookInfo(cancellationToken: _cancellationTokenSourceForPolling.Token);
                     if (!string.IsNullOrEmpty(webhookInfo.Url))
                     {
                         _logger.LogWarning("Webhook still active at {WebhookUrl}. Attempting to delete before starting polling.", webhookInfo.Url);
@@ -154,8 +154,8 @@ namespace TelegramPanel.Infrastructure
                         _logger.LogInformation("Webhook deleted successfully before starting polling.");
                     }
 
-                    var allowedUpdatesForPolling = _settings.AllowedUpdates?.ToArray() ?? Array.Empty<UpdateType>();
-                    var receiverOptions = new ReceiverOptions
+                    UpdateType[] allowedUpdatesForPolling = _settings.AllowedUpdates?.ToArray() ?? Array.Empty<UpdateType>();
+                    ReceiverOptions receiverOptions = new()
                     {
                         AllowedUpdates = allowedUpdatesForPolling,
                         //  اگر نیاز به مدیریت offset دارید، این بخش باید با دقت بیشتری بررسی شود.
@@ -195,7 +195,7 @@ namespace TelegramPanel.Infrastructure
             try
             {
                 // بررسی اینکه آیا Webhook ای اصلاً تنظیم شده است
-                var currentWebhookInfo = await _botClient.GetWebhookInfo(cancellationToken);
+                WebhookInfo currentWebhookInfo = await _botClient.GetWebhookInfo(cancellationToken);
                 if (!string.IsNullOrEmpty(currentWebhookInfo.Url))
                 {
                     await _botClient.DeleteWebhook(dropPendingUpdates: true, cancellationToken: cancellationToken);
@@ -241,24 +241,24 @@ namespace TelegramPanel.Infrastructure
 
             // --- 2. Distributed Tracing Setup ---
             // Use a descriptive name for the activity. ActivityKind.Internal is suitable for internal processing.
-            using var activity = _activitySource.CreateActivity("HandleUpdateAsync", ActivityKind.Internal);
+            using Activity? activity = _activitySource.CreateActivity("HandleUpdateAsync", ActivityKind.Internal);
 
             // Add common tags for tracing context. These tags are visible in distributed tracing systems (like Jaeger, Zipkin).
-            activity?.AddTag("app.update.id", update.Id);
-            activity?.AddTag("app.update.type", update.Type.ToString());
+            _ = (activity?.AddTag("app.update.id", update.Id));
+            _ = (activity?.AddTag("app.update.type", update.Type.ToString()));
 
             // Extract user ID and add it as a tag if available.
-            var userId = update.Message?.From?.Id ?? update.CallbackQuery?.From?.Id;
+            long? userId = update.Message?.From?.Id ?? update.CallbackQuery?.From?.Id;
             if (userId.HasValue)
             {
-                activity?.AddTag("app.telegram.user.id", userId.Value);
+                _ = (activity?.AddTag("app.telegram.user.id", userId.Value));
             }
 
             // Extract chat ID and add it as a tag if available.
-            var chatId = update.Message?.Chat?.Id ?? update.CallbackQuery?.Message?.Chat?.Id;
+            long? chatId = update.Message?.Chat?.Id ?? update.CallbackQuery?.Message?.Chat?.Id;
             if (chatId.HasValue)
             {
-                activity?.AddTag("app.telegram.chat.id", chatId.Value);
+                _ = (activity?.AddTag("app.telegram.chat.id", chatId.Value));
             }
 
             // Log a snippet of message text for context, but only if it's a message update.
@@ -266,17 +266,17 @@ namespace TelegramPanel.Infrastructure
             if (update.Message?.Text != null)
             {
                 messageTextSnippet = update.Message.Text.Length > 50
-                    ? update.Message.Text.Substring(0, 50) + "..."
+                    ? update.Message.Text[..50] + "..."
                     : update.Message.Text;
-                activity?.AddTag("app.message.text.snippet", messageTextSnippet);
+                _ = (activity?.AddTag("app.message.text.snippet", messageTextSnippet));
             }
 
             // Start the activity (trace span).
-            activity?.Start();
+            _ = (activity?.Start());
 
             // --- 3. Structured Logging Context ---
             // Combine tracing tags with logging scope properties for comprehensive context.
-            var logScopeProps = new Dictionary<string, object?>
+            Dictionary<string, object?> logScopeProps = new()
             {
                 ["Source"] = nameof(HandleUpdateAsync),
                 ["UpdateId"] = update.Id,
@@ -319,7 +319,7 @@ namespace TelegramPanel.Infrastructure
                     // _metrics.EnqueueChannelClosedErrorCount.Inc();
 
                     // Mark the activity as failed if the channel write fails critically.
-                    activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue"));
                 }
                 catch (Exception ex)
                 {
@@ -329,7 +329,7 @@ namespace TelegramPanel.Infrastructure
                     // _metrics.EnqueueGenericErrorCount.Inc();
 
                     // Mark the activity as failed.
-                    activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}"));
                 }
                 finally
                 {
@@ -353,8 +353,8 @@ namespace TelegramPanel.Infrastructure
         public Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
         {
             // This call is correct for modern .NET/DiagnosticSource versions.
-            using var activity = _activitySource.CreateActivity(name: "TelegramBot.HandleError", kind: ActivityKind.Internal);
-            activity?.Start();
+            using Activity? activity = _activitySource.CreateActivity(name: "TelegramBot.HandleError", kind: ActivityKind.Internal);
+            _ = (activity?.Start());
 
             try
             {
@@ -377,17 +377,17 @@ namespace TelegramPanel.Infrastructure
                             formattedErrorMessage = $"Telegram API Warning (Forbidden - 403, Source: {source}): Bot blocked or lacks permissions. Message='{apiEx.Message}'.";
                             logMessage = $"POLLING INFO: {formattedErrorMessage}";
                             // FIX for CS1503: The ActivityEvent constructor takes (name, timestamp, tags). We omit the timestamp to use UtcNow.
-                            activity?.AddEvent(new ActivityEvent("TelegramApiWarning", tags: new ActivityTagsCollection {
+                            _ = (activity?.AddEvent(new ActivityEvent("TelegramApiWarning", tags: new ActivityTagsCollection {
                                 { "error.code", 403 }, { "error.message", apiEx.Message }
-                            }));
+                            })));
                             break;
                         case 429:
                             formattedErrorMessage = $"Telegram API Warning (Too Many Requests - 429, Source: {source}): Bot hitting rate limits. Message='{apiEx.Message}'.";
                             logMessage = $"POLLING WARNING: {formattedErrorMessage}";
                             // FIX for CS1503: Correct constructor usage.
-                            activity?.AddEvent(new ActivityEvent("TelegramApiRateLimit", tags: new ActivityTagsCollection {
+                            _ = (activity?.AddEvent(new ActivityEvent("TelegramApiRateLimit", tags: new ActivityTagsCollection {
                                 { "error.code", 429 }, { "error.message", apiEx.Message }
-                            }));
+                            })));
                             break;
                         default:
                             formattedErrorMessage = $"Telegram API Error (Code: {apiEx.ErrorCode}, Source: {source}): Message='{apiEx.Message}'.";
@@ -405,7 +405,7 @@ namespace TelegramPanel.Infrastructure
                     activityStatusDescription = $"Polling Exception: {exception.GetType().Name}";
                 }
 
-                var logScopeProps = new Dictionary<string, object?>
+                Dictionary<string, object?> logScopeProps = new()
                 {
                     ["ErrorSource"] = source.ToString(),
                     ["ExceptionType"] = exception.GetType().Name,
@@ -426,17 +426,17 @@ namespace TelegramPanel.Infrastructure
 
                 if (activityStatus.HasValue)
                 {
-                    activity?.SetStatus(activityStatus.Value, activityStatusDescription);
+                    _ = (activity?.SetStatus(activityStatus.Value, activityStatusDescription));
                 }
                 else if (activity?.Status == ActivityStatusCode.Unset && exception is ApiRequestException apiExForStatus && !(apiExForStatus.ErrorCode == 403 || apiExForStatus.ErrorCode == 429))
                 {
-                    activity?.SetStatus(ActivityStatusCode.Error, $"Unhandled API error: {apiExForStatus.ErrorCode}");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Unhandled API error: {apiExForStatus.ErrorCode}"));
                 }
             }
             catch (Exception handlerEx)
             {
                 Console.Error.WriteLine($"FATAL ERROR IN HandleErrorAsync: Handler failed. Original: {exception?.GetType().Name ?? "Unknown"}, Handler: {handlerEx.GetType().Name}.");
-                activity?.SetStatus(ActivityStatusCode.Error, $"Handler failed: {handlerEx.GetType().Name}");
+                _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Handler failed: {handlerEx.GetType().Name}"));
             }
             finally
             {
@@ -466,8 +466,8 @@ namespace TelegramPanel.Infrastructure
                 _logger.LogInformation("Webhook mode is active. Attempting to delete webhook for cleanup.");
                 // Use a dedicated CancellationTokenSource with a timeout for webhook cleanup.
                 // This prevents a stuck webhook deletion from blocking the entire shutdown process.
-                using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(15)); // Increased timeout to 15 seconds for webhook operations
-                var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(hostCancellationToken, cleanupCts.Token);
+                using CancellationTokenSource cleanupCts = new(TimeSpan.FromSeconds(15)); // Increased timeout to 15 seconds for webhook operations
+                CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(hostCancellationToken, cleanupCts.Token);
 
                 try
                 {
@@ -538,4 +538,4 @@ namespace TelegramPanel.Infrastructure
             _logger.LogInformation("Bot Service has completed its stopping procedures.");
         }
     }
-    }
+}

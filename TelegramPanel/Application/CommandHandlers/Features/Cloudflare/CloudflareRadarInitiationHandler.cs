@@ -4,8 +4,6 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using TelegramPanel.Application.CommandHandlers.MainMenu;
 using TelegramPanel.Application.Interfaces; // For ITelegramMessageSender
-using Telegram.Bot; // Potentially needed implicitly by Telegram.Bot.Types
-using Telegram.Bot.Exceptions; // For ApiRequestException if needed for specific error handling
 
 namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 {
@@ -56,10 +54,10 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
         {
             // Safely extract necessary information from the callback query.
             // `CanHandle` ensures these are not null here.
-            var callbackQuery = update.CallbackQuery!;
-            var userId = callbackQuery.From.Id;
-            var chatId = callbackQuery.Message!.Chat.Id;
-            var messageId = callbackQuery.Message.MessageId;
+            CallbackQuery callbackQuery = update.CallbackQuery!;
+            long userId = callbackQuery.From.Id;
+            long chatId = callbackQuery.Message!.Chat.Id;
+            int messageId = callbackQuery.Message.MessageId;
 
             _logger.LogInformation("Initiating Cloudflare Radar flow for User {UserId} in Chat {ChatId}", userId, chatId);
 

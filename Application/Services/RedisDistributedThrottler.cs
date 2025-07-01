@@ -1,14 +1,11 @@
 ﻿// File: Infrastructure/Services/RedisDistributedThrottler.cs
 using Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
-using StackExchange.Redis;
 using Polly;
 using Polly.Retry;
-using System;
-using System.Threading;
-using System.Threading.Tasks;
+using StackExchange.Redis;
 
-namespace Infrastructure.Services
+namespace Application.Services
 {
     public class RedisDistributedThrottler : IDistributedThrottler
     {
@@ -16,7 +13,7 @@ namespace Infrastructure.Services
         private readonly IConnectionMultiplexer _redis;
         private readonly ILogger<RedisDistributedThrottler> _logger;
         private readonly AsyncRetryPolicy _redisRetryPolicy;
-        private static readonly Lazy<LuaScript> _throttleScript = new Lazy<LuaScript>(() => LuaScript.Prepare(ThrottleLuaScript));
+        private static readonly Lazy<LuaScript> _throttleScript = new(() => LuaScript.Prepare(ThrottleLuaScript));
 
         private const string ThrottleLuaScript =
             // ... (Your Lua script remains exactly the same) ...
@@ -69,7 +66,7 @@ namespace Infrastructure.Services
                     onRetry: (ex, ts, count, ctx) =>
                     {
                         _logger.LogWarning(ex, "Redis error in throttler for key '{ThrottleKey}'. Attempt {Count}. Retrying in {WaitTime}...",
-                            ctx.TryGetValue("ThrottleKey", out var key) ? key.ToString() : "N/A",
+                            ctx.TryGetValue("ThrottleKey", out object? key) ? key.ToString() : "N/A",
                             count, ts);
                     });
         }
@@ -78,9 +75,9 @@ namespace Infrastructure.Services
         public async Task WaitAsync(string throttleKey, int limit, TimeSpan window, CancellationToken cancellationToken)
         {
             IDatabase db = _redis.GetDatabase();
-            var key = $"throttle:{throttleKey}";
+            string key = $"throttle:{throttleKey}";
 
-            var pollyContext = new Context($"ThrottleWait_{throttleKey}")
+            Context pollyContext = new($"ThrottleWait_{throttleKey}")
             {
                 ["ThrottleKey"] = throttleKey
             };
@@ -89,17 +86,17 @@ namespace Infrastructure.Services
             {
                 try
                 {
-                    var waitTimeMs = await _redisRetryPolicy.ExecuteAsync<long>(async (ctx) =>
+                    long waitTimeMs = await _redisRetryPolicy.ExecuteAsync(async (ctx) =>
                     {
                         // Get the pre-loaded Lua script.
-                        var loadedScript = _throttleScript.Value;
-                        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                        var uniqueMember = Random.Shared.NextInt64();
+                        LuaScript loadedScript = _throttleScript.Value;
+                        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        long uniqueMember = Random.Shared.NextInt64();
 
                         // <<< THE FIX IS HERE >>>
                         // When using a LuaScript object, you call its EvaluateAsync method,
                         // passing the database and the parameters object.
-                        var result = await loadedScript.EvaluateAsync(db, new
+                        RedisResult result = await loadedScript.EvaluateAsync(db, new
                         {
                             key = (RedisKey)key,
                             now,

@@ -151,8 +151,8 @@ namespace Infrastructure.Services
                     {
                         // Level 2: Enhanced structured logging for retries.
                         // Attempt to extract source info from Polly context, if available.
-                        string sourceInfo = context.TryGetValue("RssSourceName", out var name) ? $" (Source: {name})" : "";
-                        string sourceId = context.TryGetValue("RssSourceId", out var id) ? $" (ID: {id})" : "";
+                        string sourceInfo = context.TryGetValue("RssSourceName", out object? name) ? $" (Source: {name})" : "";
+                        string sourceId = context.TryGetValue("RssSourceId", out object? id) ? $" (ID: {id})" : "";
 
                         _logger.LogWarning(exception,
                             "Polly Coordinator: Transient error encountered while processing RSS feed{SourceInfo}{SourceId}. Retrying in {TimeSpanSeconds:F1}s for attempt {RetryAttempt}/2. Error: {ErrorMessage}",
@@ -209,7 +209,7 @@ namespace Infrastructure.Services
         {
             _logger.LogInformation("[HANGFIRE JOB] Starting SEQUENTIAL fetch: FetchAllActiveFeedsAsync at {UtcNow}", DateTime.UtcNow);
 
-            var activeSources = (await _rssSourceRepository.GetActiveSourcesAsync(cancellationToken).ConfigureAwait(false)).ToList();
+            List<RssSource> activeSources = (await _rssSourceRepository.GetActiveSourcesAsync(cancellationToken).ConfigureAwait(false)).ToList();
 
             if (!activeSources.Any())
             {
@@ -224,7 +224,7 @@ namespace Infrastructure.Services
             // We now use a standard foreach loop. This ensures that we wait for the processing
             // of one feed to complete entirely before starting the next one.
             int processedCount = 0;
-            foreach (var source in activeSources)
+            foreach (RssSource? source in activeSources)
             {
                 // Check for cancellation before starting each new feed. This allows the job
                 // to be stopped gracefully between feeds.
@@ -297,7 +297,7 @@ namespace Infrastructure.Services
         private async Task ProcessSingleFeedWithLoggingAndRetriesAsync(RssSource source, CancellationToken cancellationToken)
         {
             // Level 2: Define specific Polly context for this individual feed for granular logging.
-            var pollyContext = new Context($"RssFeedFetch_{source.Id}")
+            Context pollyContext = new($"RssFeedFetch_{source.Id}")
             {
                 ["RssSourceId"] = source.Id.ToString(), // Use ToString() for Guid ID
                 ["RssSourceName"] = source.SourceName
@@ -319,7 +319,7 @@ namespace Infrastructure.Services
                     // Level 9: Execute FetchAndProcessFeedAsync protected by the coordinator's Polly policy.
                     // Pass Polly's internal cancellation token (`ct`) to the reader service if its contract allowed it.
                     // Assuming FetchAndProcessFeedAsync uses the main CancellationToken and doesn't need context propagation to its underlying policies.
-                    var result = await _coordinatorRetryPolicy.ExecuteAsync(async (ctx, ct) =>
+                    Shared.Results.Result<IEnumerable<Application.DTOs.News.NewsItemDto>> result = await _coordinatorRetryPolicy.ExecuteAsync(async (ctx, ct) =>
                     {
                         // Ensure the cancellation token is propagated from Parallel.ForEachAsync's lambda -> Polly -> IRssReaderService
                         return await _rssReaderService.FetchAndProcessFeedAsync(source, ct).ConfigureAwait(true); // Level 1: ConfigureAwait(false)

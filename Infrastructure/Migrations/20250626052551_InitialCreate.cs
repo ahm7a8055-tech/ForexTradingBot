@@ -1,5 +1,4 @@
-﻿using System;
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
@@ -12,7 +11,7 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "ForwardingRules",
                 columns: table => new
                 {
@@ -43,10 +42,10 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_ForwardingRules", x => x.RuleName);
+                    _ = table.PrimaryKey("PK_ForwardingRules", x => x.RuleName);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "SignalCategories",
                 columns: table => new
                 {
@@ -58,10 +57,10 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_SignalCategories", x => x.Id);
+                    _ = table.PrimaryKey("PK_SignalCategories", x => x.Id);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "Users",
                 columns: table => new
                 {
@@ -79,10 +78,10 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Users", x => x.Id);
+                    _ = table.PrimaryKey("PK_Users", x => x.Id);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "ForwardingRuleTextReplacements",
                 columns: table => new
                 {
@@ -96,8 +95,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_ForwardingRuleTextReplacements", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_ForwardingRuleTextReplacements", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_ForwardingRuleTextReplacements_ForwardingRules_ForwardingRu~",
                         column: x => x.ForwardingRuleName,
                         principalTable: "ForwardingRules",
@@ -105,7 +104,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "RssSources",
                 columns: table => new
                 {
@@ -126,8 +125,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_RssSources", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_RssSources", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_RssSources_SignalCategories_DefaultSignalCategoryId",
                         column: x => x.DefaultSignalCategoryId,
                         principalTable: "SignalCategories",
@@ -135,7 +134,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.SetNull);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "Signals",
                 columns: table => new
                 {
@@ -157,8 +156,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Signals", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_Signals", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_Signals_SignalCategories_CategoryId",
                         column: x => x.CategoryId,
                         principalTable: "SignalCategories",
@@ -166,7 +165,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Restrict);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "Subscriptions",
                 columns: table => new
                 {
@@ -181,8 +180,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Subscriptions", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_Subscriptions", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_Subscriptions_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
@@ -190,7 +189,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "TokenWallets",
                 columns: table => new
                 {
@@ -203,8 +202,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_TokenWallets", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_TokenWallets", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_TokenWallets_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
@@ -212,7 +211,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "Transactions",
                 columns: table => new
                 {
@@ -231,8 +230,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Transactions", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_Transactions", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_Transactions_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
@@ -240,7 +239,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Restrict);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "UserSignalPreferences",
                 columns: table => new
                 {
@@ -251,14 +250,14 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_UserSignalPreferences", x => new { x.UserId, x.CategoryId });
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_UserSignalPreferences", x => new { x.UserId, x.CategoryId });
+                    _ = table.ForeignKey(
                         name: "FK_UserSignalPreferences_SignalCategories_CategoryId",
                         column: x => x.CategoryId,
                         principalTable: "SignalCategories",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
+                    _ = table.ForeignKey(
                         name: "FK_UserSignalPreferences_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
@@ -266,7 +265,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "NewsItems",
                 columns: table => new
                 {
@@ -292,14 +291,14 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_NewsItems", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_NewsItems", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_NewsItems_RssSources_RssSourceId",
                         column: x => x.RssSourceId,
                         principalTable: "RssSources",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
+                    _ = table.ForeignKey(
                         name: "FK_NewsItems_SignalCategories_AssociatedSignalCategoryId",
                         column: x => x.AssociatedSignalCategoryId,
                         principalTable: "SignalCategories",
@@ -307,7 +306,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.SetNull);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "UserRssPreferences",
                 columns: table => new
                 {
@@ -317,14 +316,14 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_UserRssPreferences", x => new { x.UserId, x.RssSourceId });
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_UserRssPreferences", x => new { x.UserId, x.RssSourceId });
+                    _ = table.ForeignKey(
                         name: "FK_UserRssPreferences_RssSources_RssSourceId",
                         column: x => x.RssSourceId,
                         principalTable: "RssSources",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
+                    _ = table.ForeignKey(
                         name: "FK_UserRssPreferences_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
@@ -332,7 +331,7 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "SignalAnalyses",
                 columns: table => new
                 {
@@ -345,8 +344,8 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_SignalAnalyses", x => x.Id);
-                    table.ForeignKey(
+                    _ = table.PrimaryKey("PK_SignalAnalyses", x => x.Id);
+                    _ = table.ForeignKey(
                         name: "FK_SignalAnalyses_Signals_SignalId",
                         column: x => x.SignalId,
                         principalTable: "Signals",
@@ -354,208 +353,208 @@ namespace Infrastructure.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRules_AllowedSenders_GIN",
                 table: "ForwardingRules",
                 column: "FilterOptions_AllowedSenderUserIds")
                 .Annotation("Npgsql:IndexMethod", "gin");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRules_BySourceChannelAndStatus",
                 table: "ForwardingRules",
                 columns: new[] { "SourceChannelId", "IsEnabled" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRules_ByTargetChannel_GIN",
                 table: "ForwardingRules",
                 column: "TargetChannelIds")
                 .Annotation("Npgsql:IndexMethod", "gin");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRules_ContainsText_Trgm",
                 table: "ForwardingRules",
                 column: "FilterOptions_ContainsText")
                 .Annotation("Npgsql:IndexMethod", "gist")
                 .Annotation("Npgsql:IndexOperators", new[] { "gist_trgm_ops" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRules_IsEnabled",
                 table: "ForwardingRules",
                 column: "IsEnabled");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRules_MessageTypes_GIN",
                 table: "ForwardingRules",
                 column: "FilterOptions_AllowedMessageTypes")
                 .Annotation("Npgsql:IndexMethod", "gin");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ForwardingRuleTextReplacements_ForwardingRuleName",
                 table: "ForwardingRuleTextReplacements",
                 column: "ForwardingRuleName");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_NewsItems_BySource",
                 table: "NewsItems",
                 column: "RssSourceId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_NewsItems_CategorySearch",
                 table: "NewsItems",
                 columns: new[] { "AssociatedSignalCategoryId", "PublishedDate" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_NewsItems_LinkHash_Unique",
                 table: "NewsItems",
                 column: "LinkHash",
                 unique: true,
                 filter: "\"LinkHash\" IS NOT NULL");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_NewsItems_PrimarySearch",
                 table: "NewsItems",
                 columns: new[] { "IsVipOnly", "PublishedDate" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_NewsItems_RssSourceId_SourceItemId_Unique",
                 table: "NewsItems",
                 columns: new[] { "RssSourceId", "SourceItemId" },
                 unique: true,
                 filter: "\"SourceItemId\" IS NOT NULL");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_NewsItems_Unprocessed",
                 table: "NewsItems",
                 column: "LastProcessedAt",
                 filter: "\"LastProcessedAt\" IS NULL");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_RssSources_DefaultSignalCategoryId",
                 table: "RssSources",
                 column: "DefaultSignalCategoryId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_RssSources_IsActive",
                 table: "RssSources",
                 column: "IsActive");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_RssSources_IsActive_LastFetchAttemptAt",
                 table: "RssSources",
                 columns: new[] { "IsActive", "LastFetchAttemptAt" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_RssSources_LastFetchAttemptAt",
                 table: "RssSources",
                 column: "LastFetchAttemptAt");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_RssSources_SourceName",
                 table: "RssSources",
                 column: "SourceName");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_RssSources_Url",
                 table: "RssSources",
                 column: "Url",
                 unique: true);
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_SignalAnalyses_SignalId",
                 table: "SignalAnalyses",
                 column: "SignalId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_SignalCategories_Name",
                 table: "SignalCategories",
                 column: "Name",
                 unique: true);
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Signals_ByStatus",
                 table: "Signals",
                 column: "Status");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Signals_BySymbol",
                 table: "Signals",
                 column: "Symbol");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Signals_PrimarySearch",
                 table: "Signals",
                 columns: new[] { "CategoryId", "IsVipOnly", "Status", "PublishedAt" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Subscriptions_ByEndDate",
                 table: "Subscriptions",
                 column: "EndDate");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Subscriptions_CheckIsActive",
                 table: "Subscriptions",
                 columns: new[] { "UserId", "EndDate" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_TokenWallets_UserId",
                 table: "TokenWallets",
                 column: "UserId",
                 unique: true);
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Transactions_PaymentGatewayInvoiceId",
                 table: "Transactions",
                 column: "PaymentGatewayInvoiceId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Transactions_Status",
                 table: "Transactions",
                 column: "Status");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Transactions_Timestamp",
                 table: "Transactions",
                 column: "Timestamp");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Transactions_UserId",
                 table: "Transactions",
                 column: "UserId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_UserRssPreferences_BySource",
                 table: "UserRssPreferences",
                 column: "RssSourceId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Users_Email",
                 table: "Users",
                 column: "Email",
                 unique: true);
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Users_NotificationTarget_News",
                 table: "Users",
                 column: "EnableRssNewsNotifications");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Users_NotificationTarget_Signal",
                 table: "Users",
                 columns: new[] { "Level", "EnableVipSignalNotifications" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Users_TelegramId",
                 table: "Users",
                 column: "TelegramId",
                 unique: true);
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_Users_Username",
                 table: "Users",
                 column: "Username",
                 unique: true);
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_UserSignalPreferences_CategoryId",
                 table: "UserSignalPreferences",
                 column: "CategoryId");
@@ -564,43 +563,43 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "ForwardingRuleTextReplacements");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "NewsItems");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "SignalAnalyses");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "Subscriptions");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "TokenWallets");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "Transactions");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "UserRssPreferences");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "UserSignalPreferences");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "ForwardingRules");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "Signals");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "RssSources");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "Users");
 
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "SignalCategories");
         }
     }

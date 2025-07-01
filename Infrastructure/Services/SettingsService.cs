@@ -1,16 +1,12 @@
 ﻿// --- START OF CORRECTED FILE: Infrastructure/Services/SettingsService.cs ---
 
-using Application.Common.Interfaces;
 using Application.DTOs.Settings;
 using Application.Interfaces;
 using Dapper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using System;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Infrastructure.Services
 {
@@ -35,7 +31,7 @@ namespace Infrastructure.Services
         {
             // 1. Try to get from cache first
             // --- FIX: Removed cancellationToken from this call ---
-            var cachedSettings = await _cacheService.GetAsync<ForceJoinSettingsDto>(ForceJoinSettingsKey);
+            ForceJoinSettingsDto? cachedSettings = await _cacheService.GetAsync<ForceJoinSettingsDto>(ForceJoinSettingsKey);
             if (cachedSettings is not null)
             {
                 _logger.LogTrace("Force join settings retrieved from cache.");
@@ -44,10 +40,10 @@ namespace Infrastructure.Services
 
             // 2. If not in cache, get from the database
             _logger.LogInformation("Force join settings not found in cache. Fetching from database.");
-            await using var connection = new NpgsqlConnection(_configuration.GetConnectionString("DefaultConnection"));
+            await using NpgsqlConnection connection = new(_configuration.GetConnectionString("DefaultConnection"));
             const string sql = @"SELECT ""Value"" FROM public.""Settings"" WHERE ""Key"" = @Key;";
 
-            var jsonValue = await connection.QuerySingleOrDefaultAsync<string>(
+            string? jsonValue = await connection.QuerySingleOrDefaultAsync<string>(
                 new CommandDefinition(sql, new { Key = ForceJoinSettingsKey }, cancellationToken: cancellationToken));
 
             ForceJoinSettingsDto settings;

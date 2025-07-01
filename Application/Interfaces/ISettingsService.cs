@@ -1,8 +1,6 @@
 ﻿// --- START OF NEW FILE: Application/Interfaces/ISettingsService.cs ---
 
 using Application.DTOs.Settings;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Application.Interfaces
 {

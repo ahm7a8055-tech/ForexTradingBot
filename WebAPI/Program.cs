@@ -9,43 +9,32 @@ using Application.Features.Forwarding.Extensions;
 // using Application.Interfaces;          // معمولاً اینترفیس‌های Application مستقیماً اینجا نیاز نیستند مگر برای موارد خاص
 // using Application.Services;            // و نه پیاده‌سازی‌های آن
 using BackgroundTasks;                    // برای متد توسعه‌دهنده AddBackgroundTasksServices (اگر تعریف کرده‌اید)
-using BackgroundTasks.Services;
+using Dapper;
 using Hangfire;                             // برای پیکربندی‌های Hangfire مانند CompatibilityLevel, RecurringJob, Cron
 using Hangfire.Dashboard;                   // برای DashboardOptions, IDashboardAuthorizationFilter
 using Hangfire.MemoryStorage;
 using Hangfire.PostgreSql;
-using Hangfire.SqlServer;
 using Hangfire.Storage.SQLite;
 using Infrastructure.Data;
 using Infrastructure.ExternalServices;
-using Hangfire.Annotations;
-
-
 // using Hangfire.SqlServer;              // اگر از SQL Server برای Hangfire استفاده می‌کنید
 // using WebAPI.Filters; //  Namespace برای HangfireNoAuthFilter (اگر در این مسیر است و استفاده می‌کنید)
 using Infrastructure.Features.Forwarding.Extensions;
-using Infrastructure.Logging;
 using Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;             // برای OpenApiInfo
 using Serilog;                              // برای Log, LoggerConfiguration, UseSerilog
 using Serilog.Enrichers.WithCaller;
-using Shared.Helpers;
-using Shared.Maintenance;
 using Shared.Settings;                    // برای CryptoPaySettings (از پروژه Shared)
 using StackExchange.Redis;
-using System.Configuration;
-using TelegramPanel.Extensions;
-using TelegramPanel.Infrastructure.Services;
-using TL;
-using WebAPI.Extensions;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
-using Dapper;
 using System.Data;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using TelegramPanel.Extensions;
+using TelegramPanel.Infrastructure.Logging;
+using TelegramPanel.Infrastructure.Services;
 
 #endregion
 
@@ -78,26 +67,45 @@ AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
 
 try
 {
-
+    #region Main Application Entry (region master)
     Log.Information("--------------------------------------------------");
     Log.Information("Application Starting Up (Program.cs)...");
     Log.Information("--------------------------------------------------");
-    ThreadPool.GetMinThreads(out var minWorker, out var minIo);
-
-    // Then log with the placeholder and the argument:
+    ThreadPool.GetMinThreads(out int minWorker, out int minIo);
     Log.Information(
         "ThreadPool minimum threads set to {MinWorkerThreads} worker threads and {MinIoThreads} I/O threads.",
         minWorker,
         minIo
     );
+    #endregion
+
+    #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
     _ = builder.WebHost.UseKestrel();
-    builder.Services.AddSingleton<Infrastructure.Logging.TelegramAdminSink>();
+    builder.Services.AddSingleton<TelegramAdminSink>();
     // This is more reliable than GetValue<bool> for environment variables.
     string smokeTestFlag = builder.Configuration["IsSmokeTest"] ?? "false";
     bool isSmokeTest = "true".Equals(smokeTestFlag, StringComparison.OrdinalIgnoreCase);
 
-    #region Configure Serilog Logging
+    // --- AUTO-FIX FOR SMOKETEST: Provide SQLite connection if missing ---
+    if (isSmokeTest)
+    {
+        string? smokeTestConn = builder.Configuration.GetConnectionString("DefaultConnection");
+        if (string.IsNullOrWhiteSpace(smokeTestConn))
+        {
+            smokeTestConn = "Data Source=smoketest.db";
+            builder.Configuration.GetSection("ConnectionStrings")["DefaultConnection"] = smokeTestConn;
+            builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = "sqlite";
+            Log.Information("[SmokeTest] No DefaultConnection found. Using SQLite: {Conn}", smokeTestConn);
+        }
+    }
+    #endregion
+
+    #region SmokeTest SQLite Connection (region master)
+    // ... existing code ...
+    #endregion
+
+    #region Configure Serilog Logging (region master)
     // ------------------- ۱. پیکربندی Serilog با تنظیمات از appsettings.json -------------------
     // این بخش Serilog را به عنوان سیستم لاگینگ اصلی برنامه تنظیم می‌کند.
     _ = builder.Host.UseSerilog((context, services, loggerConfiguration) => loggerConfiguration
@@ -134,15 +142,13 @@ try
       // =======================================================================
 
       .WriteTo.Sink(
-          new Infrastructure.Logging.TelegramAdminSink(context.Configuration),
+          new TelegramAdminSink(context.Configuration),
           Serilog.Events.LogEventLevel.Error // فقط لاگ‌های سطح Error و بالاتر به تلگرام ارسال می‌شود
       )
   );
+    #endregion
 
-
-
-
-    #region Caching and External Services (Or a new "Infrastructure" region)
+    #region Caching and External Services (region master)
 
     string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
@@ -177,8 +183,8 @@ try
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             // We re-read from the configuration to ensure we use the potentially updated value.
-            var finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
-            var options = ConfigurationOptions.Parse(finalConnectionString!);
+            string? finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
+            ConfigurationOptions options = ConfigurationOptions.Parse(finalConnectionString!);
             options.AbortOnConnectFail = false;
             options.ConnectTimeout = 5000;
             options.SyncTimeout = 5000;
@@ -194,7 +200,7 @@ try
         // Register the fallback in-memory Redis service
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+            ILogger<FallbackRedisService> logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
     }
@@ -205,11 +211,12 @@ try
 
     #endregion
 
+    #region AutoMapper and LoggingSanitizer (region master)
     builder.Services.AddAutoMapper(typeof(Program));
     builder.Services.AddSingleton<Application.Common.Interfaces.ILoggingSanitizer, Infrastructure.Security.PiiLoggingSanitizer>();
     #endregion
 
-    #region Add Core ASP.NET Core Services
+    #region Add Core ASP.NET Core Services (region master)
     _ = builder.Services.AddWindowsService(options =>
     {
         options.ServiceName = "ForexTradingBotAPI";
@@ -292,7 +299,7 @@ try
     Log.Information("Core ASP.NET Core services (Controllers, API Explorer, Swagger) added.");
     #endregion
 
-    #region Configure Application Options/Settings
+    #region Configure Application Options/Settings (region master)
 
 
 
@@ -314,7 +321,7 @@ try
 
     #endregion
 
-    #region Register Custom Application Layers and Services
+    #region Register Custom Application Layers and Services (region master)
     // ------------------- ۴. رجیستر کردن سرویس‌های لایه‌های مختلف برنامه -------------------
     // این متدها باید در فایل‌های DependencyInjection.cs (یا ServiceCollectionExtensions.cs) هر لایه تعریف شده باشند.
     // ترتیب فراخوانی: ابتدا لایه‌های پایه (Application, Infrastructure)، سپس لایه‌های Presentation یا خاص (TelegramPanel, BackgroundTasks).
@@ -345,7 +352,7 @@ try
             Console.ResetColor();
 
             Console.Write("Enter your choice: ");
-            var userInput = Console.ReadLine()?.Trim();
+            string? userInput = Console.ReadLine()?.Trim();
 
             Log.Information("User input received: '{UserInput}'", userInput ?? "null");
 
@@ -371,11 +378,14 @@ try
             {
                 connectionString = userInput;
                 if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                {
                     dbProvider = "postgres";
-                else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
-                    dbProvider = "sqlserver";
+                }
                 else
-                    dbProvider = "sqlite";
+                {
+                    dbProvider = connectionString.Contains("Server=") || connectionString.Contains("Data Source=") ? "sqlserver" : "sqlite";
+                }
+
                 Log.Information("User provided custom connection string. Provider detected: {Provider}", dbProvider);
             }
 
@@ -388,11 +398,14 @@ try
         else if (string.IsNullOrEmpty(dbProvider))
         {
             if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+            {
                 dbProvider = "postgres";
-            else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
-                dbProvider = "sqlserver";
+            }
             else
-                dbProvider = "sqlite";
+            {
+                dbProvider = connectionString.Contains("Server=") || connectionString.Contains("Data Source=") ? "sqlserver" : "sqlite";
+            }
+
             builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
             Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
         }
@@ -487,8 +500,8 @@ try
             builder.Services.AddHttpClient<Application.Common.Interfaces.ICryptoPayApiClient, CryptoPayApiClient>()
                 .AddTypedClient((httpClient, serviceProvider) =>
                 {
-                    var options = serviceProvider.GetRequiredService<IOptions<CryptoPaySettings>>();
-                    var logger = serviceProvider.GetRequiredService<ILogger<CryptoPayApiClient>>();
+                    IOptions<CryptoPaySettings> options = serviceProvider.GetRequiredService<IOptions<CryptoPaySettings>>();
+                    ILogger<CryptoPayApiClient> logger = serviceProvider.GetRequiredService<ILogger<CryptoPayApiClient>>();
                     return new CryptoPayApiClient(httpClient, options, logger);
                 });
 
@@ -550,7 +563,7 @@ try
 
     #endregion
 
-    #region Configure Hangfire
+    #region Configure Hangfire (region master)
 
     // =========================================================================
     // ✅✅ CORRECTED HANGFIRE CONFIGURATION (PROVIDER-AWARE) ✅✅
@@ -588,11 +601,17 @@ try
             {
                 // Try to detect provider from existing connection string
                 if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
+                {
                     dbProvider = "postgres";
+                }
                 else if (connectionString.Contains("Server=") || connectionString.Contains("Data Source="))
+                {
                     dbProvider = "sqlserver";
+                }
                 else
+                {
                     dbProvider = "sqlite"; // Default fallback
+                }
 
                 builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
                 Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
@@ -629,9 +648,9 @@ try
      }
  );
 
-                    // 2. Tune the BackgroundJobServer to the machine’s CPU count:
-                    var cpuCount = Environment.ProcessorCount;
-                    var serverOptions = new BackgroundJobServerOptions
+                    // 2. Tune the BackgroundJobServer to the machine's CPU count:
+                    int cpuCount = Environment.ProcessorCount;
+                    BackgroundJobServerOptions serverOptions = new()
                     {
                         // Leave one core free for OS and other processes
                         WorkerCount = Math.Max(cpuCount - 1, 1),
@@ -644,7 +663,7 @@ try
 
                         // Name each server instance for easier monitoring
                         ServerName = $"hangfire-{Environment.MachineName}-{Guid.NewGuid():N}"
-                    };     
+                    };
                     Log.Information(
                         "✅ Hangfire (PostgreSQL) configured: " +
                         $"Poll={TimeSpan.FromSeconds(5)}, " +
@@ -680,11 +699,13 @@ try
     });
 
 
-    // 3. خواندن تعداد Workerها از appsettings.json یا Fall‑Back به CPU count
-    var defaultWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:DefaultWorkerCount")
-                           ?? (Environment.ProcessorCount * 2);
-    var notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount")
-                               ?? Environment.ProcessorCount;
+    // 3. خواندن تعداد Workerها از appsettings.json یا Fall‑Back به CPU/RAM
+    int cpuCount = Environment.ProcessorCount;
+    int ramGB = SystemInfoHelper.GetTotalMemoryInGB();
+    int defaultWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:DefaultWorkerCount")
+                           ?? Math.Max(1, Math.Min(Math.Min(cpuCount * 2, ramGB * 4), 32));
+    int notificationWorkerCount = builder.Configuration.GetValue<int?>("Hangfire:NotificationWorkerCount")
+                               ?? Math.Max(1, Math.Min(Math.Min(cpuCount, ramGB * 2), 16));
 
     // 4. ثبت دو سرور با صف‌ها و WorkerCount مخصوص:
     builder.Services.AddHangfireServer(options =>
@@ -708,6 +729,7 @@ try
 
     // FIX FOR: Unable to resolve 'IBotCommandSetupService'
     _ = builder.Services.AddTransient<IBotCommandSetupService, BotCommandSetupService>();
+    _ = builder.Services.AddTransient<Infrastructure.Services.IHangfireCleaner, Infrastructure.Services.HangfireCleaner>();
 
     Log.Information("Final manual service registrations complete.");
     _ = builder.Services.Configure<List<Infrastructure.Settings.ForwardingRule>>( // <<< Fully qualified
@@ -715,34 +737,31 @@ try
 
     #endregion
 
-    // ------------------- ساخت WebApplication instance -------------------
-    WebApplication app = builder.Build(); //  ساخت برنامه با تمام سرویس‌های پیکربندی شده
+    #region Build WebApplication and Startup Tasks (region master)
+    WebApplication app = builder.Build();
     Log.Information("Application host built. Performing mandatory startup tasks...");
 
-    // Automatically apply EF Core migrations at startup
-    using (var scope = app.Services.CreateScope())
+    // Automatically apply EF Core migrations at startup (async master)
+    using (IServiceScope scope = app.Services.CreateScope())
     {
-        var db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
+        AppDbContext db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
         try
         {
-            // Validate connection string before attempting database operations
             string? connectionString = app.Services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection");
             if (string.IsNullOrWhiteSpace(connectionString))
             {
                 throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
             }
-
             Log.Information("Attempting to apply database migrations...");
-            await db.Database.MigrateAsync().ConfigureAwait(false);
+            await db.Database.MigrateAsync().ConfigureAwait(false); // async master
             Log.Information("Database migrations applied successfully.");
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
         {
-            // Fallback: try to create the database if migrations fail due to pending model changes
             Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
             try
             {
-               await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                await db.Database.EnsureCreatedAsync().ConfigureAwait(false); // async master
                 Log.Information("Database created successfully using EnsureCreated().");
             }
             catch (Exception createEx)
@@ -757,10 +776,9 @@ try
             throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
         }
     }
+    #endregion
 
-    // The application will now start INSTANTLY.
-    #region Queue Startup Maintenance Jobs to Hangfire
-
+    #region Queue Startup Maintenance Jobs to Hangfire (region master)
     // We register a callback that runs ONCE, right after the application has fully started.
     _ = app.Lifetime.ApplicationStarted.Register(() =>
     {
@@ -803,15 +821,15 @@ try
             // Wait a bit for the EmbeddedRedisService to start Redis if needed
             await Task.Delay(TimeSpan.FromSeconds(3));
 
-            var redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
-            var redisDb = redisConnection.GetDatabase();
+            IConnectionMultiplexer redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
+            IDatabase redisDb = redisConnection.GetDatabase();
 
             // Test basic operations
-            var testKey = $"test_connection_{Guid.NewGuid():N}";
-            var testValue = DateTime.UtcNow.ToString();
+            string testKey = $"test_connection_{Guid.NewGuid():N}";
+            string testValue = DateTime.UtcNow.ToString();
 
             await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10));
-            var retrievedValue = await redisDb.StringGetAsync(testKey);
+            RedisValue retrievedValue = await redisDb.StringGetAsync(testKey);
 
             if (retrievedValue == testValue)
             {
@@ -849,7 +867,7 @@ try
     //  این لاگر، لاگری است که توسط UseSerilog پیکربندی شده است.
     ILogger<Program> programLogger = app.Services.GetRequiredService<ILogger<Program>>(); //  استفاده از ILogger<Program> برای لاگ‌های مختص Program.cs
 
-    #region Configure HTTP Request Pipeline
+    #region Configure HTTP Request Pipeline (region master)
     // ------------------- ۶. پیکربندی پایپ‌لاین پردازش درخواست‌های HTTP -------------------
 
     //  فعال کردن Request Body Buffering. این برای خواندن بدنه درخواست چندین بار (مثلاً در Middleware ها یا کنترلرها) لازم است.
@@ -893,7 +911,7 @@ try
     programLogger.LogInformation("HTTP request pipeline configured.");
     #endregion
 
-    #region Configure Hangfire Dashboard & Recurring Jobs
+    #region Configure Hangfire Dashboard & Recurring Jobs (region master)
     // ------------------- ۷. اضافه کردن داشبورد Hangfire -------------------
     DashboardOptions hangfireDashboardOptions = new()
     {
@@ -939,7 +957,7 @@ try
     programLogger.LogInformation("Hangfire recurring jobs registration initiated (will run after application starts).");
     #endregion
 
-    #region Map Controllers & Run Application
+    #region Map Controllers & Run Application (region master)
     _ = app.MapHealthChecks("/healthz");
 
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
@@ -980,19 +998,16 @@ try
 
     if (isAutoForwardingEnabled)
     {
-        using (IServiceScope scope = app.Services.CreateScope())
-        {
-            Log.Information("Auto-Forwarding is enabled, resolving the orchestrator service for startup tasks.");
-            // This code is now safe because we know the service was registered.
-            UserApiForwardingOrchestrator orchestrator = scope.ServiceProvider.GetRequiredService<UserApiForwardingOrchestrator>();
-            // You can now safely use the 'orchestrator' object here if needed for any startup logic.
-        }
+        using IServiceScope scope = app.Services.CreateScope();
+        Log.Information("Auto-Forwarding is enabled, resolving the orchestrator service for startup tasks.");
+        // This code is now safe because we know the service was registered.
+        UserApiForwardingOrchestrator orchestrator = scope.ServiceProvider.GetRequiredService<UserApiForwardingOrchestrator>();
+        // You can now safely use the 'orchestrator' object here if needed for any startup logic.
     }
-    // --- File: WebAPI/Program.cs ---
-
     // ... after app.UseSerilogRequestLogging() and other middleware ...
 
-    app.MapGet("/testerror", () => {
+    app.MapGet("/testerror", () =>
+    {
         // This will force an exception and a high-level log event
         try
         {
@@ -1001,7 +1016,7 @@ try
         catch (Exception ex)
         {
             // Use the ILogger from the dependency injection container
-            var logger = app.Services.GetRequiredService<ILogger<Program>>();
+            ILogger<Program> logger = app.Services.GetRequiredService<ILogger<Program>>();
             logger.LogError(ex, "Caught a test exception.");
             return Results.Problem("A test error was logged. Check your Telegram and console.");
         }
@@ -1009,7 +1024,7 @@ try
     app.UseSerilogRequestLogging();
     // In the middleware pipeline section (before app.Run())
     _ = app.UseStaticFiles();
-   await app.RunAsync(); //  شروع به گوش دادن به درخواست‌های HTTP و اجرای برنامه
+    await app.RunAsync(); //  شروع به گوش دادن به درخواست‌های HTTP و اجرای برنامه
     #endregion
 }
 catch (Exception ex)
@@ -1047,7 +1062,7 @@ public static class ConfigurationHelper
             if (string.IsNullOrEmpty(apiId) || apiId == "0")
             {
                 Console.Write("Enter your ApiId (or 'skip'): ");
-                var inputApiId = Console.ReadLine();
+                string? inputApiId = Console.ReadLine();
                 if (string.Equals(inputApiId, "skip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(inputApiId))
                 {
                     Log.Information("User skipped ApiId entry. Auto-Forwarding will be disabled.");
@@ -1059,7 +1074,7 @@ public static class ConfigurationHelper
             if (string.IsNullOrEmpty(apiHash))
             {
                 Console.Write("Enter your ApiHash (or 'skip'): ");
-                var inputApiHash = Console.ReadLine();
+                string? inputApiHash = Console.ReadLine();
                 if (string.Equals(inputApiHash, "skip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(inputApiHash))
                 {
                     Log.Information("User skipped ApiHash entry. Auto-Forwarding will be disabled.");
@@ -1085,12 +1100,12 @@ public static class ConfigurationHelper
             Console.ResetColor();
 
             Console.Write("Enter your Bot Token: ");
-            var inputToken = Console.ReadLine();
+            string? inputToken = Console.ReadLine();
 
             if (string.IsNullOrWhiteSpace(inputToken))
             {
                 // This is a critical failure, as the app can't run without it.
-                var errorMsg = "Bot Token cannot be empty. Application cannot start.";
+                string errorMsg = "Bot Token cannot be empty. Application cannot start.";
                 Log.Fatal(errorMsg);
                 throw new InvalidOperationException(errorMsg);
             }
@@ -1113,7 +1128,7 @@ public static class ConfigurationHelper
             Console.ResetColor();
 
             Console.Write("Enter your CryptoPay API Token (or 'skip'): ");
-            var inputToken = Console.ReadLine();
+            string? inputToken = Console.ReadLine();
 
             if (string.Equals(inputToken, "skip", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(inputToken))
             {
@@ -1157,9 +1172,12 @@ public class IntToBoolJsonConverter : JsonConverter<bool>
         {
             return reader.GetInt32() != 0;
         }
-        if (reader.TokenType == JsonTokenType.True) return true;
-        if (reader.TokenType == JsonTokenType.False) return false;
-        throw new JsonException();
+        if (reader.TokenType == JsonTokenType.True)
+        {
+            return true;
+        }
+
+        return reader.TokenType == JsonTokenType.False ? false : throw new JsonException();
     }
 
     public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
@@ -1184,12 +1202,13 @@ public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
     {
         if (reader.TokenType == JsonTokenType.String)
         {
-            var str = reader.GetString();
-            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dt))
+            string? str = reader.GetString();
+            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out DateTime dt))
+            {
                 return dt;
-            if (DateTime.TryParse(str, out dt))
-                return dt;
-            throw new JsonException($"Could not parse DateTime: {str}");
+            }
+
+            return DateTime.TryParse(str, out dt) ? dt : throw new JsonException($"Could not parse DateTime: {str}");
         }
         return reader.GetDateTime();
     }
@@ -1197,5 +1216,58 @@ public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
     {
         writer.WriteStringValue(value.ToString("O")); // ISO 8601
+    }
+}
+
+// Cross-platform system info helper
+public static class SystemInfoHelper
+{
+    public static int GetTotalMemoryInGB()
+    {
+        try
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                string[] meminfo = File.ReadAllLines("/proc/meminfo");
+                string? memTotalLine = meminfo.FirstOrDefault(l => l.StartsWith("MemTotal:"));
+                if (memTotalLine != null)
+                {
+                    string[] parts = memTotalLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && long.TryParse(parts[1], out long kb))
+                    {
+                        return (int)(kb / 1024 / 1024);
+                    }
+                }
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                System.Diagnostics.ProcessStartInfo psi = new()
+                {
+                    FileName = "sysctl",
+                    Arguments = "-n hw.memsize",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false
+                };
+                using System.Diagnostics.Process? output = System.Diagnostics.Process.Start(psi);
+                string result = output.StandardOutput.ReadToEnd();
+                output.WaitForExit();
+                if (long.TryParse(result.Trim(), out long bytes))
+                {
+                    return (int)(bytes / (1024 * 1024 * 1024));
+                }
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                // Fallback: Use GC.GetGCMemoryInfo (not total RAM, but available to process)
+                GCMemoryInfo info = GC.GetGCMemoryInfo();
+                if (info.TotalAvailableMemoryBytes > 0)
+                {
+                    return (int)(info.TotalAvailableMemoryBytes / (1024 * 1024 * 1024));
+                }
+            }
+        }
+        catch { }
+        // Fallback: 2GB if unknown
+        return 2;
     }
 }

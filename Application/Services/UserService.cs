@@ -6,7 +6,6 @@ using Application.DTOs;             // For UserDto, RegisterUserDto, UpdateUserD
 using Application.Interfaces;       // For IUserService
 using AutoMapper;                   // For IMapper
 using Domain.Entities;              // For User, TokenWallet, Subscription
-using Domain.Enums;                 // For UserLevel
 using Microsoft.Extensions.Logging;
 using Shared.Extensions; // For ILogger
 // Remove if not directly used: using StackExchange.Redis;
@@ -155,7 +154,7 @@ namespace Application.Services
             try
             {
                 IEnumerable<User> users = await _userRepository.GetAllAsync(cancellationToken);
-                List<UserDto> userDtos = new();
+                List<UserDto> userDtos = [];
 
                 foreach (User user in users)
                 {
@@ -284,7 +283,7 @@ namespace Application.Services
 
                 // Invalidate the user's cache.
                 string cacheKey = $"user:telegram_id:{telegramId}";
-                await _cacheService.RemoveAsync(cacheKey);
+                _ = await _cacheService.RemoveAsync(cacheKey);
 
                 _logger.LogInformation("Successfully marked user {TelegramId} as unreachable and invalidated cache.", telegramId);
             }
@@ -326,9 +325,9 @@ namespace Application.Services
                 throw new InvalidOperationException($"A user with email '{registerDto.Email}' already exists.");
             }
 
-            var sanitizedTelegramId = _logSanitizer.Sanitize(registerDto.TelegramId);
-            var sanitizedUsername = _logSanitizer.Sanitize(registerDto.Username);
-            var sanitizedEmail = _logSanitizer.Sanitize(registerDto.Email);
+            string sanitizedTelegramId = _logSanitizer.Sanitize(registerDto.TelegramId);
+            string sanitizedUsername = _logSanitizer.Sanitize(registerDto.Username);
+            string sanitizedEmail = _logSanitizer.Sanitize(registerDto.Email);
 
             _logger.LogInformation("UserService: Registering user (provided entity). TelegramId: {SanitizedTelegramId}, Username: {SanitizedUsername}, Email: {SanitizedEmail}",
                 sanitizedTelegramId, sanitizedUsername, sanitizedEmail);
@@ -349,7 +348,7 @@ namespace Application.Services
                 // Explicitly add TokenWallet if User.AddAsync doesn't handle it via cascade or if it's managed separately.
                 if (userEntityToRegister.TokenWallet != null)
                 {
-               //     await _tokenWalletRepository.AddAsync(userEntityToRegister.TokenWallet, cancellationToken);
+                    //     await _tokenWalletRepository.AddAsync(userEntityToRegister.TokenWallet, cancellationToken);
                 }
                 else
                 {
@@ -359,13 +358,13 @@ namespace Application.Services
                 }
 
                 // Save all changes in a single transaction.
-                await _context.SaveChangesAsync(cancellationToken);
+                _ = await _context.SaveChangesAsync(cancellationToken);
 
                 // --- Cache Invalidation/Update ---
                 // After successful save, the user is "new". Remove any stale cache entry (though unlikely for new users)
                 // and then effectively re-cache the newly created user's DTO.
-                await _cacheService.RemoveAsync($"user:telegram_id:{userEntityToRegister.TelegramId}");
-                await _cacheService.RemoveAsync($"user:id:{userEntityToRegister.Id}");
+                _ = await _cacheService.RemoveAsync($"user:telegram_id:{userEntityToRegister.TelegramId}");
+                _ = await _cacheService.RemoveAsync($"user:id:{userEntityToRegister.Id}");
 
                 // Map the created entity to a DTO to return.
                 UserDto registeredUserDto = MapToUserDto(userEntityToRegister);
@@ -423,7 +422,7 @@ namespace Application.Services
                 // --- Cache Invalidation ---
                 // Invalidate cache BEFORE saving changes to prevent race conditions.
                 string cacheKey = $"user:telegram_id:{user.TelegramId}";
-                await _cacheService.RemoveAsync(cacheKey);
+                _ = await _cacheService.RemoveAsync(cacheKey);
                 _logger.LogInformation("Invalidated cache for user {TelegramId} due to update.", user.TelegramId);
 
                 // --- Business Validation: Check for email uniqueness if email is being changed ---
@@ -478,7 +477,7 @@ namespace Application.Services
                 // --- Cache Invalidation ---
                 // Invalidate cache before deletion.
                 string cacheKey = $"user:telegram_id:{user.TelegramId}";
-                await _cacheService.RemoveAsync(cacheKey);
+                _ = await _cacheService.RemoveAsync(cacheKey);
                 _logger.LogInformation("Invalidated cache for user {TelegramId} due to deletion.", user.TelegramId);
 
                 // Delete the user from the repository.
@@ -500,7 +499,7 @@ namespace Application.Services
         private UserDto MapToUserDto(User user)
         {
             // Ensure that even if user.TokenWallet is null, TokenBalance is 0.0m.
-            var userDto = new UserDto
+            UserDto userDto = new()
             {
                 Id = user.Id,
                 Username = user.Username,
@@ -518,6 +517,6 @@ namespace Application.Services
             };
             return userDto;
         }
-  
+
     }
 }

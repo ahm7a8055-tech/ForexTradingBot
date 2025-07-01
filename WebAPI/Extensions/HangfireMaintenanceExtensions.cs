@@ -1,6 +1,6 @@
 ﻿// File: WebAPI/Extensions/HangfireMaintenanceExtensions.cs
 
-using Shared.Maintenance;
+using Infrastructure.Services;
 
 namespace WebAPI.Extensions
 {
@@ -27,10 +27,10 @@ namespace WebAPI.Extensions
             _ = app.UseEndpoints(endpoints =>
             {
                 RouteHandlerBuilder purgeEndpoint = endpoints.MapPost("/maintenance/hangfire-purge",
-                    (IHangfireCleaner cleaner, IConfiguration config) =>
+                    async (IHangfireCleaner cleaner, IConfiguration config, CancellationToken cancellationToken) =>
                     {
                         string connectionString = config.GetConnectionString("DefaultConnection")!;
-                        cleaner.PurgeCompletedAndFailedJobs(connectionString);
+                        await cleaner.PurgeCompletedAndFailedJobsOlderThanAsync(connectionString, TimeSpan.FromDays(7), cancellationToken);
                         return Results.Ok("Hangfire job data has been purged.");
                     });
 

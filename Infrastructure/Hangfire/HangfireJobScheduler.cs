@@ -5,9 +5,7 @@ using Application.Common.Interfaces; // For INotificationJobScheduler
 using Hangfire; // For IBackgroundJobClient and BackgroundJob
 using Microsoft.Extensions.Logging; // For ILogger
 using StackExchange.Redis;
-using System;
 using System.Linq.Expressions;
-using System.Threading.Tasks; // Required for Task
 
 namespace Infrastructure.Hangfire // Use the correct namespace for your Infrastructure layer
 {
@@ -21,7 +19,7 @@ namespace Infrastructure.Hangfire // Use the correct namespace for your Infrastr
         private readonly ILogger<HangfireJobScheduler> _logger;
         private readonly IDatabase _redisDb;
         // Constructor to inject dependencies
-        public HangfireJobScheduler(IConnectionMultiplexer redisConnection,IBackgroundJobClient backgroundJobClient, ILogger<HangfireJobScheduler> logger)
+        public HangfireJobScheduler(IConnectionMultiplexer redisConnection, IBackgroundJobClient backgroundJobClient, ILogger<HangfireJobScheduler> logger)
         {
             _redisDb = redisConnection.GetDatabase();
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
@@ -49,7 +47,7 @@ namespace Infrastructure.Hangfire // Use the correct namespace for your Infrastr
         {
             try
             {
-                await _redisDb.KeyDeleteAsync(lockKey);
+                _ = await _redisDb.KeyDeleteAsync(lockKey);
                 _logger.LogDebug("Released lock '{LockKey}'.", lockKey);
             }
             catch (Exception ex)

@@ -7,7 +7,6 @@ using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Application.CommandHandlers.MainMenu; // For BackToMainMenuGeneral
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Formatters;
-using TelegramPanel.Infrastructure;
 using TelegramPanel.Infrastructure.Helper;
 using TelegramPanel.Settings;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
@@ -41,15 +40,15 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-            var message = update.Message!;
+            Message message = update.Message!;
             _logger.LogInformation("Admin user {UserId} accessed the admin panel.", message.From!.Id);
 
             // UPGRADED: Changed version to V3 to reflect new layout
-            var text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel V3");
+            string text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel V3");
             text += "\n\nSelect an action:";
 
             // --- UPGRADED: More organized keyboard layout with new "Bot Settings" button ---
-            var keyboard = MarkupBuilder.CreateInlineKeyboard(
+            InlineKeyboardMarkup? keyboard = MarkupBuilder.CreateInlineKeyboard(
                 new[] { // Row 1: Core Info
                     InlineKeyboardButton.WithCallbackData("📊 Server Stats", "admin_server_stats"),
                     InlineKeyboardButton.WithCallbackData("🔍 User Lookup", "admin_user_lookup")

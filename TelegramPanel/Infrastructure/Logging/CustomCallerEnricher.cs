@@ -5,7 +5,7 @@ using Serilog.Events;
 using System.Diagnostics;
 using System.Reflection;
 
-namespace Infrastructure.Logging
+namespace TelegramPanel.Infrastructure.Logging
 {
     /// <summary>
     /// A powerful, custom Serilog enricher that accurately finds the true calling method
@@ -27,41 +27,41 @@ namespace Infrastructure.Logging
 
         public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
         {
-            var (method, filePath, lineNumber) = FindCallingMethod();
+            (MethodBase method, string filePath, int lineNumber) = FindCallingMethod();
 
             if (method != null)
             {
-                var callerInfo = $"{method.DeclaringType.FullName}.{method.Name}() in {filePath}:line {lineNumber}";
-                var property = propertyFactory.CreateProperty("Caller", callerInfo);
+                string callerInfo = $"{method.DeclaringType.FullName}.{method.Name}() in {filePath}:line {lineNumber}";
+                LogEventProperty property = propertyFactory.CreateProperty("Caller", callerInfo);
                 logEvent.AddPropertyIfAbsent(property);
             }
         }
 
         private (MethodBase method, string filePath, int lineNumber) FindCallingMethod()
         {
-            var stack = new StackTrace(true);
+            StackTrace stack = new(true);
 
-            foreach (var frame in stack.GetFrames())
+            foreach (StackFrame frame in stack.GetFrames())
             {
-                var method = frame.GetMethod();
+                MethodBase? method = frame.GetMethod();
                 if (method?.DeclaringType == null)
                 {
                     continue;
                 }
 
-                var ns = method.DeclaringType.Namespace ?? "";
+                string ns = method.DeclaringType.Namespace ?? "";
 
                 // This is the core logic: if the namespace starts with any of our
                 // excluded prefixes, we skip this frame and check the next one.
-                if (_excludedNamespaces.Any(excluded => ns.StartsWith(excluded)))
+                if (_excludedNamespaces.Any(ns.StartsWith))
                 {
                     continue;
                 }
 
                 // If we get here, we've found the first method that is NOT in an excluded namespace.
                 // This is our true caller.
-                var lineNumber = frame.GetFileLineNumber();
-                var filePath = frame.GetFileName();
+                int lineNumber = frame.GetFileLineNumber();
+                string? filePath = frame.GetFileName();
 
                 // Return if we have useful info.
                 if (lineNumber > 0)

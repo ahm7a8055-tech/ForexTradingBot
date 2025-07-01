@@ -266,7 +266,7 @@ namespace Infrastructure.Persistence.Configurations
             public NewsItem ToDomainEntity()
             {
                 // Initialize the core NewsItem properties directly from the DTO's flattened properties.
-                var newsItem = new NewsItem
+                NewsItem newsItem = new()
                 {
                     Id = Id,
                     Title = Title,
@@ -610,7 +610,10 @@ namespace Infrastructure.Persistence.Configurations
         /// using, and disposing of the returned <see cref="SqlConnection"/> instance (typically via `using` statements)
         /// to ensure connections are returned to the pool efficiently.
         /// </remarks>
-        private NpgsqlConnection CreateConnection() => new(_connectionString);
+        private NpgsqlConnection CreateConnection()
+        {
+            return new(_connectionString);
+        }
 
 
         #region SearchNewsAsync Implementation
@@ -684,11 +687,11 @@ namespace Infrastructure.Persistence.Configurations
             {
                 return await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(ct);
 
-                    var whereClauses = new List<string>();
-                    var parameters = new DynamicParameters();
+                    List<string> whereClauses = new();
+                    DynamicParameters parameters = new();
 
                     // --- CORRECTED: Date, VIP, and Identifier Quoting ---
                     whereClauses.Add(@"n.""PublishedDate"" >= @SinceDate AND n.""PublishedDate"" <= @UntilDate");
@@ -700,14 +703,14 @@ namespace Infrastructure.Persistence.Configurations
                     }
 
                     // --- CORRECTED: PostgreSQL LIKE syntax ---
-                    var keywordList = keywords?.Select(k => k.Trim()).Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
+                    List<string>? keywordList = keywords?.Select(k => k.Trim()).Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
                     if (keywordList != null && keywordList.Any())
                     {
-                        var keywordConditions = new List<string>();
+                        List<string> keywordConditions = new();
                         for (int i = 0; i < keywordList.Count; i++)
                         {
-                            var keyword = keywordList[i];
-                            var paramName = $"keyword{i}";
+                            string keyword = keywordList[i];
+                            string paramName = $"keyword{i}";
                             // Use CONCAT for standard SQL string concatenation
                             keywordConditions.Add($@"(LOWER(n.""Title"") LIKE CONCAT('%', LOWER(@{paramName}), '%') OR LOWER(n.""Summary"") LIKE CONCAT('%', LOWER(@{paramName}), '%'))");
                             parameters.Add(paramName, keyword);
@@ -716,18 +719,21 @@ namespace Infrastructure.Persistence.Configurations
                         whereClauses.Add($"({string.Join(keywordOperator, keywordConditions)})");
                     }
 
-                    var fullWhereClause = whereClauses.Any() ? "WHERE " + string.Join(" AND ", whereClauses) : "";
+                    string fullWhereClause = whereClauses.Any() ? "WHERE " + string.Join(" AND ", whereClauses) : "";
 
                     // --- CORRECTED: Count query with quoted identifiers ---
-                    var countSql = $@"SELECT COUNT(n.""Id"") FROM public.""NewsItems"" n {fullWhereClause};";
-                    var totalCount = await connection.ExecuteScalarAsync<int>(
+                    string countSql = $@"SELECT COUNT(n.""Id"") FROM public.""NewsItems"" n {fullWhereClause};";
+                    int totalCount = await connection.ExecuteScalarAsync<int>(
                         new CommandDefinition(countSql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct)
                     );
 
-                    if (totalCount == 0) return (new List<NewsItem>(), 0);
+                    if (totalCount == 0)
+                    {
+                        return (new List<NewsItem>(), 0);
+                    }
 
                     // --- CORRECTED: Paged data query with quoted identifiers ---
-                    var sql = $@"
+                    string sql = $@"
         SELECT
             n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", 
             n.""SourceName"", n.""IsVipOnly"", n.""AssociatedSignalCategoryId"",
@@ -748,12 +754,12 @@ namespace Infrastructure.Persistence.Configurations
                     parameters.Add("Offset", (pageNumber - 1) * pageSize);
                     parameters.Add("PageSize", pageSize);
 
-                    var newsItemsMap = new Dictionary<Guid, NewsItem>();
-                    await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                    Dictionary<Guid, NewsItem> newsItemsMap = new();
+                    _ = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct),
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
                         {
-                            if (!newsItemsMap.TryGetValue(newsItemDto.Id, out var newsItem))
+                            if (!newsItemsMap.TryGetValue(newsItemDto.Id, out NewsItem? newsItem))
                             {
                                 newsItem = newsItemDto.ToDomainEntity(); // Your DTO already handles mapping
                                 newsItemsMap.Add(newsItem.Id, newsItem);
@@ -864,14 +870,14 @@ namespace Infrastructure.Persistence.Configurations
             _logger.LogDebug("Fetching NewsItem by ID: {NewsItemId}", id);
 
             // Use the corrected shared SQL fragment
-            var sql = $@"{FullNewsItemSelectSql} WHERE n.""Id"" = @Id;";
+            string sql = $@"{FullNewsItemSelectSql} WHERE n.""Id"" = @Id;";
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
-                    var newsItems = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                    using NpgsqlConnection connection = CreateConnection();
+                    IEnumerable<NewsItem> newsItems = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken),
                         (newsItemDto, rssSourceDto, signalCategoryDto) => newsItemDto.ToDomainEntity(),
                         splitOn: "RssSource_Id,AssociatedSignalCategory_Id" // This now works
@@ -939,15 +945,15 @@ namespace Infrastructure.Persistence.Configurations
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = $@"{FullNewsItemSelectSql} WHERE n.""RssSourceId"" = @RssSourceId AND n.""SourceItemId"" = @SourceItemId;";
-                    var newsItem = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                    string sql = $@"{FullNewsItemSelectSql} WHERE n.""RssSourceId"" = @RssSourceId AND n.""SourceItemId"" = @SourceItemId;";
+                    IEnumerable<NewsItem> newsItem = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, new { RssSourceId = rssSourceId, SourceItemId = sourceItemId }, commandTimeout: CommandTimeoutSeconds), // <--- ADDED: Pass CommandTimeout
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
                         {
-                            var item = newsItemDto.ToDomainEntity();
+                            NewsItem item = newsItemDto.ToDomainEntity();
                             return item;
                         },
                         splitOn: "RssSource_Id,AssociatedSignalCategory_Id"
@@ -1017,11 +1023,11 @@ namespace Infrastructure.Persistence.Configurations
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = @"SELECT COUNT(1) FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" = @SourceItemId;";
-                    var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { RssSourceId = rssSourceId, SourceItemId = sourceItemId }, commandTimeout: CommandTimeoutSeconds)); // <--- ADDED: Pass CommandTimeout
+                    string sql = @"SELECT COUNT(1) FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" = @SourceItemId;";
+                    int count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { RssSourceId = rssSourceId, SourceItemId = sourceItemId }, commandTimeout: CommandTimeoutSeconds)); // <--- ADDED: Pass CommandTimeout
                     return count > 0;
                 });
             }
@@ -1095,7 +1101,7 @@ namespace Infrastructure.Persistence.Configurations
             // --- 1. CORRECTED: PostgreSQL-Compliant SQL Query ---
             // Use StringBuilder for safe and efficient query construction.
             // ALL table and column names are now quoted and correctly cased.
-            var sqlBuilder = new StringBuilder(@"
+            StringBuilder sqlBuilder = new(@"
         SELECT
             n.""Id"", n.""Title"", n.""Link"", n.""Summary"", n.""FullContent"", n.""ImageUrl"", n.""PublishedDate"", n.""CreatedAt"", n.""LastProcessedAt"",
             n.""SourceName"", n.""SourceItemId"", n.""SentimentScore"", n.""SentimentLabel"", n.""DetectedLanguage"", n.""AffectedAssets"",
@@ -1128,43 +1134,43 @@ namespace Infrastructure.Persistence.Configurations
         LEFT JOIN public.""SignalCategories"" sc ON n.""AssociatedSignalCategoryId"" = sc.""Id""
     ");
 
-            var parameters = new DynamicParameters();
+            DynamicParameters parameters = new();
             parameters.Add("Limit", count);
 
             if (rssSourceId.HasValue)
             {
                 // Add WHERE clause with quoted identifier
-                sqlBuilder.Append(@" WHERE n.""RssSourceId"" = @RssSourceId");
+                _ = sqlBuilder.Append(@" WHERE n.""RssSourceId"" = @RssSourceId");
                 parameters.Add("RssSourceId", rssSourceId.Value);
             }
 
             // --- 2. CORRECTED: PostgreSQL LIMIT syntax ---
             // Replaced SQL Server's 'OFFSET 0 ROWS FETCH NEXT @Count ROWS ONLY' with PostgreSQL's standard 'LIMIT'.
-            sqlBuilder.Append(@"
+            _ = sqlBuilder.Append(@"
         ORDER BY n.""PublishedDate"" DESC, n.""CreatedAt"" DESC
         LIMIT @Limit
     ");
 
-            var sql = sqlBuilder.ToString();
+            string sql = sqlBuilder.ToString();
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
                     // --- CORRECTED: Use NpgsqlConnection ---
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(ct);
 
                     // Using a dictionary to handle potential duplicates from LEFT JOINs is a robust pattern.
-                    var newsItemsMap = new Dictionary<Guid, NewsItem>();
+                    Dictionary<Guid, NewsItem> newsItemsMap = new();
 
-                    var items = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
+                    IEnumerable<NewsItem> items = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct),
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
                         {
                             // This mapping logic correctly handles hydrating the domain entity.
                             // The ToDomainEntity method in your DTO is well-designed for this.
-                            if (!newsItemsMap.TryGetValue(newsItemDto.Id, out var newsItem))
+                            if (!newsItemsMap.TryGetValue(newsItemDto.Id, out NewsItem? newsItem))
                             {
                                 newsItem = newsItemDto.ToDomainEntity();
                                 newsItemsMap.Add(newsItem.Id, newsItem);
@@ -1314,11 +1320,11 @@ namespace Infrastructure.Persistence.Configurations
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = @"SELECT ""SourceItemId"" FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" IS NOT NULL;";
-                    var ids = (await connection.QueryAsync<string>(new CommandDefinition(sql, new { RssSourceId = rssSourceId }, commandTimeout: CommandTimeoutSeconds))).ToList(); // <--- ADDED: Pass CommandTimeout
+                    string sql = @"SELECT ""SourceItemId"" FROM public.""NewsItems"" WHERE ""RssSourceId"" = @RssSourceId AND ""SourceItemId"" IS NOT NULL;";
+                    List<string> ids = (await connection.QueryAsync<string>(new CommandDefinition(sql, new { RssSourceId = rssSourceId }, commandTimeout: CommandTimeoutSeconds))).ToList(); // <--- ADDED: Pass CommandTimeout
                     return new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
                 });
             }
@@ -1351,14 +1357,18 @@ namespace Infrastructure.Persistence.Configurations
         /// <param name="cancellationToken">A token to cancel the operation.</param>
         public async Task AddAsync(NewsItem newsItem, CancellationToken cancellationToken = default)
         {
-            if (newsItem == null) throw new ArgumentNullException(nameof(newsItem));
+            if (newsItem == null)
+            {
+                throw new ArgumentNullException(nameof(newsItem));
+            }
+
             _logger.LogDebug("Attempting to upsert NewsItem. Title: {Title}", newsItem.Title.Truncate(50));
 
             try
             {
                 await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
-                    await using var connection = CreateConnection();
+                    await using NpgsqlConnection connection = CreateConnection();
 
                     string upsertSql;
                     string conflictTarget;
@@ -1390,14 +1400,17 @@ namespace Infrastructure.Persistence.Configurations
                         )
                         ON CONFLICT {conflictTarget} DO NOTHING;";
 
-                    var command = new CommandDefinition(upsertSql, newsItem, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct);
-                    var rowsAffected = await connection.ExecuteAsync(command);
+                    CommandDefinition command = new(upsertSql, newsItem, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct);
+                    int rowsAffected = await connection.ExecuteAsync(command);
 
                     if (rowsAffected > 0)
+                    {
                         _logger.LogInformation("Successfully inserted new NewsItem via ON CONFLICT. NewsItemId: {NewsItemId}", newsItem.Id);
+                    }
                     else
+                    {
                         _logger.LogInformation("Duplicate NewsItem found (matched by {ConflictTarget}). ON CONFLICT skipped insert. Title: {Title}", conflictTarget, newsItem.Title.Truncate(50));
-
+                    }
                 }, cancellationToken);
             }
             catch (Exception ex)
@@ -1420,10 +1433,10 @@ namespace Infrastructure.Persistence.Configurations
             {
                 await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
-                    var sql = @"
+                    string sql = @"
                 UPDATE public.""NewsItems"" SET
                     ""Title"" = @Title, ""Link"" = @Link, ""Summary"" = @Summary, ""FullContent"" = @FullContent,
                     ""ImageUrl"" = @ImageUrl, ""PublishedDate"" = @PublishedDate, ""LastProcessedAt"" = @LastProcessedAt,
@@ -1504,9 +1517,9 @@ namespace Infrastructure.Persistence.Configurations
             {
                 await _retryPolicy.ExecuteAsync(async (ct) =>
                 {
-                    await using var connection = CreateConnection();
-                    var command = new CommandDefinition(sql, newsItem, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct);
-                    var rowsAffected = await connection.ExecuteAsync(command);
+                    await using NpgsqlConnection connection = CreateConnection();
+                    CommandDefinition command = new(sql, newsItem, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct);
+                    int rowsAffected = await connection.ExecuteAsync(command);
 
                     if (rowsAffected == 0)
                     {
@@ -1533,7 +1546,7 @@ namespace Infrastructure.Persistence.Configurations
         {
             ArgumentNullException.ThrowIfNull(newsItem);
             _logger.LogInformation("Removing NewsItem. NewsItemId: {NewsItemId}", newsItem.Id);
-            await DeleteByIdAsync(newsItem.Id, cancellationToken);
+            _ = await DeleteByIdAsync(newsItem.Id, cancellationToken);
         }
 
 
@@ -1544,13 +1557,13 @@ namespace Infrastructure.Persistence.Configurations
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    using var connection = CreateConnection();
+                    using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
 
                     // Note: If NewsItem has other entities that cascade delete, deleting the NewsItem will handle it.
                     // For performance, a simple DELETE is often best if cascades are set in DB.
-                    var sql = @"DELETE FROM public.""NewsItems"" WHERE ""Id"" = @Id;";
-                    var rowsAffected = await connection.ExecuteAsync(new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds)); // <--- ADDED: Pass CommandTimeout
+                    string sql = @"DELETE FROM public.""NewsItems"" WHERE ""Id"" = @Id;";
+                    int rowsAffected = await connection.ExecuteAsync(new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds)); // <--- ADDED: Pass CommandTimeout
 
                     if (rowsAffected == 0)
                     {

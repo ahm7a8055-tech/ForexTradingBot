@@ -2,7 +2,7 @@
 
 using Telegram.Bot.Types.ReplyMarkups;
 
-namespace TelegramPanel.Application.DTOs.Ui
+namespace TelegramPanel.Application.DTO.Ui
 {
     /// <summary>
     /// A Data Transfer Object used to cache a pre-generated Telegram menu,

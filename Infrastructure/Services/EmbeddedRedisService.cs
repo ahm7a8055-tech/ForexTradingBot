@@ -4,16 +4,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis; // We need this to ping the server
-using System;
-using System.Diagnostics;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Linq;
-using System.Collections.Generic;
-using System.Net;
-using StackExchange.Redis.Profiling;
 using StackExchange.Redis.Maintenance;
+using StackExchange.Redis.Profiling;
+using System.Diagnostics;
+using System.Net;
 
 namespace Infrastructure.Services
 {
@@ -42,9 +36,9 @@ namespace Infrastructure.Services
         {
             _logger = logger;
             _settings = settings.Value;
-            
+
             // Try multiple possible paths for the Redis server executable
-            var possiblePaths = new[]
+            string[] possiblePaths = new[]
             {
                 // Path relative to WebAPI project (most likely)
                 Path.Combine(AppContext.BaseDirectory, "..", "WebAPI", _settings.ServerExecutablePath),
@@ -57,7 +51,7 @@ namespace Infrastructure.Services
             };
 
             _redisServerFullPath = possiblePaths.FirstOrDefault(File.Exists) ?? possiblePaths[0];
-            
+
             _logger.LogInformation("Redis server executable path resolved to: {Path}", _redisServerFullPath);
         }
 
@@ -70,18 +64,18 @@ namespace Infrastructure.Services
             {
                 ConsoleUI.WriteError($"Embedded Redis server not found at '{_redisServerFullPath}'.");
                 _logger.LogError("Embedded Redis server executable not found. The server will not be started.");
-                
+
                 // List all possible paths for debugging
-                var possiblePaths = new[]
+                string[] possiblePaths = new[]
                 {
                     Path.Combine(AppContext.BaseDirectory, "..", "WebAPI", _settings.ServerExecutablePath),
                     Path.Combine(AppContext.BaseDirectory, _settings.ServerExecutablePath),
                     Path.Combine(Directory.GetCurrentDirectory(), "WebAPI", _settings.ServerExecutablePath),
                     _settings.ServerExecutablePath
                 };
-                
+
                 _logger.LogError("Tried these paths:");
-                foreach (var path in possiblePaths)
+                foreach (string? path in possiblePaths)
                 {
                     _logger.LogError("  - {Path} (Exists: {Exists})", path, File.Exists(path));
                 }
@@ -93,7 +87,7 @@ namespace Infrastructure.Services
             {
                 ConsoleUI.WriteWarning("Port 6379 is already in use. Redis server might already be running.");
                 _logger.LogWarning("Port 6379 is already in use. Attempting to connect to existing Redis server.");
-                
+
                 // Try to connect to existing Redis server
                 if (await IsRedisResponsiveAsync())
                 {
@@ -111,7 +105,7 @@ namespace Infrastructure.Services
             ConsoleUI.WriteInfo($"Attempting to start embedded Redis server from: {_redisServerFullPath}");
             _logger.LogInformation("Starting embedded Redis server from: {Path}", _redisServerFullPath);
 
-            var processStartInfo = new ProcessStartInfo
+            ProcessStartInfo processStartInfo = new()
             {
                 FileName = _redisServerFullPath,
                 UseShellExecute = false,
@@ -124,28 +118,32 @@ namespace Infrastructure.Services
 
             try
             {
-                _redisProcess = new Process { StartInfo = processStartInfo };
-                _redisProcess.EnableRaisingEvents = true;
+                _redisProcess = new Process
+                {
+                    StartInfo = processStartInfo,
+                    EnableRaisingEvents = true
+                };
 
                 // Capture output to know when the server is ready
-                var serverReadyTcs = new TaskCompletionSource<bool>();
-                var outputLines = new List<string>();
-                
+                TaskCompletionSource<bool> serverReadyTcs = new();
+                List<string> outputLines = new();
+
                 _redisProcess.OutputDataReceived += (sender, args) =>
                 {
                     if (!string.IsNullOrEmpty(args.Data))
                     {
                         outputLines.Add(args.Data);
                         _logger.LogDebug("Redis output: {Output}", args.Data);
-                        
+
                         if (args.Data.Contains("Ready to accept connections"))
                         {
-                            serverReadyTcs.TrySetResult(true);
+                            _ = serverReadyTcs.TrySetResult(true);
                         }
                     }
                 };
-                
-                _redisProcess.ErrorDataReceived += (sender, args) => {
+
+                _redisProcess.ErrorDataReceived += (sender, args) =>
+                {
                     if (!string.IsNullOrEmpty(args.Data))
                     {
                         _logger.LogWarning("Redis Process stderr: {RedisError}", args.Data);
@@ -153,14 +151,14 @@ namespace Infrastructure.Services
                     }
                 };
 
-                _redisProcess.Start();
+                _ = _redisProcess.Start();
                 _redisProcess.BeginOutputReadLine();
                 _redisProcess.BeginErrorReadLine();
 
                 ConsoleUI.WriteInfo($"Redis process started with ID {_redisProcess.Id}. Waiting for it to become responsive...");
 
                 // Wait for the "Ready" message from the output OR a timeout
-                var completedTask = await Task.WhenAny(serverReadyTcs.Task, Task.Delay(TimeSpan.FromSeconds(_settings.StartupPingTimeoutSeconds), cancellationToken));
+                Task completedTask = await Task.WhenAny(serverReadyTcs.Task, Task.Delay(TimeSpan.FromSeconds(_settings.StartupPingTimeoutSeconds), cancellationToken));
 
                 if (completedTask == serverReadyTcs.Task && serverReadyTcs.Task.Result)
                 {
@@ -180,7 +178,7 @@ namespace Infrastructure.Services
                         ConsoleUI.WriteError("Redis process started but did not become responsive in time.");
                         _logger.LogError("Redis process started but did not become responsive. Process ID: {ProcessId}", _redisProcess.Id);
                         _logger.LogError("Redis output: {Output}", string.Join(Environment.NewLine, outputLines));
-                        
+
                         if (_redisProcess.HasExited)
                         {
                             _logger.LogError("Redis process has exited with code: {ExitCode}", _redisProcess.ExitCode);
@@ -203,7 +201,7 @@ namespace Infrastructure.Services
         {
             try
             {
-                using var client = new System.Net.Sockets.TcpClient();
+                using System.Net.Sockets.TcpClient client = new();
                 client.Connect("localhost", port);
                 return true;
             }
@@ -217,10 +215,10 @@ namespace Infrastructure.Services
         {
             try
             {
-                var connection = await ConnectionMultiplexer.ConnectAsync(_settings.ConnectionString + ",connectTimeout=1000");
+                ConnectionMultiplexer connection = await ConnectionMultiplexer.ConnectAsync(_settings.ConnectionString + ",connectTimeout=1000");
                 if (connection.IsConnected)
                 {
-                    await connection.GetDatabase().PingAsync();
+                    _ = await connection.GetDatabase().PingAsync();
                     return true;
                 }
             }
@@ -267,7 +265,7 @@ namespace Infrastructure.Services
     public class FallbackRedisService : IConnectionMultiplexer
     {
         private readonly ILogger<FallbackRedisService> _logger;
-        private readonly Dictionary<string, object> _cache = new();
+        private readonly Dictionary<string, object> _cache = [];
         private readonly object _lock = new();
 
         public FallbackRedisService(ILogger<FallbackRedisService> logger)
@@ -672,10 +670,12 @@ namespace Infrastructure.Services
             lock (_lock)
             {
                 long deleted = 0;
-                foreach (var key in keys)
+                foreach (RedisKey key in keys)
                 {
                     if (_cache.Remove(key))
+                    {
                         deleted++;
+                    }
                 }
                 return deleted;
             }
@@ -837,13 +837,13 @@ namespace Infrastructure.Services
             return 0;
         }
 
-        public void ScriptEvaluate(byte[] hash, RedisKey[] keys = null, RedisValue[] values = null, CommandFlags flags = CommandFlags.None)
+        public void ScriptEvaluate(byte[] hash, RedisKey[]? keys = null, RedisValue[]? values = null, CommandFlags flags = CommandFlags.None)
         {
             // No-op in fallback mode
         }
 
 
-        public RedisResult ScriptEvaluate(string script, RedisKey[] keys = null, RedisValue[] values = null, CommandFlags flags = CommandFlags.None)
+        public RedisResult ScriptEvaluate(string script, RedisKey[]? keys = null, RedisValue[]? values = null, CommandFlags flags = CommandFlags.None)
         {
             return RedisResult.Create(RedisValue.Null);
         }
@@ -929,7 +929,7 @@ namespace Infrastructure.Services
             return values.Length;
         }
 
-        public RedisValue[] SetScan(RedisKey key, RedisValue pattern = default(RedisValue), int pageSize = 10, long cursor = 0, int pageOffset = 0, CommandFlags flags = CommandFlags.None)
+        public RedisValue[] SetScan(RedisKey key, RedisValue pattern = default, int pageSize = 10, long cursor = 0, int pageOffset = 0, CommandFlags flags = CommandFlags.None)
         {
             return Array.Empty<RedisValue>();
         }
@@ -959,7 +959,7 @@ namespace Infrastructure.Services
             return 0;
         }
 
-        public long SortedSetCombineAndStore(SetOperation operation, RedisKey destination, RedisKey[] keys, double[] weights = null, Aggregate aggregate = Aggregate.Sum, CommandFlags flags = CommandFlags.None)
+        public long SortedSetCombineAndStore(SetOperation operation, RedisKey destination, RedisKey[] keys, double[]? weights = null, Aggregate aggregate = Aggregate.Sum, CommandFlags flags = CommandFlags.None)
         {
             return 0;
         }
@@ -1004,7 +1004,7 @@ namespace Infrastructure.Services
             return Array.Empty<SortedSetEntry>();
         }
 
-        public RedisValue[] SortedSetRangeByValue(RedisKey key, RedisValue min = default(RedisValue), RedisValue max = default(RedisValue), Exclude exclude = Exclude.None, long skip = 0, long take = -1, CommandFlags flags = CommandFlags.None)
+        public RedisValue[] SortedSetRangeByValue(RedisKey key, RedisValue min = default, RedisValue max = default, Exclude exclude = Exclude.None, long skip = 0, long take = -1, CommandFlags flags = CommandFlags.None)
         {
             return Array.Empty<RedisValue>();
         }
@@ -1039,7 +1039,7 @@ namespace Infrastructure.Services
             return 0;
         }
 
-        public RedisValue[] SortedSetScan(RedisKey key, RedisValue pattern = default(RedisValue), int pageSize = 10, long cursor = 0, int pageOffset = 0, CommandFlags flags = CommandFlags.None)
+        public RedisValue[] SortedSetScan(RedisKey key, RedisValue pattern = default, int pageSize = 10, long cursor = 0, int pageOffset = 0, CommandFlags flags = CommandFlags.None)
         {
             return Array.Empty<RedisValue>();
         }
@@ -1116,7 +1116,7 @@ namespace Infrastructure.Services
         {
             lock (_lock)
             {
-                return _cache.TryGetValue(key, out var value) ? value.ToString().Length : 0;
+                return _cache.TryGetValue(key, out object? value) ? value.ToString().Length : 0;
             }
         }
 
@@ -1133,7 +1133,7 @@ namespace Infrastructure.Services
         {
             lock (_lock)
             {
-                foreach (var kvp in values)
+                foreach (KeyValuePair<RedisKey, RedisValue> kvp in values)
                 {
                     _cache[kvp.Key] = kvp.Value;
                 }
@@ -1164,7 +1164,7 @@ namespace Infrastructure.Services
 
         public T Wait<T>(Task<T> task)
         {
-            return default(T);
+            return default;
         }
 
         public void WaitAll(params Task[] tasks)
@@ -2950,7 +2950,7 @@ namespace Infrastructure.Services
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"--- ╔═════════════════════════════════════╗ ---");
-            Console.WriteLine($"--- ║   {text.PadRight(35).Substring(0, 35)} ║ ---");
+            Console.WriteLine($"--- ║   {text.PadRight(35)[..35]} ║ ---");
             Console.WriteLine($"--- ╚═════════════════════════════════════╝ ---");
             Console.ResetColor();
         }

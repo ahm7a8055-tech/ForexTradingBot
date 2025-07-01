@@ -1,12 +1,9 @@
 ﻿// File: Infrastructure/Services/RedisNotificationRateLimiter.cs
 
-using Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
 using StackExchange.Redis;
-using System; // Required for Exception
-using System.Threading.Tasks; // Required for Task
 
 public class RedisNotificationRateLimiter : INotificationRateLimiter
 {
@@ -87,7 +84,7 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
 
         try
         {
-            var context = new Context($"IsUserAtOrOverLimitAsync_User_{telegramUserId}");
+            Context context = new($"IsUserAtOrOverLimitAsync_User_{telegramUserId}");
             RedisResult result = await _redisRetryPolicy.ExecuteAsync(async (ctx) =>
             {
                 _logger.LogTrace("Attempting Redis 'CheckRateLimitLuaScript' for User {UserId}. Context: {Context}", telegramUserId, ctx.OperationKey);
@@ -129,11 +126,11 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
 
         try
         {
-            var context = new Context($"IncrementUsageAsync_User_{telegramUserId}");
+            Context context = new($"IncrementUsageAsync_User_{telegramUserId}");
             await _redisRetryPolicy.ExecuteAsync(async (ctx) =>
             {
                 _logger.LogTrace("Attempting Redis 'IncrementRateLimitLuaScript' for User {UserId}. Context: {Context}", telegramUserId, ctx.OperationKey);
-                await db.ScriptEvaluateAsync(
+                _ = await db.ScriptEvaluateAsync(
                     IncrementRateLimitLuaScript,
                     new RedisKey[] { key },
                     new RedisValue[] { now, window }
@@ -157,7 +154,7 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
     public async Task<bool> IsUserOverLimitAsync(long telegramUserId, int limit, TimeSpan period)
     {
         IDatabase db = _redis.GetDatabase();
-        var parameters = new RateLimitParams(
+        RateLimitParams parameters = new(
             Key: $"notif_limit:v2:{telegramUserId}",
             Now: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Window: (long)period.TotalMilliseconds,
@@ -166,7 +163,7 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
 
         try
         {
-            var context = new Context($"IsUserOverLimitAsync_User_{telegramUserId}");
+            Context context = new($"IsUserOverLimitAsync_User_{telegramUserId}");
             RedisResult result = await _redisRetryPolicy.ExecuteAsync(async (ctx) =>
             {
                 _logger.LogTrace("Attempting Redis 'RateLimiterLuaScript' (atomic check-and-increment) for User {UserId}. Context: {Context}", telegramUserId, ctx.OperationKey);
@@ -216,11 +213,11 @@ public class RedisNotificationRateLimiter : INotificationRateLimiter
 
         try
         {
-            var context = new Context($"DecrementUsageAsync_User_{telegramUserId}");
+            Context context = new($"DecrementUsageAsync_User_{telegramUserId}");
             await _redisRetryPolicy.ExecuteAsync(async (ctx) =>
             {
                 _logger.LogTrace("Attempting Redis 'DecrementRateLimitLuaScript' for User {UserId}. Context: {Context}", telegramUserId, ctx.OperationKey);
-                var result = await db.ScriptEvaluateAsync(
+                RedisResult result = await db.ScriptEvaluateAsync(
                     DecrementRateLimitLuaScript,
                     new RedisKey[] { key }
                 );

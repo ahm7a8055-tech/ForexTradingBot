@@ -1,5 +1,7 @@
 ﻿// File: TelegramPanel/Infrastructure/TelegramMessageSender.cs
 using Application.Common.Interfaces;
+using Application.Interfaces;
+using Hangfire;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
@@ -11,8 +13,6 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Formatters;
-using Hangfire;
-using Application.Interfaces;
 
 namespace TelegramPanel.Infrastructure
 {
@@ -30,7 +30,7 @@ namespace TelegramPanel.Infrastructure
         Task EditMessageTextInTelegramAsync(long chatId, int messageId, string text, ParseMode? parseMode, InlineKeyboardMarkup? replyMarkup, CancellationToken cancellationToken);
         Task AnswerCallbackQueryToTelegramAsync(string callbackQueryId, string? text, bool showAlert, string? url, int cacheTime, CancellationToken cancellationToken);
         Task SendPhotoToTelegramAsync(long chatId, string photoUrlOrFileId, string? caption, ParseMode? parseMode, ReplyMarkup? replyMarkup, CancellationToken cancellationToken);
-        Task DeleteMessageAsync(
+        Task DeleteMessage(
             long chatId,
             int messageId,
             CancellationToken cancellationToken = default);
@@ -51,7 +51,7 @@ namespace TelegramPanel.Infrastructure
     public class ActualTelegramMessageActions : IActualTelegramMessageActions
     {
         private readonly ILoggingSanitizer _logSanitizer; // New Dependency
-                                                 
+
         private readonly INotificationJobScheduler _jobScheduler;
         private readonly ITelegramBotClient _botClient;
         private readonly ILogger<ActualTelegramMessageActions> _logger;
@@ -149,10 +149,10 @@ namespace TelegramPanel.Infrastructure
                     sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
                     onRetry: (exception, timeSpan, retryAttempt, context) =>
                     {
-                        var operationName = context.OperationKey ?? "UnknownOperation";
-                        var chatId = context.TryGetValue("ChatId", out var id) ? (long?)id : null;
-                        var messagePreview = context.TryGetValue("MessagePreview", out var msg) ? msg?.ToString() : "N/A";
-                        var apiErrorCode = (exception as ApiRequestException)?.ErrorCode.ToString() ?? "N/A";
+                        string operationName = context.OperationKey ?? "UnknownOperation";
+                        long? chatId = context.TryGetValue("ChatId", out object? id) ? (long?)id : null;
+                        string? messagePreview = context.TryGetValue("MessagePreview", out object? msg) ? msg?.ToString() : "N/A";
+                        string apiErrorCode = (exception as ApiRequestException)?.ErrorCode.ToString() ?? "N/A";
 
                         _logger.LogWarning(exception,
                             "PollyRetry: Telegram API operation '{Operation}' failed (ChatId: {ChatId}, Code: {ApiErrorCode}). Retrying in {TimeSpan} for attempt {RetryAttempt}. Message preview: '{MessagePreview}'. Error: {Message}",
@@ -182,7 +182,7 @@ namespace TelegramPanel.Infrastructure
 
             _logger.LogDebug("Hangfire Job (ActualSend): Sending document. ChatID: {ChatId}, FileName: {FileName}, Caption (Sanitized): '{SanitizedLogCaption}'", chatId, fileName, sanitizedLogCaption);
 
-            var pollyContext = new Polly.Context($"SendDocument_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
+            Context pollyContext = new($"SendDocument_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
             {
                 { "ChatId", chatId },
                 { "FileName", fileName },
@@ -192,12 +192,12 @@ namespace TelegramPanel.Infrastructure
             try
             {
                 // Create the necessary input file from the byte array inside the Hangfire job
-                await using var stream = new MemoryStream(documentContents);
+                await using MemoryStream stream = new(documentContents);
                 InputFile documentInput = new InputFileStream(stream, fileName);
 
                 await _telegramApiRetryPolicy.ExecuteAsync(async (context, ct) =>
                 {
-                    await _botClient.SendDocument(
+                    _ = await _botClient.SendDocument(
                         chatId: new ChatId(chatId),
                         document: documentInput,
                         caption: caption,
@@ -220,9 +220,9 @@ namespace TelegramPanel.Infrastructure
                 throw;
             }
         }
-        
+
         // ... (All your other existing methods)
-    
+
         /// <summary>
         /// A centralized factory method for creating robust Polly retry policies for the Telegram API.
         /// This promotes consistency and simplifies policy management.
@@ -275,8 +275,8 @@ namespace TelegramPanel.Infrastructure
                     sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
                     onRetry: (exception, timeSpan, retryAttempt, context) =>
                     {
-                        var operationName = context.OperationKey ?? "UnknownOperation";
-                        var apiErrorCode = (exception as ApiRequestException)?.ErrorCode.ToString() ?? "N/A";
+                        string operationName = context.OperationKey ?? "UnknownOperation";
+                        string apiErrorCode = (exception as ApiRequestException)?.ErrorCode.ToString() ?? "N/A";
 
                         _logger.LogWarning(exception,
                             "PollyRetry({PolicyName}): Operation '{Operation}' failed (Code: {ApiErrorCode}). Retrying in {TimeSpan} (Attempt {RetryAttempt}/3). Error: {Message}",
@@ -284,7 +284,7 @@ namespace TelegramPanel.Infrastructure
                     });
         }
 
-    
+
 
         // --- ✅ IMPLEMENT THE NEW METHOD ---
         [AutomaticRetry(Attempts = 0)]
@@ -321,11 +321,11 @@ namespace TelegramPanel.Infrastructure
         [AutomaticRetry(Attempts = 0)]
         [Queue("notifications")]
         [DisableConcurrentExecution(timeoutInSeconds: 600)]
-        public async Task DeleteMessageAsync(long chatId, int messageId, CancellationToken cancellationToken = default)
+        public void DeleteMessage(long chatId, int messageId, CancellationToken cancellationToken = default)
         {
             _logger.LogDebug("Enqueueing DeleteMessageAsync for ChatID {ChatId}, MsgID {MessageId}", chatId, messageId);
             _ = _jobScheduler.Enqueue<IActualTelegramMessageActions>(
-                sender => sender.DeleteMessageAsync(chatId, messageId, CancellationToken.None)
+                sender => sender.DeleteMessage(chatId, messageId, CancellationToken.None)
             );
         }
         /// <summary>
@@ -346,7 +346,7 @@ namespace TelegramPanel.Infrastructure
             {
                 // Truncate first to limit the amount of data being processed and logged.
                 string sanitized = input.Length > MaxLogLength
-                    ? input.Substring(0, MaxLogLength) + "..."
+                    ? input[..MaxLogLength] + "..."
                     : input;
 
                 // Apply redaction rules.
@@ -400,7 +400,7 @@ namespace TelegramPanel.Infrastructure
 
             _logger.LogDebug("Hangfire Job (ActualSend): Sending text message. ChatID: {ChatId}, Text (Sanitized): '{SanitizedLogText}'", chatId, sanitizedLogText);
 
-            var pollyContext = new Polly.Context($"SendText_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
+            Context pollyContext = new($"SendText_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
     {
         { "ChatId", chatId },
         { "MessagePreview", sanitizedLogText } // Always use the sanitized version.
@@ -410,7 +410,7 @@ namespace TelegramPanel.Infrastructure
             {
                 await _telegramApiRetryPolicy.ExecuteAsync(async (context, ct) =>
                 {
-                    await _botClient.SendMessage(
+                    _ = await _botClient.SendMessage(
                         chatId: new ChatId(chatId),
                         text: text,
                         parseMode: ParseMode.Markdown,
@@ -436,7 +436,7 @@ namespace TelegramPanel.Infrastructure
                     int[] delays = { 3, 5, 10 }; // minutes
                     int delayMinutes = delays[Math.Min(retryCount, delays.Length - 1)];
                     _logger.LogWarning(apiEx, "Hangfire Job (ActualSend): Telegram API error for ChatID {ChatId} (Attempt {RetryCount}/3). Scheduling retry in {DelayMinutes} minutes.", chatId, retryCount + 1, delayMinutes);
-                    _jobScheduler.Schedule<IActualTelegramMessageActions>(
+                    _ = _jobScheduler.Schedule<IActualTelegramMessageActions>(
                         sender => sender.RetryableSendTextMessageAsync(chatId, text, parseMode, replyMarkup, disableNotification, linkPreviewOptions, CancellationToken.None, retryCount + 1),
                         TimeSpan.FromMinutes(delayMinutes));
                     return;
@@ -451,7 +451,7 @@ namespace TelegramPanel.Infrastructure
                 }
                 catch (Exception dbEx)
                 {
-                    var sanitizedApiExMessage = SanitizeSensitiveData(apiEx.Message);
+                    string sanitizedApiExMessage = SanitizeSensitiveData(apiEx.Message);
                     _logger.LogError(dbEx, "Hangfire Job (ActualSend): Failed to mark user with ChatID {ChatId} as unreachable after text send. Original Telegram error (Sanitized): {SanitizedTelegramErrorMessage}",
                         chatId,
                         sanitizedApiExMessage);
@@ -487,8 +487,8 @@ namespace TelegramPanel.Infrastructure
         public async Task EditMessageTextInTelegramAsync(long chatId, int messageId, string text, ParseMode? parseMode, InlineKeyboardMarkup? replyMarkup, CancellationToken cancellationToken)
         {
             // <<< FIX: Use the correct V1 escaper for the V1 goal.
-            var sanitizedText = TelegramMessageFormatter.EscapeMarkdownV1(text);
-            var sanitizedTextForLogging = SanitizeSensitiveData(text);
+            _ = TelegramMessageFormatter.EscapeMarkdownV1(text);
+            _ = SanitizeSensitiveData(text);
 
             _logger.LogDebug("Job (UltimateEdit): Preparing to edit with Markdown V1. Chat: {ChatId}, Msg: {MessageId}", chatId, messageId);
 
@@ -497,7 +497,7 @@ namespace TelegramPanel.Infrastructure
                 try
                 {
                     // --- ATTEMPT 1: Try to edit as a standard text message. ---
-                    await _botClient.EditMessageText(
+                    _ = await _botClient.EditMessageText(
                      chatId: new ChatId(chatId),
                      messageId: messageId,
                      // <<< FIX: Use the sanitized text, not the raw text.
@@ -525,7 +525,7 @@ namespace TelegramPanel.Infrastructure
                     return;
                 }
 
-                if (apiEx.ErrorCode >= 400 && apiEx.ErrorCode < 500)
+                if (apiEx.ErrorCode is >= 400 and < 500)
                 {
                     _logger.LogCritical(apiEx, "Job (UltimateEdit): PERMANENT failure for Msg {MessageId}, Chat {ChatId}. ErrorCode: {ErrorCode}, API Message: '{ApiMessage}'. Job will terminate.",
                         messageId, chatId, apiEx.ErrorCode, apiEx.Message);
@@ -552,24 +552,24 @@ namespace TelegramPanel.Infrastructure
             }
 
             // IMPORTANT: Ensure ALL special characters are escaped. The dot '.' is crucial.
-            var specialChars = new[] {
+            string[] specialChars = new[] {
         "_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"
     };
             // Added: "`", "!", ".", " " (space, though less common to escape)
             // Note: The list provided in your original code was also missing backtick (`).
 
-            var sb = new StringBuilder(text);
+            StringBuilder sb = new(text);
 
             // Loop through each special character and replace it with its escaped version.
             // Order might matter in some edge cases, but usually not for simple replacement.
             // It's generally safer to replace longer sequences first if there's overlap.
             // However, for these individual characters, direct replacement is fine.
-            foreach (var specialChar in specialChars)
+            foreach (string? specialChar in specialChars)
             {
                 // Be careful not to double-escape if a replacement itself contains a special char.
                 // Using a regex replace is safer for complex cases, but for this list, direct replace is okay if done carefully.
                 // A simple replace approach:
-                sb.Replace(specialChar, "\\" + specialChar);
+                _ = sb.Replace(specialChar, "\\" + specialChar);
             }
 
             // Special case for consecutive escaped characters:
@@ -619,7 +619,7 @@ namespace TelegramPanel.Infrastructure
 
             _logger.LogDebug("Job (AnswerCBQ): Preparing to answer. ID: {CBQId}", callbackQueryId);
 
-            var pollyContext = new Polly.Context($"AnswerCBQ_{callbackQueryId}", new Dictionary<string, object>
+            Context pollyContext = new($"AnswerCBQ_{callbackQueryId}", new Dictionary<string, object>
            {
                { "CallbackQueryId", callbackQueryId },
                { "AnswerTextPreview", sanitizedLogText }
@@ -690,7 +690,7 @@ namespace TelegramPanel.Infrastructure
             string sanitizedLogCaption = SanitizeSensitiveData(caption);
             _logger.LogDebug("Sending photo. ChatID: {ChatId}, Photo: {PhotoIdOrUrl}, Caption: {Caption}", chatId, photoUrlOrFileId, sanitizedLogCaption);
 
-            var pollyContext = new Polly.Context($"SendPhoto_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
+            Context pollyContext = new($"SendPhoto_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
     {
         { "ChatId", chatId },
         { "PhotoIdOrUrl", photoUrlOrFileId },
@@ -706,11 +706,11 @@ namespace TelegramPanel.Infrastructure
                     string processedCaption = caption;
                     if (!string.IsNullOrWhiteSpace(caption) && caption.Length > TelegramApiMaxCaptionLength)
                     {
-                        processedCaption = caption.Substring(0, TelegramApiMaxCaptionLength);
+                        processedCaption = caption[..TelegramApiMaxCaptionLength];
                         _logger.LogWarning("Caption truncated for ChatID {ChatId}. Original length: {OriginalLength}, Max allowed: {MaxCaptionLength}.", chatId, caption.Length, TelegramApiMaxCaptionLength);
                     }
 
-                    await _botClient.SendPhoto(
+                    _ = await _botClient.SendPhoto(
                         chatId: new ChatId(chatId),
                         photo: photoInput,
                         caption: processedCaption,
@@ -724,7 +724,7 @@ namespace TelegramPanel.Infrastructure
             catch (Exception ex)
             {
                 // Unwrap Polly or AggregateException to get the real Telegram error
-                var apiEx = ex as ApiRequestException
+                ApiRequestException? apiEx = ex as ApiRequestException
                     ?? (ex as AggregateException)?.InnerExceptions.OfType<ApiRequestException>().FirstOrDefault()
                     ?? ex.InnerException as ApiRequestException;
 
@@ -762,7 +762,7 @@ namespace TelegramPanel.Infrastructure
                     {
                         int delayMinutes = RetryDelaysMinutes[retryCount];
                         _logger.LogWarning("Retrying photo send to ChatID {ChatId} in {DelayMinutes} minutes (attempt {RetryAttempt}/{MaxAttempts})", chatId, delayMinutes, retryCount + 1, RetryDelaysMinutes.Length);
-                        _jobScheduler.Schedule<IActualTelegramMessageActions>(
+                        _ = _jobScheduler.Schedule<IActualTelegramMessageActions>(
                             sender => sender.RetryableSendPhotoToTelegramAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, CancellationToken.None, retryCount + 1),
                             TimeSpan.FromMinutes(delayMinutes));
                         return;
@@ -827,6 +827,11 @@ namespace TelegramPanel.Infrastructure
             await SendPhotoToTelegramWithRetryAsync(chatId, photoUrlOrFileId, caption, parseMode, replyMarkup, cancellationToken, retryCount);
         }
 
+        Task IActualTelegramMessageActions.DeleteMessage(long chatId, int messageId, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
         // =========================================================================
         // 3. اینترفیس ITelegramMessageSender (بدون تغییر)
         // =========================================================================
@@ -848,7 +853,7 @@ namespace TelegramPanel.Infrastructure
             /// Enqueues a job to send a text message to a specified chat.
             /// </summary>
             /// 
-            
+
             Task SendTextMessageAsync(
                 long chatId,
                 string text,
@@ -934,7 +939,7 @@ namespace TelegramPanel.Infrastructure
             {
                 _logger.LogDebug("Enqueueing DeleteMessageAsync for ChatID {ChatId}, MsgID {MessageId}", chatId, messageId);
                 _ = _jobScheduler.Enqueue<IActualTelegramMessageActions>(
-                    sender => sender.DeleteMessageAsync(chatId, messageId, CancellationToken.None)
+                    sender => sender.DeleteMessage(chatId, messageId, CancellationToken.None)
                 );
                 return Task.CompletedTask;
             }
@@ -977,7 +982,7 @@ namespace TelegramPanel.Infrastructure
                 return Task.CompletedTask;
             }
 
-       
+
         }
     }
 }

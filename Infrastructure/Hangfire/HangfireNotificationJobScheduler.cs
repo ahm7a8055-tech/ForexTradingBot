@@ -5,9 +5,7 @@ using Application.Common.Interfaces; // CORRECT: References the interface from t
 using Hangfire;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
-using System;
 using System.Linq.Expressions;
-using System.Threading.Tasks;
 
 namespace Infrastructure.Hangfire // CORRECT: This is where your implementation class lives
 {
@@ -21,7 +19,7 @@ namespace Infrastructure.Hangfire // CORRECT: This is where your implementation 
         private readonly ILogger<HangfireNotificationJobScheduler> _logger;
         private readonly IDatabase _redisDb;
         // Constructor to inject dependencies
-        public HangfireNotificationJobScheduler(IConnectionMultiplexer redisConnection , IBackgroundJobClient backgroundJobClient, ILogger<HangfireNotificationJobScheduler> logger)
+        public HangfireNotificationJobScheduler(IConnectionMultiplexer redisConnection, IBackgroundJobClient backgroundJobClient, ILogger<HangfireNotificationJobScheduler> logger)
         {
             _redisDb = redisConnection.GetDatabase();
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
@@ -54,7 +52,7 @@ namespace Infrastructure.Hangfire // CORRECT: This is where your implementation 
         {
             try
             {
-                await _redisDb.KeyDeleteAsync(lockKey);
+                _ = await _redisDb.KeyDeleteAsync(lockKey);
                 _logger.LogDebug("Released lock '{LockKey}'.", lockKey);
             }
             catch (Exception ex)

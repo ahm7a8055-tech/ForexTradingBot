@@ -2,7 +2,6 @@
 
 #region Usings
 using Application.Common.Interfaces;
-using Application.DTOs.Notifications;
 using Application.Interfaces;
 using Domain.Entities;
 using Hangfire;
@@ -12,7 +11,6 @@ using Polly.CircuitBreaker;
 using StackExchange.Redis;
 
 // using Shared.Extensions; // Assuming TruncateWithEllipsis is a local method
-using System.Text;
 // using System.Threading.RateLimiting; // Not needed here
 
 // --- ✅ FIX 1: ADD MISSING USINGS ---
@@ -326,8 +324,16 @@ namespace Application.Services
                     // If a critical failure occurs (like circuit breaker open), ensure locks are released
                     // The finally block will handle this, but explicitly releasing here on early exit is safer.
                     // NOTE: 'itemLockKey' is assigned by now if we reached here.
-                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
-                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    if (itemLockKey != null)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    }
+
+                    if (globalLockAcquired)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    }
+
                     return;
                 }
 
@@ -336,8 +342,16 @@ namespace Application.Services
                 {
                     _logger.LogWarning("NewsItem {Id} not found. Cannot dispatch.", newsItemId);
                     // Ensure locks are released on early exit due to null newsItem
-                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
-                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    if (itemLockKey != null)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    }
+
+                    if (globalLockAcquired)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    }
+
                     return;
                 }
 
@@ -356,13 +370,21 @@ namespace Application.Services
                 {
                     _logger.LogInformation("No unique, eligible users found for NewsItem {NewsItemId}.", newsItemId);
                     // Ensure locks are released on early exit
-                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
-                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    if (itemLockKey != null)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    }
+
+                    if (globalLockAcquired)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    }
+
                     return;
                 }
 
                 // --- REVISED FIX: MORE ROBUST USER FILTERING ---
-                List<long> eligibleUsersForThisDispatch = new List<long>();
+                List<long> eligibleUsersForThisDispatch = [];
                 const int globalNotificationLimit = 5;
                 TimeSpan globalNotificationPeriod = TimeSpan.FromMinutes(15);
 
@@ -388,8 +410,16 @@ namespace Application.Services
                 {
                     _logger.LogInformation("No eligible users remaining for NewsItem {NewsItemId} after rate limit filtering.", newsItemId);
                     // Ensure locks are released on early exit
-                    if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
-                    if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    if (itemLockKey != null)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                    }
+
+                    if (globalLockAcquired)
+                    {
+                        await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                    }
+
                     return;
                 }
                 // --- END REVISED FIX ---
@@ -399,7 +429,7 @@ namespace Application.Services
                 await _redisCircuitBreaker.ExecuteAsync(async () =>
                 {
                     string serializedUserIds = JsonSerializer.Serialize(eligibleUsersForThisDispatch);
-                    await _redisDb.StringSetAsync(userListCacheKey, serializedUserIds, TimeSpan.FromHours(24));
+                    _ = await _redisDb.StringSetAsync(userListCacheKey, serializedUserIds, TimeSpan.FromHours(24));
                 });
                 _logger.LogInformation("Cached {Count} UNIQUE eligible user IDs to Redis for NewsItem {NewsItemId} after rate limit filtering.", eligibleUsersForThisDispatch.Count, newsItemId);
 
@@ -414,7 +444,7 @@ namespace Application.Services
 
                     int itemsInThisChunk = Math.Min(chunkSize, totalUsers - chunkStartIndex);
 
-                    _jobScheduler.Enqueue<INotificationDispatchService>(
+                    _ = _jobScheduler.Enqueue<INotificationDispatchService>(
                         service => service.ProcessNotificationChunkAsync(newsItemId, userListCacheKey, chunkStartIndex, itemsInThisChunk, CancellationToken.None));
                 }
 
@@ -424,21 +454,43 @@ namespace Application.Services
             {
                 _logger.LogWarning("Dispatch for NewsItem {NewsItemId} failed: Redis circuit is open.", newsItemId);
                 // Release locks on error
-                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey); // itemLockKey IS defined by now
-                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                if (itemLockKey != null)
+                {
+                    await _jobScheduler.ReleaseLockAsync(itemLockKey); // itemLockKey IS defined by now
+                }
+
+                if (globalLockAcquired)
+                {
+                    await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                }
             }
             catch (RedisException redisEx)
             {
                 _logger.LogError(redisEx, "A Redis error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
                 // Release locks on Redis errors
-                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
-                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                if (itemLockKey != null)
+                {
+                    await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                }
+
+                if (globalLockAcquired)
+                {
+                    await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                }
             }
             catch (OperationCanceledException)
             {
                 // If cancelled, ensure locks are released if acquired.
-                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
-                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                if (globalLockAcquired)
+                {
+                    await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                }
+
+                if (itemLockKey != null)
+                {
+                    await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                }
+
                 _logger.LogWarning("Dispatch orchestration for NewsItem {NewsItemId} was cancelled.", newsItemId);
                 throw; // Re-throw to signal cancellation
             }
@@ -446,8 +498,16 @@ namespace Application.Services
             {
                 _logger.LogCritical(ex, "A critical error occurred during dispatch orchestration for NewsItem {NewsItemId}.", newsItemId);
                 // Release locks on other critical errors
-                if (globalLockAcquired) await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
-                if (itemLockKey != null) await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                if (globalLockAcquired)
+                {
+                    await _jobScheduler.ReleaseLockAsync(globalOrchestrationLockKey);
+                }
+
+                if (itemLockKey != null)
+                {
+                    await _jobScheduler.ReleaseLockAsync(itemLockKey);
+                }
+
                 throw; // Re-throw the exception
             }
             finally
@@ -490,12 +550,12 @@ namespace Application.Services
                 // The first job (i=0) has 0 delay.
                 // The second job (i=1) is scheduled for 40ms in the future.
                 // The third job (i=2) is scheduled for 80ms in the future, and so on.
-                var scheduledDelay = TimeSpan.FromMilliseconds(i * delayBetweenJobsMs);
+                TimeSpan scheduledDelay = TimeSpan.FromMilliseconds(i * delayBetweenJobsMs);
 
                 int currentUserIndex = chunkStartIndex + i;
 
                 // --- Use Schedule instead of Enqueue ---
-                _jobScheduler.Schedule<INotificationSendingService>(
+                _ = _jobScheduler.Schedule<INotificationSendingService>(
                     service => service.ProcessNotificationFromCacheAsync(newsItemId, userListCacheKey, currentUserIndex, JobCancellationToken.Null),
                     scheduledDelay
                 );

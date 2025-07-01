@@ -10,13 +10,12 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
-using TelegramPanel.Application.DTOs.Ui; // <-- ADD THIS for our new DTO
+using TelegramPanel.Application.DTO.Ui;
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Formatters;
-using TelegramPanel.Infrastructure.Helper;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
 
-namespace TelegramPanel.Application.CommandHandlers.Features
+namespace TelegramPanel.Application.CommandHandlers.Features.Educational
 {
     /// <summary>
     /// A high-performance, dynamic, and secure handler for serving multi-level, multi-language
@@ -51,21 +50,93 @@ namespace TelegramPanel.Application.CommandHandlers.Features
     { "advanced_strategies", "🚀" },
     { "trader_psychology", "🧠" },
 
-    // --- Language Flag Emojis ---
+    // --- Language Flag Emojis (Tiered) ---
     // Tier 1
     { "en", "🇬🇧" }, { "es", "🇪🇸" }, { "ru", "🇷🇺" }, { "de", "🇩🇪" }, { "fr", "🇫🇷" }, { "zh", "🇨🇳" },
     // Tier 2
     { "pt", "🇵🇹" }, { "ar", "🇸🇦" }, { "ja", "🇯🇵" }, { "ko", "🇰🇷" }, { "hi", "🇮🇳" }, { "tr", "🇹🇷" }, { "fa", "🇮🇷" },
     // Tier 3
     { "it", "🇮🇹" }, { "nl", "🇳🇱" }, { "pl", "🇵🇱" }, { "id", "🇮🇩" }, { "vi", "🇻🇳" },
-    // Tier 4 (From your previous list)
+    // Tier 4
     { "sv", "🇸🇪" }, { "no", "🇳🇴" }, { "da", "🇩🇰" }, { "fi", "🇫🇮" }, { "uk", "🇺🇦" }, { "bg", "🇧🇬" },
     { "ms", "🇲🇾" }, { "th", "🇹🇭" }, { "he", "🇮🇱" }, { "el", "🇬🇷" }, { "ro", "🇷🇴" }, { "hu", "🇭🇺" },
     { "cs", "🇨🇿" }, { "sk", "🇸🇰" }, { "sl", "🇸🇮" }, { "hr", "🇭🇷" }, { "sr", "🇷🇸" }, { "lt", "🇱🇹" },
     { "lv", "🇱🇻" }, { "et", "🇪🇪" }, { "is", "🇮🇸" },
+
+    // --- Comprehensive List of Languages (A-Z by Code) ---
+    { "af", "🇿🇦" }, // Afrikaans
+    { "am", "🇪🇹" }, // Amharic
+    { "sq", "🇦🇱" }, // Albanian
+    { "hy", "🇦🇲" }, // Armenian
+    { "az", "🇦🇿" }, // Azerbaijani
+    { "eu", "🇪🇸" }, // Basque
+    { "be", "🇧🇾" }, // Belarusian
+    { "bn", "🇧🇩" }, // Bengali
+    { "bs", "🇧🇦" }, // Bosnian
+    { "ca", "🇪🇸" }, // Catalan
+    { "ceb", "🇵🇭" },// Cebuano
+    { "ny", "🇲🇼" }, // Chichewa
+    { "co", "🇫🇷" }, // Corsican
+    { "eo", "🏳️" }, // Esperanto
+    { "fil", "🇵🇭" },// Filipino
+    { "fy", "🇳🇱" }, // Frisian
+    { "gl", "🇪🇸" }, // Galician
+    { "ka", "🇬🇪" }, // Georgian
+    { "gu", "🇮🇳" }, // Gujarati
+    { "ht", "🇭🇹" }, // Haitian Creole
+    { "ha", "🇳🇬" }, // Hausa
+    { "haw", "🇺🇸" },// Hawaiian
+    { "hmn", "🇨🇳" },// Hmong
+    { "ig", "🇳🇬" }, // Igbo
+    { "ga", "🇮🇪" }, // Irish
+    { "jv", "🇮🇩" }, // Javanese
+    { "kn", "🇮🇳" }, // Kannada
+    { "kk", "🇰🇿" }, // Kazakh
+    { "km", "🇰🇭" }, // Khmer
+    { "rw", "🇷🇼" }, // Kinyarwanda
+    { "ku", "🇮🇶" }, // Kurdish (Kurmanji)
+    { "ky", "🇰🇬" }, // Kyrgyz
+    { "lo", "🇱🇦" }, // Lao
+    { "la", "🇻🇦" }, // Latin
+    { "lb", "🇱🇺" }, // Luxembourgish
+    { "mk", "🇲🇰" }, // Macedonian
+    { "mg", "🇲🇬" }, // Malagasy
+    { "ml", "🇮🇳" }, // Malayalam
+    { "mt", "🇲🇹" }, // Maltese
+    { "mi", "🇳🇿" }, // Maori
+    { "mr", "🇮🇳" }, // Marathi
+    { "mn", "🇲🇳" }, // Mongolian
+    { "my", "🇲🇲" }, // Myanmar (Burmese)
+    { "ne", "🇳🇵" }, // Nepali
+    { "or", "🇮🇳" }, // Odia (Oriya)
+    { "ps", "🇦🇫" }, // Pashto
+    { "pa", "🇮🇳" }, // Punjabi
+    { "sm", "🇼🇸" }, // Samoan
+    { "gd", "🇬🇧" }, // Scots Gaelic
+    { "st", "🇱🇸" }, // Sesotho
+    { "sn", "🇿🇼" }, // Shona
+    { "sd", "🇵🇰" }, // Sindhi
+    { "si", "🇱🇰" }, // Sinhala
+    { "so", "🇸🇴" }, // Somali
+    { "su", "🇮🇩" }, // Sundanese
+    { "sw", "🇹🇿" }, // Swahili
+    { "tg", "🇹🇯" }, // Tajik
+    { "ta", "🇱🇰" }, // Tamil
+    { "tt", "🇷🇺" }, // Tatar
+    { "te", "🇮🇳" }, // Telugu
+    { "tk", "🇹🇲" }, // Turkmen
+    { "ug", "🇨🇳" }, // Uyghur
+    { "ur", "🇵🇰" }, // Urdu
+    { "uz", "🇺🇿" }, // Uzbek
+    { "cy", "🇬🇧" }, // Welsh
+    { "xh", "🇿🇦" }, // Xhosa
+    { "yi", "🏳️" }, // Yiddish
+    { "yo", "🇳🇬" }, // Yoruba
+    { "zu", "🇿🇦" }, // Zulu
 };
-        private static readonly List<(string Code, string Name)> PrioritizedLanguages = new()
-{
+
+        private static readonly List<(string Code, string Name)> PrioritizedLanguages =
+[
     // Tier 1: Major Global Reach
     ("en", "🇬🇧 English"),
     ("es", "🇪🇸 Español (Spanish)"),
@@ -104,8 +175,86 @@ namespace TelegramPanel.Application.CommandHandlers.Features
     ("el", "🇬🇷 Ελληνικά (Greek)"),
     ("he", "🇮🇱 עברית (Hebrew)"),
 
-    // And more...
-};
+    // --- Comprehensive List of Additional Languages (A-Z by English Name) ---
+    ("af", "🇿🇦 Afrikaans"),
+    ("sq", "🇦🇱 Shqip (Albanian)"),
+    ("am", "🇪🇹 አማርኛ (Amharic)"),
+    ("hy", "🇦🇲 Հայերեն (Armenian)"),
+    ("az", "🇦🇿 Azərbaycan dili (Azerbaijani)"),
+    ("eu", "🇪🇸 Euskara (Basque)"),
+    ("be", "🇧🇾 Беларуская (Belarusian)"),
+    ("bn", "🇧🇩 বাংলা (Bengali)"),
+    ("bs", "🇧🇦 Bosanski (Bosnian)"),
+    ("bg", "🇧🇬 Български (Bulgarian)"),
+    ("ca", "🇪🇸 Català (Catalan)"),
+    ("ceb", "🇵🇭 Cebuano"),
+    ("ny", "🇲🇼 Chichewa"),
+    ("co", "🇫🇷 Corsu (Corsican)"),
+    ("hr", "🇭🇷 Hrvatski (Croatian)"),
+    ("eo", "🏳️ Esperanto"),
+    ("et", "🇪🇪 Eesti (Estonian)"),
+    ("fil", "🇵🇭 Filipino"),
+    ("fy", "🇳🇱 Frysk (Frisian)"),
+    ("gl", "🇪🇸 Galego (Galician)"),
+    ("ka", "🇬🇪 ქართული (Georgian)"),
+    ("gu", "🇮🇳 ગુજરાતી (Gujarati)"),
+    ("ht", "🇭🇹 Kreyòl ayisyen (Haitian Creole)"),
+    ("ha", "🇳🇬 Hausa"),
+    ("haw", "🇺🇸 ʻŌlelo Hawaiʻi (Hawaiian)"),
+    ("hmn", "🇨🇳 Hmong"),
+    ("ig", "🇳🇬 Igbo"),
+    ("is", "🇮🇸 Íslenska (Icelandic)"),
+    ("ga", "🇮🇪 Gaeilge (Irish)"),
+    ("jv", "🇮🇩 Basa Jawa (Javanese)"),
+    ("kn", "🇮🇳 ಕನ್ನಡ (Kannada)"),
+    ("kk", "🇰🇿 Қазақ тілі (Kazakh)"),
+    ("km", "🇰🇭 ខ្មែរ (Khmer)"),
+    ("rw", "🇷🇼 Kinyarwanda"),
+    ("ku", "🇮🇶 Kurdî (Kurmanji)"),
+    ("ky", "🇰🇬 Кыргызча (Kyrgyz)"),
+    ("lo", "🇱🇦 ພາສາລາວ (Lao)"),
+    ("la", "🇻🇦 Latina (Latin)"),
+    ("lv", "🇱🇻 Latviešu (Latvian)"),
+    ("lt", "🇱🇹 Lietuvių (Lithuanian)"),
+    ("lb", "🇱🇺 Lëtzebuergesch (Luxembourgish)"),
+    ("mk", "🇲🇰 Македонски (Macedonian)"),
+    ("mg", "🇲🇬 Malagasy"),
+    ("ml", "🇮🇳 മലയാളം (Malayalam)"),
+    ("mt", "🇲🇹 Malti (Maltese)"),
+    ("mi", "🇳🇿 Te Reo Māori (Maori)"),
+    ("mr", "🇮🇳 मराठी (Marathi)"),
+    ("mn", "🇲🇳 Монгол (Mongolian)"),
+    ("my", "🇲🇲 မြန်မာ (Myanmar/Burmese)"),
+    ("ne", "🇳🇵 नेपाली (Nepali)"),
+    ("or", "🇮🇳 ଓଡିଆ (Odia/Oriya)"),
+    ("ps", "🇦🇫 پښتو (Pashto)"),
+    ("pa", "🇮🇳 ਪੰਜਾਬੀ (Punjabi)"),
+    ("sm", "🇼🇸 Gagana fa'a Sāmoa (Samoan)"),
+    ("gd", "🇬🇧 Gàidhlig (Scots Gaelic)"),
+    ("sr", "🇷🇸 Српски (Serbian)"),
+    ("st", "🇱🇸 Sesotho"),
+    ("sn", "🇿🇼 Shona"),
+    ("sd", "🇵🇰 سنڌي (Sindhi)"),
+    ("si", "🇱🇰 සිංහල (Sinhala)"),
+    ("sk", "🇸🇰 Slovenčina (Slovak)"),
+    ("sl", "🇸🇮 Slovenščina (Slovenian)"),
+    ("so", "🇸🇴 Soomaali (Somali)"),
+    ("su", "🇮🇩 Basa Sunda (Sundanese)"),
+    ("sw", "🇹🇿 Kiswahili (Swahili)"),
+    ("tg", "🇹🇯 Тоҷикӣ (Tajik)"),
+    ("ta", "🇱🇰 தமிழ் (Tamil)"),
+    ("tt", "🇷🇺 Татар (Tatar)"),
+    ("te", "🇮🇳 తెలుగు (Telugu)"),
+    ("tk", "🇹🇲 Türkmençe (Turkmen)"),
+    ("ug", "🇨🇳 ئۇيغۇرچە (Uyghur)"),
+    ("ur", "🇵🇰 اردو (Urdu)"),
+    ("uz", "🇺🇿 O‘zbekcha (Uzbek)"),
+    ("cy", "🇬🇧 Cymraeg (Welsh)"),
+    ("xh", "🇿🇦 isiXhosa (Xhosa)"),
+    ("yi", "🏳️ ייִדיש (Yiddish)"),
+    ("yo", "🇳🇬 Yorùbá (Yoruba)"),
+    ("zu", "🇿🇦 isiZulu (Zulu)"),
+];
         #endregion
 
         public EducationalContentHandler(
@@ -134,15 +283,15 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             _logger.LogInformation("Verifying educational content directory structure at '{BasePath}'...", BaseLearningPath);
             try
             {
-                var contentCategories = new[] { "podcasts", "risk_management", "video_tutorials" };
-                var languagesToSupport = PrioritizedLanguages.Select(lang => lang.Code);
+                string[] contentCategories = new[] { "podcasts", "risk_management", "video_tutorials" };
+                IEnumerable<string> languagesToSupport = PrioritizedLanguages.Select(lang => lang.Code);
 
-                foreach (var category in contentCategories)
+                foreach (string? category in contentCategories)
                 {
-                    foreach (var langCode in languagesToSupport)
+                    foreach (string? langCode in languagesToSupport)
                     {
                         // Directory.CreateDirectory is smart: it does nothing if the path already exists.
-                        Directory.CreateDirectory(Path.Combine(BaseLearningPath, category, langCode));
+                        _ = Directory.CreateDirectory(Path.Combine(BaseLearningPath, category, langCode));
                     }
                 }
                 _logger.LogInformation("Content directory structure verified successfully.");
@@ -159,8 +308,10 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         #region Core Handler Logic
 
 
-        public bool CanHandle(Update update) =>
-            update.Type == UpdateType.CallbackQuery && update.CallbackQuery?.Data?.StartsWith(HandlerPrefix) == true;
+        public bool CanHandle(Update update)
+        {
+            return update.Type == UpdateType.CallbackQuery && update.CallbackQuery?.Data?.StartsWith(HandlerPrefix) == true;
+        }
 
         /// <summary>
         /// The main entry point for all callbacks. It acts as a secure, high-level router,
@@ -168,14 +319,14 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         /// </summary>
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-            var callbackQuery = update.CallbackQuery!;
+            CallbackQuery callbackQuery = update.CallbackQuery!;
             await _messageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
 
-            var chatId = callbackQuery.Message!.Chat.Id;
-            var messageId = callbackQuery.Message.MessageId;
-            var data = callbackQuery.Data!;
+            long chatId = callbackQuery.Message!.Chat.Id;
+            int messageId = callbackQuery.Message.MessageId;
+            string data = callbackQuery.Data!;
 
-            using var logScope = _logger.BeginScope("EduHandler: User={UserId}, CbData={Data}", callbackQuery.From.Id, data);
+            using IDisposable? logScope = _logger.BeginScope("EduHandler: User={UserId}, CbData={Data}", callbackQuery.From.Id, data);
 
             // --- FIX: Corrected routing logic to prevent fall-through ---
             if (data.StartsWith(SendFilePrefix))
@@ -205,13 +356,13 @@ namespace TelegramPanel.Application.CommandHandlers.Features
 
             if (callbackData.StartsWith(PagePrefix))
             {
-                var parts = callbackData.Substring(PagePrefix.Length).Split(new[] { "_page_" }, StringSplitOptions.None);
+                string[] parts = callbackData[PagePrefix.Length..].Split(new[] { "_page_" }, StringSplitOptions.None);
                 encodedPath = parts[0];
                 page = int.Parse(parts[1]);
             }
             else
             {
-                encodedPath = callbackData.Substring(NavPrefix.Length);
+                encodedPath = callbackData[NavPrefix.Length..];
             }
 
             string relativePath = DecodeUrlSafeBase64(encodedPath);
@@ -223,7 +374,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 return;
             }
 
-            var absolutePath = Path.GetFullPath(Path.Combine(BaseLearningPath, relativePath));
+            string absolutePath = Path.GetFullPath(Path.Combine(BaseLearningPath, relativePath));
             if (!absolutePath.StartsWith(BaseLearningPath, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning("Path validation failed. Attempt to access outside base directory: '{Path}'", absolutePath);
@@ -246,9 +397,9 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         /// </summary>
         private async Task ProcessFileRequestAsync(long chatId, string callbackData, CancellationToken ct)
         {
-            var fileHash = callbackData.Substring(SendFilePrefix.Length);
+            string fileHash = callbackData[SendFilePrefix.Length..];
 
-            if (!_filePathCache.TryGetValue(fileHash, out var absolutePath) || string.IsNullOrEmpty(absolutePath))
+            if (!_filePathCache.TryGetValue(fileHash, out string? absolutePath) || string.IsNullOrEmpty(absolutePath))
             {
                 _logger.LogWarning("File hash '{Hash}' not found in cache. It may have expired.", fileHash);
                 await _messageSender.SendTextMessageAsync(chatId, "This link has expired. Please navigate the menu again.", cancellationToken: ct);
@@ -276,10 +427,10 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         /// </summary>
         private async Task ShowFolderContentsAsync(long chatId, int messageId, string relativePath, int page, CancellationToken ct)
         {
-            var encodedPath = EncodeUrlSafeBase64(relativePath); // Encode path for cache key
-            var cacheKey = $"edu_menu_{encodedPath}_p{page}";
+            string encodedPath = EncodeUrlSafeBase64(relativePath); // Encode path for cache key
+            string cacheKey = $"edu_menu_{encodedPath}_p{page}";
 
-            if (!_menuCache.TryGetValue(cacheKey, out var cachedMenu))
+            if (!_menuCache.TryGetValue(cacheKey, out CachedMenuDto? cachedMenu))
             {
                 _logger.LogInformation("CACHE MISS: Generating menu for path '{Path}', page {Page}.", relativePath, page);
                 cachedMenu = GenerateFolderMenuDto(relativePath, page);
@@ -300,10 +451,10 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         /// </summary>
         private CachedMenuDto GenerateFolderMenuDto(string relativePath, int page)
         {
-            var absolutePath = Path.Combine(BaseLearningPath, relativePath);
-            var title = BuildBreadcrumbTitle(relativePath);
+            string absolutePath = Path.Combine(BaseLearningPath, relativePath);
+            string title = BuildBreadcrumbTitle(relativePath);
 
-            var allItems = new List<InlineKeyboardButton>();
+            List<InlineKeyboardButton> allItems = new();
 
             try
             {
@@ -325,30 +476,48 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             }
 
             // --- Pagination Logic ---
-            var totalItems = allItems.Count;
-            var totalPages = (int)Math.Ceiling(totalItems / (double)PageSize);
+            int totalItems = allItems.Count;
+            int totalPages = (int)Math.Ceiling(totalItems / (double)PageSize);
             page = Math.Clamp(page, 1, totalPages);
-            var itemsForPage = allItems.Skip((page - 1) * PageSize).Take(PageSize).ToList();
+            List<InlineKeyboardButton> itemsForPage = allItems.Skip((page - 1) * PageSize).Take(PageSize).ToList();
 
             // --- Text Formatting ---
-            var finalTitle = totalPages > 1 ? $"{title} (Page {page}/{totalPages})" : title;
-            var text = $"{TelegramMessageFormatter.Bold(finalTitle)}\n\n{TelegramMessageFormatter.Italic("Please choose an option below:")}";
-            if (totalItems == 0) text += "\n\n_This section is currently empty._";
+            string finalTitle = totalPages > 1 ? $"{title} (Page {page}/{totalPages})" : title;
+            string text = $"{TelegramMessageFormatter.Bold(finalTitle)}\n\n{TelegramMessageFormatter.Italic("Please choose an option below:")}";
+            if (totalItems == 0)
+            {
+                text += "\n\n_This section is currently empty._";
+            }
 
             // --- Keyboard Assembly ---
-            var keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
+            List<List<InlineKeyboardButton>> keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
 
-            var navButtons = new List<InlineKeyboardButton>();
-            var encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
-            if (page > 1) navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{encodedCurrentPath}_page_{page - 1}"));
-            if (page < totalPages) navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{encodedCurrentPath}_page_{page + 1}"));
-            if (navButtons.Any()) keyboardRows.Add(navButtons);
+            List<InlineKeyboardButton> navButtons = new();
+            string encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
+            if (page > 1)
+            {
+                navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{encodedCurrentPath}_page_{page - 1}"));
+            }
 
-            var parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
+            if (page < totalPages)
+            {
+                navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{encodedCurrentPath}_page_{page + 1}"));
+            }
+
+            if (navButtons.Any())
+            {
+                keyboardRows.Add(navButtons);
+            }
+
+            string? parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
             if (parentRelativePath != null)
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + EncodeUrlSafeBase64(parentRelativePath)) });
+            {
+                keyboardRows.Add([InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + EncodeUrlSafeBase64(parentRelativePath))]);
+            }
             else
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu") });
+            {
+                keyboardRows.Add([InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu")]);
+            }
 
             return new CachedMenuDto(text, new InlineKeyboardMarkup(keyboardRows));
         }
@@ -359,10 +528,10 @@ namespace TelegramPanel.Application.CommandHandlers.Features
         /// <param name="absolutePath"></param>
         /// <param name="ct"></param>
         /// <returns></returns>
-        [AutomaticRetry (Attempts = 3)]
+        [AutomaticRetry(Attempts = 3)]
         private async Task SendFileAsync(long chatId, string absolutePath, CancellationToken ct)
         {
-            var fileName = Path.GetFileName(absolutePath);
+            string fileName = Path.GetFileName(absolutePath);
             _logger.LogInformation("User requested file: {FilePath}", absolutePath);
 
             // --- STEP 1: Send Chat Action (Typing...) ---
@@ -377,24 +546,20 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 // We can often continue even if this fails.
             }
 
-            // --- STEP 2: Open File Stream and Prepare InputFile ---
-            FileStream? fileStream = null;
-            InputFile? inputFile = null;
-            string? caption = null;
-            string? extension = null;
             Task sendTask;
 
             try
             {
-                fileStream = new FileStream(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                inputFile = InputFile.FromStream(fileStream, fileName);
+                // --- STEP 2: Open File Stream and Prepare InputFile ---
+                FileStream? fileStream = new FileStream(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                InputFile? inputFile = InputFile.FromStream(fileStream, fileName);
 
                 // --- FIX: Truncate caption to prevent exceeding Telegram's limits ---
                 // Telegram has a caption limit of 1024 characters.
-                var formattedFileName = GetFormattedName(fileName); // Cleaned up filename, e.g., "Trading Basics"
+                string formattedFileName = GetFormattedName(fileName); // Cleaned up filename, e.g., "Trading Basics"
 
                 // Create the base caption.
-                var captionBuilder = new StringBuilder($"{formattedFileName}\n\nShared by @trade_ai_helper_bot");
+                StringBuilder captionBuilder = new($"{formattedFileName}\n\nShared by @trade_ai_helper_bot");
 
                 // Append the summary if available and if there's space.
                 // We'll need to fetch the summary here if it's not directly in the filename.
@@ -405,14 +570,14 @@ namespace TelegramPanel.Application.CommandHandlers.Features
                 // Truncate the final caption to be safe, leaving room for the bot signature and ensuring it's not too long.
                 // We'll leave some buffer for the bot signature and potential future additions.
                 const int captionMaxLength = 1000; // Slightly less than Telegram's 1024 limit for safety.
-                caption = captionBuilder.ToString();
+                string? caption = captionBuilder.ToString();
                 if (caption.Length > captionMaxLength)
                 {
-                    caption = caption.Substring(0, captionMaxLength - 3) + "..."; // Truncate and add ellipsis
+                    caption = caption[..(captionMaxLength - 3)] + "..."; // Truncate and add ellipsis
                 }
                 // --- END OF CAPTION FIX ---
 
-                extension = Path.GetExtension(fileName).ToLowerInvariant();
+                string? extension = Path.GetExtension(fileName).ToLowerInvariant();
 
                 if (extension is ".mp3" or ".wav")
                 {
@@ -490,50 +655,75 @@ namespace TelegramPanel.Application.CommandHandlers.Features
 
         private InlineKeyboardButton BuildDirectoryButton(string relativePath, string dirName)
         {
-            var newRelativePath = Path.Combine(relativePath, dirName).Replace('\\', '/');
-            var encodedNewPath = EncodeUrlSafeBase64(newRelativePath);
+            string newRelativePath = Path.Combine(relativePath, dirName).Replace('\\', '/');
+            string encodedNewPath = EncodeUrlSafeBase64(newRelativePath);
 
             string buttonText = PrioritizedLanguages.FirstOrDefault(l => l.Code == dirName).Name ?? $"{GetEmojiForName(dirName)} {GetFormattedName(dirName)}";
             return InlineKeyboardButton.WithCallbackData(buttonText, NavPrefix + encodedNewPath);
         }
         private InlineKeyboardButton BuildFileButton(string absoluteDirPath, string fileName)
         {
-            var fullPath = Path.Combine(absoluteDirPath, fileName);
-            var fileHash = GenerateSha256Hash(fullPath);
+            string fullPath = Path.Combine(absoluteDirPath, fileName);
+            string fileHash = GenerateSha256Hash(fullPath);
             _filePathCache.Set(fileHash, fullPath, FilePathCacheDuration);
             return InlineKeyboardButton.WithCallbackData($"▶️ {GetFormattedName(fileName)}", SendFilePrefix + fileHash);
         }
 
         private List<List<InlineKeyboardButton>> BuildPaginatedKeyboard(List<InlineKeyboardButton> itemsForPage, string relativePath, int page, int totalPages)
         {
-            var keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
+            List<List<InlineKeyboardButton>> keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
 
-            var navButtons = new List<InlineKeyboardButton>();
-            var encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
-            if (page > 1) navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{encodedCurrentPath}_page_{page - 1}"));
-            if (page < totalPages) navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{encodedCurrentPath}_page_{page + 1}"));
-            if (navButtons.Any()) keyboardRows.Add(navButtons);
+            List<InlineKeyboardButton> navButtons = new();
+            string encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
+            if (page > 1)
+            {
+                navButtons.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{PagePrefix}{encodedCurrentPath}_page_{page - 1}"));
+            }
 
-            var parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
+            if (page < totalPages)
+            {
+                navButtons.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{PagePrefix}{encodedCurrentPath}_page_{page + 1}"));
+            }
+
+            if (navButtons.Any())
+            {
+                keyboardRows.Add(navButtons);
+            }
+
+            string? parentRelativePath = Path.GetDirectoryName(relativePath)?.Replace('\\', '/');
             if (parentRelativePath != null)
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + EncodeUrlSafeBase64(parentRelativePath)) });
+            {
+                keyboardRows.Add([InlineKeyboardButton.WithCallbackData("⬆️ Up One Level", NavPrefix + EncodeUrlSafeBase64(parentRelativePath))]);
+            }
             else
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu") });
+            {
+                keyboardRows.Add([InlineKeyboardButton.WithCallbackData("↩️ Main Menu", "show_main_menu")]);
+            }
 
             return keyboardRows;
         }
 
         private string BuildBreadcrumbTitle(string relativePath)
         {
-            if (string.IsNullOrEmpty(relativePath)) return "📚 Learning Center";
+            if (string.IsNullOrEmpty(relativePath))
+            {
+                return "📚 Learning Center";
+            }
 
-            var pathParts = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            IEnumerable<string> pathParts = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                 .Select(part => $"{GetEmojiForName(part)} {GetFormattedName(part)}");
             return string.Join(" > ", pathParts);
         }
 
-        private static string GenerateSha256Hash(string input) => Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(input))).Replace("+", "-").Replace("/", "_").TrimEnd('=');
-        private static string EncodeUrlSafeBase64(string plainText) => Convert.ToBase64String(Encoding.UTF8.GetBytes(plainText)).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+        private static string GenerateSha256Hash(string input)
+        {
+            return Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(input))).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+        }
+
+        private static string EncodeUrlSafeBase64(string plainText)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(plainText)).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+        }
 
         // In TelegramPanel/Application/CommandHandlers/Features/EducationalContentHandler.cs
         // Inside the private static helpers section
@@ -552,11 +742,18 @@ namespace TelegramPanel.Application.CommandHandlers.Features
             }
 
             // 3. Decode the now-valid Base64 string.
-            var decodedBytes = Convert.FromBase64String(base64Url);
+            byte[] decodedBytes = Convert.FromBase64String(base64Url);
             return Encoding.UTF8.GetString(decodedBytes);
         }
-        private static string GetFormattedName(string name) => string.IsNullOrEmpty(name) ? "Back" : Path.GetFileNameWithoutExtension(name).Replace("_", " ").Replace("-", " ");
-        private static string GetEmojiForName(string name) => FolderEmojiMap.TryGetValue(name.ToLowerInvariant(), out var emoji) ? emoji : "📁";
+        private static string GetFormattedName(string name)
+        {
+            return string.IsNullOrEmpty(name) ? "Back" : Path.GetFileNameWithoutExtension(name).Replace("_", " ").Replace("-", " ");
+        }
+
+        private static string GetEmojiForName(string name)
+        {
+            return FolderEmojiMap.TryGetValue(name.ToLowerInvariant(), out string? emoji) ? emoji : "📁";
+        }
 
         #endregion
     }

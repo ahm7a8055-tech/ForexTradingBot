@@ -5,8 +5,9 @@ using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using TelegramPanel.Application.Interfaces;
 
-namespace Infrastructure.Services
+namespace TelegramPanel.Infrastructure.Services
 {
     public class CloudflareRadarService : ICloudflareRadarService
     {
@@ -26,27 +27,29 @@ namespace Infrastructure.Services
         {
             _logger.LogInformation("Fetching ULTIMATE Cloudflare Radar report for country: {CountryCode}", countryCode);
             if (string.IsNullOrWhiteSpace(countryCode))
+            {
                 return Result<CloudflareCountryReportDto>.Failure("Country code cannot be empty.");
+            }
 
             try
             {
-                var dateRange = "7d";
-                var countryCodeUpper = countryCode.ToUpper();
+                string dateRange = "7d";
+                string countryCodeUpper = countryCode.ToUpper();
 
                 // --- EXPANDED API CALLS FOR MAX DETAIL ---
-                var locationTask = GetFromApiAsync<LocationWrapper>($"/radar/entities/locations/{countryCodeUpper}", cancellationToken);
-                var iqiTask = GetFromApiAsync<IqiSummaryPayloadWrapper>($"/radar/quality/iqi/summary?location={countryCodeUpper}&dateRange={dateRange}&metric=latency", cancellationToken);
-                var l7AttacksTask = GetFromApiAsync<TopAttacksWrapper>($"/radar/attacks/layer7/top/locations/origin?location={countryCodeUpper}&dateRange={dateRange}&limit=1", cancellationToken);
-                var httpProtocolTask = GetFromApiAsync<HttpProtocolApiResultPayload>($"/radar/http/summary/http_version?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var deviceTypeTask = GetFromApiAsync<DeviceTypeApiResultPayload>($"/radar/http/summary/device_type?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var botHumanTask = GetFromApiAsync<BotTrafficApiResultPayload>($"/radar/http/summary/bot_class?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var outagesTask = GetFromApiAsync<OutagesWrapper>($"/radar/annotations/outages?limit=5&dateRange={dateRange}&location={countryCodeUpper}", cancellationToken);
-                var mitigationTask = GetFromApiAsync<AttackMitigationPayload>($"/radar/attacks/layer7/summary/mitigation_product?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var tlsVersionTask = GetFromApiAsync<TlsVersionPayload>($"/radar/http/summary/tls_version?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var ipVersionTask = GetFromApiAsync<IpVersionPayload>($"/radar/http/summary/ip_version?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var postQuantumTask = GetFromApiAsync<PostQuantumPayload>($"/radar/http/summary/post_quantum?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var osTask = GetFromApiAsync<OperatingSystemPayload>($"/radar/http/summary/os?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
-                var l3AttacksTask = GetFromApiAsync<L3AttackProtocolPayload>($"/radar/attacks/layer3/summary/protocol?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(LocationWrapper? result, Meta? meta)> locationTask = GetFromApiAsync<LocationWrapper>($"/radar/entities/locations/{countryCodeUpper}", cancellationToken);
+                Task<(IqiSummaryPayloadWrapper? result, Meta? meta)> iqiTask = GetFromApiAsync<IqiSummaryPayloadWrapper>($"/radar/quality/iqi/summary?location={countryCodeUpper}&dateRange={dateRange}&metric=latency", cancellationToken);
+                Task<(TopAttacksWrapper? result, Meta? meta)> l7AttacksTask = GetFromApiAsync<TopAttacksWrapper>($"/radar/attacks/layer7/top/locations/origin?location={countryCodeUpper}&dateRange={dateRange}&limit=1", cancellationToken);
+                Task<(HttpProtocolApiResultPayload? result, Meta? meta)> httpProtocolTask = GetFromApiAsync<HttpProtocolApiResultPayload>($"/radar/http/summary/http_version?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(DeviceTypeApiResultPayload? result, Meta? meta)> deviceTypeTask = GetFromApiAsync<DeviceTypeApiResultPayload>($"/radar/http/summary/device_type?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(BotTrafficApiResultPayload? result, Meta? meta)> botHumanTask = GetFromApiAsync<BotTrafficApiResultPayload>($"/radar/http/summary/bot_class?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(OutagesWrapper? result, Meta? meta)> outagesTask = GetFromApiAsync<OutagesWrapper>($"/radar/annotations/outages?limit=5&dateRange={dateRange}&location={countryCodeUpper}", cancellationToken);
+                Task<(AttackMitigationPayload? result, Meta? meta)> mitigationTask = GetFromApiAsync<AttackMitigationPayload>($"/radar/attacks/layer7/summary/mitigation_product?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(TlsVersionPayload? result, Meta? meta)> tlsVersionTask = GetFromApiAsync<TlsVersionPayload>($"/radar/http/summary/tls_version?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(IpVersionPayload? result, Meta? meta)> ipVersionTask = GetFromApiAsync<IpVersionPayload>($"/radar/http/summary/ip_version?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(PostQuantumPayload? result, Meta? meta)> postQuantumTask = GetFromApiAsync<PostQuantumPayload>($"/radar/http/summary/post_quantum?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(OperatingSystemPayload? result, Meta? meta)> osTask = GetFromApiAsync<OperatingSystemPayload>($"/radar/http/summary/os?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
+                Task<(L3AttackProtocolPayload? result, Meta? meta)> l3AttacksTask = GetFromApiAsync<L3AttackProtocolPayload>($"/radar/attacks/layer3/summary/protocol?location={countryCodeUpper}&dateRange={dateRange}", cancellationToken);
 
 
                 await Task.WhenAll(
@@ -54,26 +57,26 @@ namespace Infrastructure.Services
                     outagesTask, mitigationTask, tlsVersionTask, ipVersionTask, postQuantumTask, osTask, l3AttacksTask
                 );
 
-                var (locationData, _) = locationTask.Result;
-                var (iqiData, _) = iqiTask.Result;
-                var (l7AttackData, _) = l7AttacksTask.Result;
-                var (httpProtocolData, httpMeta) = httpProtocolTask.Result;
-                var (deviceTypeData, _) = deviceTypeTask.Result;
-                var (botHumanData, _) = botHumanTask.Result;
-                var (outagesData, _) = outagesTask.Result;
-                var (mitigationData, _) = mitigationTask.Result;
-                var (tlsData, _) = tlsVersionTask.Result;
-                var (ipVersionData, _) = ipVersionTask.Result;
-                var (postQuantumData, _) = postQuantumTask.Result;
-                var (osData, _) = osTask.Result;
-                var (l3AttackData, _) = l3AttacksTask.Result;
+                (LocationWrapper locationData, _) = locationTask.Result;
+                (IqiSummaryPayloadWrapper iqiData, _) = iqiTask.Result;
+                (TopAttacksWrapper l7AttackData, _) = l7AttacksTask.Result;
+                (HttpProtocolApiResultPayload httpProtocolData, Meta httpMeta) = httpProtocolTask.Result;
+                (DeviceTypeApiResultPayload deviceTypeData, _) = deviceTypeTask.Result;
+                (BotTrafficApiResultPayload botHumanData, _) = botHumanTask.Result;
+                (OutagesWrapper outagesData, _) = outagesTask.Result;
+                (AttackMitigationPayload mitigationData, _) = mitigationTask.Result;
+                (TlsVersionPayload tlsData, _) = tlsVersionTask.Result;
+                (IpVersionPayload ipVersionData, _) = ipVersionTask.Result;
+                (PostQuantumPayload postQuantumData, _) = postQuantumTask.Result;
+                (OperatingSystemPayload osData, _) = osTask.Result;
+                (L3AttackProtocolPayload l3AttackData, _) = l3AttacksTask.Result;
 
                 // --- PARSE ALL THE DATA ---
-                var topL7Attack = l7AttackData?.Top0.FirstOrDefault();
-                double.TryParse(topL7Attack?.Value.TrimEnd('%'), CultureInfo.InvariantCulture, out var l7AttackPercentage);
-                var l7AttackDto = topL7Attack != null ? new AttackData(string.IsNullOrWhiteSpace(topL7Attack.ClientCountryName) ? "Unknown" : topL7Attack.ClientCountryName, l7AttackPercentage) : null;
+                AttackOriginPayload? topL7Attack = l7AttackData?.Top0.FirstOrDefault();
+                _ = double.TryParse(topL7Attack?.Value.TrimEnd('%'), CultureInfo.InvariantCulture, out double l7AttackPercentage);
+                AttackData? l7AttackDto = topL7Attack != null ? new AttackData(string.IsNullOrWhiteSpace(topL7Attack.ClientCountryName) ? "Unknown" : topL7Attack.ClientCountryName, l7AttackPercentage) : null;
 
-                var report = new CloudflareCountryReportDto
+                CloudflareCountryReportDto report = new()
                 {
                     CountryCode = countryCodeUpper,
                     CountryName = locationData?.Location?.Name ?? countryCodeUpper,
@@ -103,21 +106,24 @@ namespace Infrastructure.Services
             }
         }
 
-        private double ParseDouble(string value) => double.TryParse(value, CultureInfo.InvariantCulture, out var result) ? result : 0.0;
+        private double ParseDouble(string value)
+        {
+            return double.TryParse(value, CultureInfo.InvariantCulture, out double result) ? result : 0.0;
+        }
 
         // --- START OF FULLY IMPLEMENTED METHOD ---
         private async Task<(T? result, Meta? meta)> GetFromApiAsync<T>(string endpoint, CancellationToken cancellationToken) where T : class
         {
-            var client = _httpClientFactory.CreateClient("Cloudflare");
+            HttpClient client = _httpClientFactory.CreateClient("Cloudflare");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ApiToken);
-            var url = $"{BaseUrl}{endpoint}";
+            string url = $"{BaseUrl}{endpoint}";
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                using var response = await client.GetAsync(url, cancellationToken);
+                using HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
 
                 // Read the response content once to use for logging and deserialization
-                var rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                string rawJson = await response.Content.ReadAsStringAsync(cancellationToken);
 
                 // Log the raw JSON response at DEBUG level to see exactly what the API returns.
                 _logger.LogDebug("RAW RESPONSE from {Url}: {RawJson}", url, rawJson);
@@ -130,10 +136,10 @@ namespace Infrastructure.Services
                 }
 
                 // Deserialize from the string we already read
-                var apiResponse = JsonSerializer.Deserialize<ApiResponse<T>>(rawJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                ApiResponse<T>? apiResponse = JsonSerializer.Deserialize<ApiResponse<T>>(rawJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
                 if (apiResponse?.Success == false)
                 {
-                    var errorMessages = string.Join(", ", apiResponse.Errors?.Select(e => e.Message) ?? Enumerable.Empty<string>());
+                    string errorMessages = string.Join(", ", apiResponse.Errors?.Select(e => e.Message) ?? Enumerable.Empty<string>());
                     _logger.LogWarning("Cloudflare API call to {Url} was successful but returned an error status. Errors: {Errors}", url, errorMessages);
                     return (null, null);
                 }

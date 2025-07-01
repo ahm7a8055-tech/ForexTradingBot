@@ -2,11 +2,9 @@
 
 using Application.Interfaces; // For IAdminService
 using Hangfire; // For IRecurringJobManager
-using Hangfire.MemoryStorage.Database;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Shared.Maintenance; // For IHangfireCleaner
 using System.Text;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -14,7 +12,6 @@ using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Application.CommandHandlers.MainMenu;
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Formatters;
-using TelegramPanel.Infrastructure;
 using TelegramPanel.Infrastructure.Helper;
 using TelegramPanel.Settings;
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
@@ -32,7 +29,6 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private readonly ITelegramMessageSender _messageSender;
         private readonly IAdminService _adminService;
         private readonly IRecurringJobManager _recurringJobManager;
-        private readonly IHangfireCleaner _hangfireCleaner;
         private readonly IConfiguration _configuration;
         private readonly TelegramPanelSettings _settings;
 
@@ -48,7 +44,6 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             ITelegramMessageSender messageSender,
             IAdminService adminService,
             IRecurringJobManager recurringJobManager,
-            IHangfireCleaner hangfireCleaner,
             IConfiguration configuration,
             IOptions<TelegramPanelSettings> settingsOptions)
         {
@@ -56,7 +51,6 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             _messageSender = messageSender;
             _adminService = adminService;
             _recurringJobManager = recurringJobManager;
-            _hangfireCleaner = hangfireCleaner;
             _configuration = configuration;
             _settings = settingsOptions.Value;
         }
@@ -64,12 +58,16 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         public bool CanHandle(Update update)
         {
             if (update.Type != UpdateType.CallbackQuery || update.CallbackQuery?.Data == null || update.CallbackQuery.From == null)
+            {
                 return false;
+            }
 
             if (!_settings.AdminUserIds.Contains(update.CallbackQuery.From.Id))
+            {
                 return false;
+            }
 
-            var data = update.CallbackQuery.Data;
+            string data = update.CallbackQuery.Data;
             return data is AdminServerStatsCallback or // "admin_server_stats"
                    AdminManualRssFetchCallback or    // "admin_manual_rss"
                    PurgeHangfireCallback or          // "admin_purge_hangfire"
@@ -81,13 +79,13 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-            var callbackQuery = update.CallbackQuery!;
+            CallbackQuery callbackQuery = update.CallbackQuery!;
             await _messageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
 
             _logger.LogInformation("Admin {UserId} initiated action: {Action}", callbackQuery.From.Id, callbackQuery.Data);
 
             // --- MODIFIED: Add new case to switch ---
-            var handlerTask = callbackQuery.Data switch
+            Task handlerTask = callbackQuery.Data switch
             {
                 AdminServerStatsCallback => HandleServerStatsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                 AdminManualRssFetchCallback => HandleManualRssFetchAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
@@ -103,7 +101,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             // Give immediate feedback to the admin
             await _messageSender.EditMessageTextAsync(chatId, messageId, "🗜️ Finding and zipping log files, please wait...", cancellationToken: cancellationToken);
 
-            var (zipContents, fileName, errorMessage) = await _adminService.GetLogFilesAsZipAsync(cancellationToken);
+            (byte[] zipContents, string fileName, string errorMessage) = await _adminService.GetLogFilesAsZipAsync(cancellationToken);
 
             if (zipContents != null && zipContents.Length > 0)
             {
@@ -125,7 +123,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             else
             {
                 _logger.LogWarning("Failed to send log archive to admin: {Error}", errorMessage);
-                var errorText = $"❌ Could not retrieve logs. Reason: `{errorMessage}`";
+                string errorText = $"❌ Could not retrieve logs. Reason: `{errorMessage}`";
                 await _messageSender.EditMessageTextAsync(chatId, messageId, errorText, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
         }
@@ -136,7 +134,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
             (int userCount, int newsItemCount, List<(DateTime Date, int Count)> userJoinStats) = await _adminService.GetDashboardStatsWithUserJoinsAsync(cancellationToken);
 
-            var stats = new StringBuilder();
+            StringBuilder stats = new();
             _ = stats.AppendLine("\ud83d\udcca *Server & Bot Status*\n────────────────────────────");
             _ = stats.AppendLine($"👥 Users: {userCount:N0}");
             _ = stats.AppendLine($"📰 News: {newsItemCount:N0}");
@@ -151,18 +149,21 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 int barMax = 8;
                 int total = userJoinStats.Sum(x => x.Count);
                 double avg = userJoinStats.Count > 0 ? userJoinStats.Average(x => x.Count) : 0;
-                var today = DateTime.UtcNow.Date;
+                DateTime today = DateTime.UtcNow.Date;
                 _ = stats.AppendLine("👤 *User Joins (Last 7 Days)*\n");
                 _ = stats.AppendLine("` Date   | Users |`");
-                foreach (var (date, count) in userJoinStats)
+                foreach ((DateTime date, int count) in userJoinStats)
                 {
                     string bar;
                     if (max == 0)
+                    {
                         bar = "▏";
-                    else if (count == 0)
-                        bar = "▏";
+                    }
                     else
-                        bar = new string('█', Math.Max(1, (int)Math.Round((double)count / max * barMax)));
+                    {
+                        bar = count == 0 ? "▏" : new string('█', Math.Max(1, (int)Math.Round((double)count / max * barMax)));
+                    }
+
                     string dayMark = date == today ? "➡️" : "  ";
                     _ = stats.AppendLine($"{dayMark}{date:MM-dd} {bar.PadRight(barMax)} {count}");
                 }
@@ -177,7 +178,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private async Task HandleManualRssFetchAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Triggering RSS fetch job...", cancellationToken: cancellationToken);
-            var text = "✅ The `fetch-all-active-rss-feeds` job has been triggered. Check Hangfire dashboard for progress.";
+            string text = "✅ The `fetch-all-active-rss-feeds` job has been triggered. Check Hangfire dashboard for progress.";
             try
             {
                 _recurringJobManager.Trigger("fetch-all-active-rss-feeds");
@@ -196,8 +197,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Purging completed Hangfire jobs...", cancellationToken: cancellationToken);
             try
             {
-                var connectionString = _configuration.GetConnectionString("DefaultConnection")!;
-              // await _hangfireCleaner.PurgeCompletedAndFailedJobs();
+                string connectionString = _configuration.GetConnectionString("DefaultConnection")!;
+                // await _hangfireCleaner.PurgeCompletedAndFailedJobs();
                 _logger.LogInformation("Admin manually purged Hangfire jobs.");
                 await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ Hangfire 'Succeeded' and 'Failed' job lists have been cleared.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
@@ -210,8 +211,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         private Task ShowAdminPanelAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
-            var text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel") + "\n\nSelect an action:";
-            var keyboard = GetAdminPanelKeyboard();
+            string text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel") + "\n\nSelect an action:";
+            InlineKeyboardMarkup keyboard = GetAdminPanelKeyboard();
             return _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, keyboard, cancellationToken);
         }
 

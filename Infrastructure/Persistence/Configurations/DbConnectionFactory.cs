@@ -1,28 +1,26 @@
 ﻿// File: Infrastructure/Persistence/DbConnectionFactory.cs (Or wherever it is located)
-
 using Infrastructure.Data;
-using Microsoft.Extensions.Configuration;
+using Application.Common.Interfaces;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
 using Npgsql;
 using System.Data;
 using System.Data.SqlClient; // Assuming you might use SQL Server
-using Serilog;
-using Application.Common.Interfaces;
 
-namespace Infrastructure.Persistence
+namespace Infrastructure.Persistence.Configurations
 {
     public class DbConnectionFactory : IDbConnectionFactory
     {
-        private readonly DbProviderService _providerService;
+        private readonly Data.DbProviderService _providerService;
         private readonly string _connectionString;
 
-        public DbConnectionFactory(IConfiguration configuration, DbProviderService providerService)
+        public DbConnectionFactory(IConfiguration configuration, Data.DbProviderService providerService)
         {
             _providerService = providerService;
 
             // --- IMPROVED: Don't auto-default to SQLite, require proper configuration ---
             // Get the connection string from configuration.
-            var connectionStringFromConfig = configuration.GetConnectionString("DefaultConnection");
+            string? connectionStringFromConfig = configuration.GetConnectionString("DefaultConnection");
 
             // If it's missing, throw an exception instead of auto-defaulting
             if (string.IsNullOrEmpty(connectionStringFromConfig))

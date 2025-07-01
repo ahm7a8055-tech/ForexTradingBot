@@ -1,13 +1,10 @@
 ﻿#region Usings
 using Microsoft.Extensions.Logging;
-using System;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using TelegramPanel.Queue.Models;
+using TelegramPanel.Queue.Models.Interface;
 #endregion
 
-namespace TelegramPanel.Queue
+namespace TelegramPanel.Queue.Models
 {
     /// <summary>
     /// A thread-safe, console-focused implementation of IQueueMetricsService.
@@ -38,26 +35,41 @@ namespace TelegramPanel.Queue
         #region Public Methods (Interface Implementation)
 
         /// <inheritdoc/>
-        public void IncrementProcessed() => Interlocked.Increment(ref _processedCount);
+        public void IncrementProcessed()
+        {
+            _ = Interlocked.Increment(ref _processedCount);
+        }
 
         /// <inheritdoc/>
-        public void IncrementFailed() => Interlocked.Increment(ref _failedCount);
+        public void IncrementFailed()
+        {
+            _ = Interlocked.Increment(ref _failedCount);
+        }
 
         /// <inheritdoc/>
-        public void IncrementDeadLettered() => Interlocked.Increment(ref _deadLetteredCount);
+        public void IncrementDeadLettered()
+        {
+            _ = Interlocked.Increment(ref _deadLetteredCount);
+        }
 
         /// <inheritdoc/>
-        public void UpdateQueueDepth(long depth) => Interlocked.Exchange(ref _currentQueueDepth, depth);
+        public void UpdateQueueDepth(long depth)
+        {
+            _ = Interlocked.Exchange(ref _currentQueueDepth, depth);
+        }
 
         /// <inheritdoc/>
-        public void UpdateConcurrency(int current, int max) => _concurrency = (current, max);
+        public void UpdateConcurrency(int current, int max)
+        {
+            _concurrency = (current, max);
+        }
 
         /// <inheritdoc/>
         public async Task ReportMetricsAsync(CancellationToken stoppingToken)
         {
             // --- Calculate deltas for rate ---
-            var now = DateTime.UtcNow;
-            var elapsed = now - _lastReportTime;
+            DateTime now = DateTime.UtcNow;
+            TimeSpan elapsed = now - _lastReportTime;
 
             // Read current values atomically for a consistent snapshot
             long currentProcessed = Interlocked.Read(ref _processedCount);
@@ -71,23 +83,23 @@ namespace TelegramPanel.Queue
             double ratePerSecond = elapsed.TotalSeconds > 1 ? processedInPeriod / elapsed.TotalSeconds : 0;
 
             // --- Build the rich log message ---
-            var reportBuilder = new StringBuilder();
+            StringBuilder reportBuilder = new();
             const int labelWidth = 20;
 
-            reportBuilder.AppendLine();
-            reportBuilder.AppendLine("----- Queue Metrics Report -----");
-            reportBuilder.AppendLine($"{"Processing Rate:",-labelWidth}{ratePerSecond:F2} updates/sec");
-            reportBuilder.AppendLine($"{"Concurrency:",-labelWidth}{BuildConcurrencyBar(_concurrency.current, _concurrency.max)} {_concurrency.current}/{_concurrency.max}");
-            reportBuilder.AppendLine($"{"Queue Depth:",-labelWidth}{queueDepth:N0} items");
-            reportBuilder.AppendLine("--------------------------------");
-            reportBuilder.AppendLine($"{"Total Processed:",-labelWidth}{currentProcessed:N0}");
-            reportBuilder.AppendLine($"{"Total Failed:",-labelWidth}{currentFailed:N0}");
-            reportBuilder.AppendLine($"{"Total Dead-Lettered:",-labelWidth}{currentDeadLettered:N0}");
-            reportBuilder.Append("--------------------------------");
+            _ = reportBuilder.AppendLine();
+            _ = reportBuilder.AppendLine("----- Queue Metrics Report -----");
+            _ = reportBuilder.AppendLine($"{"Processing Rate:",-labelWidth}{ratePerSecond:F2} updates/sec");
+            _ = reportBuilder.AppendLine($"{"Concurrency:",-labelWidth}{BuildConcurrencyBar(_concurrency.current, _concurrency.max)} {_concurrency.current}/{_concurrency.max}");
+            _ = reportBuilder.AppendLine($"{"Queue Depth:",-labelWidth}{queueDepth:N0} items");
+            _ = reportBuilder.AppendLine("--------------------------------");
+            _ = reportBuilder.AppendLine($"{"Total Processed:",-labelWidth}{currentProcessed:N0}");
+            _ = reportBuilder.AppendLine($"{"Total Failed:",-labelWidth}{currentFailed:N0}");
+            _ = reportBuilder.AppendLine($"{"Total Dead-Lettered:",-labelWidth}{currentDeadLettered:N0}");
+            _ = reportBuilder.Append("--------------------------------");
 
             // --- Log with appropriate level ---
             // If there are any failures or the queue is backed up, log as a warning.
-            bool hasWarningState = currentFailed > 0 || currentDeadLettered > 0 || queueDepth > (_concurrency.max * 2);
+            bool hasWarningState = currentFailed > 0 || currentDeadLettered > 0 || queueDepth > _concurrency.max * 2;
             LogLevel level = hasWarningState ? LogLevel.Warning : LogLevel.Information;
 
             _logger.Log(level, reportBuilder.ToString());
@@ -110,7 +122,10 @@ namespace TelegramPanel.Queue
         /// </summary>
         private static string BuildConcurrencyBar(int current, int max)
         {
-            if (max <= 0) return "[ N/A ]";
+            if (max <= 0)
+            {
+                return "[ N/A ]";
+            }
 
             const int barWidth = 20;
             double percentage = Math.Clamp((double)current / max, 0.0, 1.0);

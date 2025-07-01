@@ -10,7 +10,7 @@ using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 
-namespace Infrastructure.Logging
+namespace TelegramPanel.Infrastructure.Logging
 {
     public class TelegramAdminSink : ILogEventSink
     {
@@ -30,8 +30,8 @@ namespace Infrastructure.Logging
             Console.WriteLine("--- ║   Ultimate V8.3 Telegram Sink Init  ║ ---");
             Console.WriteLine("--- ╚═════════════════════════════════════╝ ---");
             _botToken = _configuration["TelegramPanel:BotToken"] ?? string.Empty;
-            _adminChatIds = _configuration.GetSection("TelegramPanel:AdminUserIds").Get<List<long>>() ?? new List<long>();
-            var dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
+            _adminChatIds = _configuration.GetSection("TelegramPanel:AdminUserIds").Get<List<long>>() ?? [];
+            string? dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
 
             _messageBuilder = new TelegramMessageBuilder(dashboardUrl);
 
@@ -59,8 +59,16 @@ namespace Infrastructure.Logging
 
         public void Emit(LogEvent logEvent)
         {
-            if (string.IsNullOrEmpty(_botToken) || !_adminChatIds.Any()) return;
-            if (_sinkState.ShouldThrottle(logEvent, out int occurrenceCount)) return;
+            if (string.IsNullOrEmpty(_botToken) || !_adminChatIds.Any())
+            {
+                return;
+            }
+
+            if (_sinkState.ShouldThrottle(logEvent, out int occurrenceCount))
+            {
+                return;
+            }
+
             _ = Task.Run(() => SendNotificationAsync(logEvent, occurrenceCount));
         }
 
@@ -69,26 +77,26 @@ namespace Infrastructure.Logging
             Console.WriteLine($"[SINK V8.3 DEBUG] Entering SendNotificationAsync for event: {logEvent.MessageTemplate.Text}");
             try
             {
-                var botClient = new TelegramBotClient(_botToken);
-                var (message, keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
-                var exceptionFile = BuildExceptionAttachment(logEvent);
+                TelegramBotClient botClient = new(_botToken);
+                (string message, Telegram.Bot.Types.ReplyMarkups.ReplyMarkup keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
+                InputFileStream? exceptionFile = BuildExceptionAttachment(logEvent);
 
-                foreach (var adminId in _adminChatIds)
+                foreach (long adminId in _adminChatIds)
                 {
                     await _telegramRetryPolicy.ExecuteAsync(async () =>
                     {
-                        await botClient.SendMessage(chatId: adminId, text: message, parseMode: ParseMode.Markdown, replyMarkup: keyboard, cancellationToken: CancellationToken.None);
-                       // if (exceptionFile != null)
+                        _ = await botClient.SendMessage(chatId: adminId, text: message, parseMode: ParseMode.Markdown, replyMarkup: keyboard, cancellationToken: CancellationToken.None);
+                        // if (exceptionFile != null)
                         {
-                       //     exceptionFile.Content.Position = 0;
-                        //    await botClient.SendDocument(chatId: adminId, document: exceptionFile, caption: "🗂️ Ultimate debug attachment.", cancellationToken: CancellationToken.None);
+                            //     exceptionFile.Content.Position = 0;
+                            //    await botClient.SendDocument(chatId: adminId, document: exceptionFile, caption: "🗂️ Ultimate debug attachment.", cancellationToken: CancellationToken.None);
                         }
                     });
                 }
             }
             catch (Exception ex)
             {
-                var errorMessage = $"[SINK V8.3 CRITICAL FAILURE] {DateTime.UtcNow:O} | Could not send notification. Error: {ex}";
+                string errorMessage = $"[SINK V8.3 CRITICAL FAILURE] {DateTime.UtcNow:O} | Could not send notification. Error: {ex}";
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine(errorMessage);
                 Console.ResetColor();
@@ -97,38 +105,42 @@ namespace Infrastructure.Logging
         }
         private string BuildMetricsReport(string rawReportText)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine("<b>📊 Queue Metrics Report</b>");
-            sb.AppendLine(); // Add a blank line for spacing
+            StringBuilder sb = new();
+            _ = sb.AppendLine("<b>📊 Queue Metrics Report</b>");
+            _ = sb.AppendLine(); // Add a blank line for spacing
 
             // The <pre> HTML tag preserves whitespace and uses a monospaced font,
             // which is perfect for displaying reports exactly as they appear in the console.
-            sb.Append("<pre>");
-            sb.Append(System.Net.WebUtility.HtmlEncode(rawReportText)); // IMPORTANT: Encode to prevent any HTML conflicts
-            sb.Append("</pre>");
+            _ = sb.Append("<pre>");
+            _ = sb.Append(System.Net.WebUtility.HtmlEncode(rawReportText)); // IMPORTANT: Encode to prevent any HTML conflicts
+            _ = sb.Append("</pre>");
 
             return sb.ToString();
         }
 
         private InputFileStream? BuildExceptionAttachment(LogEvent logEvent)
         {
-            if (logEvent.Exception == null) return null;
-            var sb = new StringBuilder();
-            sb.AppendLine("--- 🗂️ ULTIMATE DEBUG ATTACHMENT ---");
-            sb.AppendLine($"Timestamp (UTC): {logEvent.Timestamp:O}");
-            sb.AppendLine(new string('=', 50));
-            sb.AppendLine("--- ALL LOG PROPERTIES ---");
-            foreach (var prop in logEvent.Properties)
+            if (logEvent.Exception == null)
+            {
+                return null;
+            }
+
+            StringBuilder sb = new();
+            _ = sb.AppendLine("--- 🗂️ ULTIMATE DEBUG ATTACHMENT ---");
+            _ = sb.AppendLine($"Timestamp (UTC): {logEvent.Timestamp:O}");
+            _ = sb.AppendLine(new string('=', 50));
+            _ = sb.AppendLine("--- ALL LOG PROPERTIES ---");
+            foreach (KeyValuePair<string, LogEventPropertyValue> prop in logEvent.Properties)
             {
                 // --- THIS IS THE FIX ---
                 // We remove the invalid "l" format specifier. The default ToString() is safe.
-                sb.AppendLine($"🔹 {prop.Key}: {prop.Value}");
+                _ = sb.AppendLine($"🔹 {prop.Key}: {prop.Value}");
             }
-            sb.AppendLine(new string('=', 50));
-            sb.AppendLine("--- FULL EXCEPTION STACK TRACE ---");
-            sb.AppendLine(logEvent.Exception.ToString());
+            _ = sb.AppendLine(new string('=', 50));
+            _ = sb.AppendLine("--- FULL EXCEPTION STACK TRACE ---");
+            _ = sb.AppendLine(logEvent.Exception.ToString());
 
-            var exceptionBytes = Encoding.UTF8.GetBytes(sb.ToString());
+            byte[] exceptionBytes = Encoding.UTF8.GetBytes(sb.ToString());
             return new InputFileStream(new MemoryStream(exceptionBytes), $"Exception_{logEvent.Timestamp:yyyyMMdd_HHmmss}.txt");
         }
     }

@@ -20,15 +20,15 @@ public class OrphanedQueueMessageReaper : BackgroundService
             await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             _logger.LogInformation("Running orphaned message reaper job...");
 
-            await using var scope = _serviceProvider.CreateAsyncScope();
-            var redis = scope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>();
-            var server = redis.GetServer(redis.GetEndPoints().First());
-            var db = redis.GetDatabase();
+            await using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
+            IConnectionMultiplexer redis = scope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>();
+            IServer server = redis.GetServer(redis.GetEndPoints().First());
+            IDatabase db = redis.GetDatabase();
 
             // Find all processing queues
-            var processingQueues = server.Keys(pattern: "*:processing:*");
+            IEnumerable<RedisKey> processingQueues = server.Keys(pattern: "*:processing:*");
 
-            foreach (var queueKey in processingQueues)
+            foreach (RedisKey queueKey in processingQueues)
             {
                 // This is a simplified check. A more robust solution would store timestamps.
                 // For now, we just requeue anything we find.

@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using Telegram.Bot.Types;
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Queue.Models;
+using TelegramPanel.Queue.Models.Interface;
 
 namespace TelegramPanel.Queue
 {
@@ -61,7 +62,7 @@ namespace TelegramPanel.Queue
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _logger.LogInformation("Update Queue Consumer Service starting.");
-            var metricsTask = Task.Run(() => MetricsLoopAsync(stoppingToken), stoppingToken);
+            Task metricsTask = Task.Run(() => MetricsLoopAsync(stoppingToken), stoppingToken);
 
             // --- REFACTORED: The only loop we need ---
             await DispatcherLoopAsync(stoppingToken);
@@ -75,15 +76,15 @@ namespace TelegramPanel.Queue
         {
             _logger.LogInformation("Dispatcher loop started, consuming from ITelegramUpdateChannel.");
 
-            await foreach (var queueMessage in _updateChannel.ReadAllAsync(ct).WithCancellation(ct))
+            await foreach (QueueMessage? queueMessage in _updateChannel.ReadAllAsync(ct).WithCancellation(ct))
             {
                 try
                 {
                     await _concurrencyLimiter.WaitAsync(ct);
 
-                    var taskId = Guid.NewGuid();
-                    var processingTask = Task.Run(() => ProcessUpdateAndCleanupAsync(taskId, queueMessage, ct), ct);
-                    _workerTasks.TryAdd(taskId, processingTask);
+                    Guid taskId = Guid.NewGuid();
+                    Task processingTask = Task.Run(() => ProcessUpdateAndCleanupAsync(taskId, queueMessage, ct), ct);
+                    _ = _workerTasks.TryAdd(taskId, processingTask);
                 }
                 catch (OperationCanceledException) { break; }
             }
@@ -102,8 +103,8 @@ namespace TelegramPanel.Queue
             }
             finally
             {
-                _concurrencyLimiter.Release();
-                _workerTasks.TryRemove(taskId, out _);
+                _ = _concurrencyLimiter.Release();
+                _ = _workerTasks.TryRemove(taskId, out _);
             }
         }
 
@@ -116,15 +117,15 @@ namespace TelegramPanel.Queue
                 return;
             }
 
-            var update = queueMessage.DeserializedUpdate;
-            using var logScope = _logger.BeginScope("UpdateId: {UpdateId}", update.Id);
+            Update update = queueMessage.DeserializedUpdate;
+            using IDisposable? logScope = _logger.BeginScope("UpdateId: {UpdateId}", update.Id);
 
             try
             {
                 await _processingRetryPolicy.ExecuteAsync(async (context, token) =>
                 {
-                    await using var scope = _scopeFactory.CreateAsyncScope();
-                    var processor = scope.ServiceProvider.GetRequiredService<ITelegramUpdateProcessor>();
+                    await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+                    ITelegramUpdateProcessor processor = scope.ServiceProvider.GetRequiredService<ITelegramUpdateProcessor>();
                     await processor.ProcessUpdateAsync(update, token);
                 }, new Context($"UpdateProcessing_{update.Id}"), ct);
 

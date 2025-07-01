@@ -1,5 +1,4 @@
 ﻿// In Infrastructure/Services/CacheService.cs
-using Application.Common.Interfaces;
 using StackExchange.Redis;
 using System.Text.Json;
 
@@ -25,7 +24,7 @@ public class CacheService : ICacheService
     public async Task SetAsync<T>(string key, T value, TimeSpan? expiry = null)
     {
         string jsonValue = JsonSerializer.Serialize(value);
-        await _redisDb.StringSetAsync(key, jsonValue, expiry);
+        _ = await _redisDb.StringSetAsync(key, jsonValue, expiry);
     }
 
     public Task<bool> RemoveAsync(string key)

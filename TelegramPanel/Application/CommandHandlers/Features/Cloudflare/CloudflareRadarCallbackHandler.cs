@@ -1,7 +1,6 @@
 ﻿using Application.Interfaces;
 using Microsoft.Extensions.Logging;
 using System.Text;
-using System.Linq;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -21,8 +20,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
     /// </summary>
     public class CloudflareRadarCallbackHandler : ITelegramCallbackQueryHandler
     {
-        public ITelegramMessageSender MessageSender => _messageSender;
-        private readonly ITelegramMessageSender _messageSender;
+        public ITelegramMessageSender MessageSender { get; }
+
         private readonly ILogger<CloudflareRadarCallbackHandler> _logger;
         private readonly ICloudflareRadarService _radarService;
         private readonly IActualTelegramMessageActions _directMessageSender;
@@ -38,7 +37,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             ICloudflareRadarService radarService,
             IActualTelegramMessageActions directMessageSender)
         {
-            _messageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
+            MessageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _radarService = radarService ?? throw new ArgumentNullException(nameof(radarService));
             _directMessageSender = directMessageSender ?? throw new ArgumentNullException(nameof(directMessageSender));
@@ -47,8 +46,11 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
         // Inside CloudflareRadarCallbackHandler.cs - (THIS IS AN INCORRECT APPROACH)
         public bool CanHandle(Update update)
         {
-            var callbackData = update.CallbackQuery?.Data;
-            if (string.IsNullOrEmpty(callbackData)) return false;
+            string? callbackData = update.CallbackQuery?.Data;
+            if (string.IsNullOrEmpty(callbackData))
+            {
+                return false;
+            }
 
             // Let's add the check for the main menu button
             return callbackData.StartsWith(CallbackPrefix) || // Handles "cf_radar:..."
@@ -57,15 +59,15 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-            var callbackQuery = update.CallbackQuery!;
-            var chatId = callbackQuery.Message!.Chat.Id;
-            var messageId = callbackQuery.Message.MessageId;
+            CallbackQuery callbackQuery = update.CallbackQuery!;
+            long chatId = callbackQuery.Message!.Chat.Id;
+            int messageId = callbackQuery.Message.MessageId;
 
-            await _messageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
+            await MessageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
 
-            var parts = callbackQuery.Data!.Split(':');
-            var action = parts[1];
-            var payload = parts.Length > 2 ? parts[2] : null;
+            string[] parts = callbackQuery.Data!.Split(':');
+            string action = parts[1];
+            string? payload = parts.Length > 2 ? parts[2] : null;
 
             _logger.LogInformation("CloudflareRadarCallbackHandler: Handling action '{Action}' with payload '{Payload}' for Chat {ChatId}", action, payload, chatId);
 
@@ -87,50 +89,58 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 
         public async Task ShowCountrySelectionMenuAsync(long chatId, int messageId, int page, CancellationToken cancellationToken)
         {
-            var text = "☁️ *Cloudflare Radar*\n\nSelect a country to view its internet health report.";
-            var totalCountries = CountryHelper.AllCountries.Count;
-            var totalPages = (int)Math.Ceiling((double)totalCountries / CountriesPerPage);
+            string text = "☁️ *Cloudflare Radar*\n\nSelect a country to view its internet health report.";
+            int totalCountries = CountryHelper.AllCountries.Count;
+            int totalPages = (int)Math.Ceiling((double)totalCountries / CountriesPerPage);
             page = Math.Clamp(page, 1, totalPages);
 
-            var countriesToShow = CountryHelper.AllCountries.Skip((page - 1) * CountriesPerPage).Take(CountriesPerPage).ToList();
+            List<(string Name, string Code)> countriesToShow = CountryHelper.AllCountries.Skip((page - 1) * CountriesPerPage).Take(CountriesPerPage).ToList();
 
-            var buttonRows = new List<List<InlineKeyboardButton>>();
+            List<List<InlineKeyboardButton>> buttonRows = new();
             for (int i = 0; i < countriesToShow.Count; i += 3)
             {
                 buttonRows.Add(countriesToShow.Skip(i).Take(3).Select(c => InlineKeyboardButton.WithCallbackData(c.Name, $"{CallbackPrefix}:{SelectCountryAction}:{c.Code}")).ToList());
             }
 
-            var navRow = new List<InlineKeyboardButton>();
-            if (page > 1) navRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Prev", $"{CallbackPrefix}:{ListPageAction}:{page - 1}"));
+            List<InlineKeyboardButton> navRow = new();
+            if (page > 1)
+            {
+                navRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Prev", $"{CallbackPrefix}:{ListPageAction}:{page - 1}"));
+            }
+
             navRow.Add(InlineKeyboardButton.WithCallbackData($"Page {page}/{totalPages}", "noop"));
-            if (page < totalPages) navRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{CallbackPrefix}:{ListPageAction}:{page + 1}"));
+            if (page < totalPages)
+            {
+                navRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{CallbackPrefix}:{ListPageAction}:{page + 1}"));
+            }
+
             buttonRows.Add(navRow);
             buttonRows.Add([InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCommandHandler.BackToMainMenuGeneral)]);
 
-            var keyboard = new InlineKeyboardMarkup(buttonRows);
+            InlineKeyboardMarkup keyboard = new(buttonRows);
             await _directMessageSender.EditMessageTextDirectAsync(chatId, messageId, text, ParseMode.Markdown, keyboard, cancellationToken);
             _logger.LogInformation("Sent country selection menu (Page {Page}) to Chat {ChatId}", page, chatId);
         }
 
         private async Task ShowCountryReportAsync(long chatId, int messageId, string countryCode, CancellationToken cancellationToken)
         {
-            var countryName = CountryHelper.AllCountries.FirstOrDefault(c => c.Code == countryCode).Name ?? countryCode;
-            var safeCountryName = TelegramMessageFormatter.EscapeMarkdownV2(countryName);
+            string countryName = CountryHelper.AllCountries.FirstOrDefault(c => c.Code == countryCode).Name ?? countryCode;
+            string safeCountryName = TelegramMessageFormatter.EscapeMarkdownV2(countryName);
 
             try
             {
                 // The animation part already uses EditMessageTextDirectAsync, which is great.
-                var reportResult = await AnimateWhileExecutingAsync(chatId, messageId,
+                Shared.Results.Result<CloudflareCountryReportDto> reportResult = await AnimateWhileExecutingAsync(chatId, messageId,
                     $"☁️ Analyzing internet health for *{safeCountryName}*",
                     ct => _radarService.GetCountryReportAsync(countryCode, ct),
                     cancellationToken);
 
                 if (reportResult.Succeeded && reportResult.Data != null)
                 {
-                    var data = reportResult.Data;
-                    var caption = FormatCountryReportMessage(data);
+                    CloudflareCountryReportDto data = reportResult.Data;
+                    string caption = FormatCountryReportMessage(data);
 
-                    var keyboard = new InlineKeyboardMarkup(new List<List<InlineKeyboardButton>>
+                    InlineKeyboardMarkup keyboard = new(new List<List<InlineKeyboardButton>>
             {
                 new() { InlineKeyboardButton.WithUrl("View Full Report on Cloudflare Radar ↗️", data.RadarUrl) },
                 new() { InlineKeyboardButton.WithCallbackData("⬅️ Back to Country List", $"{CallbackPrefix}:{ListPageAction}:1") }
@@ -153,8 +163,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
                 else
                 {
                     // This part already uses Edit, which is correct.
-                    var errorText = $"❌ Could not retrieve report for *{safeCountryName}*.\n`{TelegramMessageFormatter.EscapeMarkdownV2(reportResult.Errors.FirstOrDefault() ?? "Unknown error.")}`";
-                    var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("⬅️ Back to Countries", $"{CallbackPrefix}:{ListPageAction}:1"));
+                    string errorText = $"❌ Could not retrieve report for *{safeCountryName}*.\n`{TelegramMessageFormatter.EscapeMarkdownV2(reportResult.Errors.FirstOrDefault() ?? "Unknown error.")}`";
+                    InlineKeyboardMarkup keyboard = new(InlineKeyboardButton.WithCallbackData("⬅️ Back to Countries", $"{CallbackPrefix}:{ListPageAction}:1"));
                     await _directMessageSender.EditMessageTextDirectAsync(chatId, messageId, errorText, ParseMode.MarkdownV2, keyboard, cancellationToken);
                     _logger.LogWarning("Failed to retrieve report for {CountryCode} for Chat {ChatId}. Error: {Error}", countryCode, chatId, reportResult.Errors.FirstOrDefault());
                 }
@@ -163,7 +173,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             {
                 // This part also uses Edit correctly.
                 _logger.LogError(ex, "An unexpected error occurred while showing Cloudflare report for {CountryCode} to Chat {ChatId}.", countryCode, chatId);
-                var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("⬅️ Try Again", $"{CallbackPrefix}:{SelectCountryAction}:{countryCode}"));
+                InlineKeyboardMarkup keyboard = new(InlineKeyboardButton.WithCallbackData("⬅️ Try Again", $"{CallbackPrefix}:{SelectCountryAction}:{countryCode}"));
                 await _directMessageSender.EditMessageTextDirectAsync(chatId, messageId, "An unexpected error occurred. Please try again.", ParseMode.MarkdownV2, replyMarkup: keyboard, cancellationToken: CancellationToken.None);
             }
         }
@@ -172,175 +182,237 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
         // This version has major formatting upgrades, more progress bars, and new sections.
         private string GenerateProgressBar(double percentage, int size = 10, string block = "🟩")
         {
-            if (percentage <= 0) return string.Empty;
+            if (percentage <= 0)
+            {
+                return string.Empty;
+            }
+
             int filledBlocks = (int)Math.Round(percentage / 100.0 * size);
-            if (filledBlocks == 0 && percentage > 0.1) filledBlocks = 1;
+            if (filledBlocks == 0 && percentage > 0.1)
+            {
+                filledBlocks = 1;
+            }
+
             return string.Concat(Enumerable.Repeat(block, filledBlocks));
         }
 
         private string FormatCountryReportMessage(CloudflareCountryReportDto data)
         {
-            var sections = new List<string>();
+            List<string> sections = new();
 
             // --- Section: At a Glance ---
-            var summarySb = new StringBuilder();
-            summarySb.AppendLine("*📊 At a Glance*");
-            summarySb.AppendLine($"  - __Stability:__         {(data.LatestOutage != null ? "🔴 OUTAGE" : "✅ No Outages")}");
+            StringBuilder summarySb = new();
+            _ = summarySb.AppendLine("*📊 At a Glance*");
+            _ = summarySb.AppendLine($"  - __Stability:__         {(data.LatestOutage != null ? "🔴 OUTAGE" : "✅ No Outages")}");
             if (data.InternetQuality != null)
             {
-                var iqiRating = data.InternetQuality.Rating.ToUpper();
-                var iqiEmoji = iqiRating == "GOOD" ? "✅" : (iqiRating == "POOR" ? "⚠️" : "🟠");
-                summarySb.AppendLine($"  - __Internet Quality:__ {iqiEmoji} {data.InternetQuality.Rating}");
+                string iqiRating = data.InternetQuality.Rating.ToUpper();
+                string iqiEmoji = iqiRating == "GOOD" ? "✅" : (iqiRating == "POOR" ? "⚠️" : "🟠");
+                _ = summarySb.AppendLine($"  - __Internet Quality:__ {iqiEmoji} {data.InternetQuality.Rating}");
             }
             if (data.BotVsHumanTraffic != null)
             {
-                var botEmoji = data.BotVsHumanTraffic.Bot > 40 ? "⚠️" : "✅";
-                summarySb.AppendLine($"  - __Bot Traffic:__      {botEmoji} {data.BotVsHumanTraffic.Bot:F1}%");
+                string botEmoji = data.BotVsHumanTraffic.Bot > 40 ? "⚠️" : "✅";
+                _ = summarySb.AppendLine($"  - __Bot Traffic:__      {botEmoji} {data.BotVsHumanTraffic.Bot:F1}%");
             }
             if (data.IpVersionDistribution != null)
             {
-                var ipv6Emoji = data.IpVersionDistribution.Ipv6 > 50 ? "✅" : (data.IpVersionDistribution.Ipv6 > 25 ? "🟠" : "⚠️");
-                summarySb.AppendLine($"  - __IPv6 Adoption:__    {ipv6Emoji} {data.IpVersionDistribution.Ipv6:F1}%");
+                string ipv6Emoji = data.IpVersionDistribution.Ipv6 > 50 ? "✅" : (data.IpVersionDistribution.Ipv6 > 25 ? "🟠" : "⚠️");
+                _ = summarySb.AppendLine($"  - __IPv6 Adoption:__    {ipv6Emoji} {data.IpVersionDistribution.Ipv6:F1}%");
             }
             sections.Add(summarySb.ToString());
 
             // --- Section: Stability & Quality ---
-            var stabilitySb = new StringBuilder();
+            StringBuilder stabilitySb = new();
             if (data.LatestOutage != null || (data.InternetQuality != null && data.InternetQuality.Value > 0))
             {
-                stabilitySb.AppendLine("*📶 Stability & Quality*");
+                _ = stabilitySb.AppendLine("*📶 Stability & Quality*");
                 if (data.LatestOutage != null)
                 {
-                    var o = data.LatestOutage;
-                    stabilitySb.AppendLine($"  - __Outage Cause:__ `{TelegramMessageFormatter.EscapeMarkdownV2(o.Cause)}`");
-                    stabilitySb.AppendLine($"  - __Description:__ _{TelegramMessageFormatter.EscapeMarkdownV2(o.Description)}_");
+                    ConfirmedOutageData o = data.LatestOutage;
+                    _ = stabilitySb.AppendLine($"  - __Outage Cause:__ `{TelegramMessageFormatter.EscapeMarkdownV2(o.Cause)}`");
+                    _ = stabilitySb.AppendLine($"  - __Description:__ _{TelegramMessageFormatter.EscapeMarkdownV2(o.Description)}_");
                 }
                 if (data.InternetQuality != null && data.InternetQuality.Value > 0)
                 {
-                    var iqi = data.InternetQuality;
-                    stabilitySb.AppendLine($"  - __Quality Rating:__ `{iqi.Rating}`");
-                    stabilitySb.AppendLine($"  - __p90 Latency:__ `{iqi.Value:F0} ms`");
+                    IqiData iqi = data.InternetQuality;
+                    _ = stabilitySb.AppendLine($"  - __Quality Rating:__ `{iqi.Rating}`");
+                    _ = stabilitySb.AppendLine($"  - __p90 Latency:__ `{iqi.Value:F0} ms`");
                 }
                 sections.Add(stabilitySb.ToString());
             }
 
             // --- Section: Traffic Composition ---
-            var compositionSb = new StringBuilder();
-            compositionSb.AppendLine("*👥 Traffic Composition (24h)*");
+            StringBuilder compositionSb = new();
+            _ = compositionSb.AppendLine("*👥 Traffic Composition (24h)*");
             int compositionItemCount = 0;
             if (data.BotVsHumanTraffic != null)
             {
-                compositionSb.AppendLine("  - __Source__");
-                var b = data.BotVsHumanTraffic;
-                compositionSb.AppendLine($"    `{"Human:",-9} {b.Human,5:F1}%` {GenerateProgressBar(b.Human, 10, "🟩")}");
-                compositionSb.AppendLine($"    `{"Bot:",-9} {b.Bot,5:F1}%` {GenerateProgressBar(b.Bot, 10, "🟥")}");
+                _ = compositionSb.AppendLine("  - __Source__");
+                BotTrafficData b = data.BotVsHumanTraffic;
+                _ = compositionSb.AppendLine($"    `{"Human:",-9} {b.Human,5:F1}%` {GenerateProgressBar(b.Human, 10, "🟩")}");
+                _ = compositionSb.AppendLine($"    `{"Bot:",-9} {b.Bot,5:F1}%` {GenerateProgressBar(b.Bot, 10, "🟥")}");
                 compositionItemCount++;
             }
             if (data.DeviceTypeDistribution != null)
             {
-                compositionSb.AppendLine("  - __Device Types__");
-                var d = data.DeviceTypeDistribution;
-                compositionSb.AppendLine($"    `{"Desktop:",-9} {d.Desktop,5:F1}%` {GenerateProgressBar(d.Desktop, 10, "🟦")}");
-                compositionSb.AppendLine($"    `{"Mobile:",-9} {d.Mobile,5:F1}%` {GenerateProgressBar(d.Mobile, 10, "🟩")}");
+                _ = compositionSb.AppendLine("  - __Device Types__");
+                DeviceTypeData d = data.DeviceTypeDistribution;
+                _ = compositionSb.AppendLine($"    `{"Desktop:",-9} {d.Desktop,5:F1}%` {GenerateProgressBar(d.Desktop, 10, "🟦")}");
+                _ = compositionSb.AppendLine($"    `{"Mobile:",-9} {d.Mobile,5:F1}%` {GenerateProgressBar(d.Mobile, 10, "🟩")}");
                 compositionItemCount++;
             }
             if (data.OSDistribution != null && data.OSDistribution.GetType().GetProperties().Sum(p => (double)p.GetValue(data.OSDistribution)!) > 0)
             {
-                compositionSb.AppendLine("  - __Operating Systems__");
-                var os = data.OSDistribution;
-                var osList = new List<(string Name, double Value, string Block)> { ("Windows", os.Windows, "🟦"), ("macOS", os.MacOS, "⬜️"), ("Android", os.Android, "🟩"), ("iOS", os.IOS, "⬛️"), ("Linux", os.Linux, "🟧") }
+                _ = compositionSb.AppendLine("  - __Operating Systems__");
+                OperatingSystemData os = data.OSDistribution;
+                List<(string Name, double Value, string Block)> osList = new List<(string Name, double Value, string Block)> { ("Windows", os.Windows, "🟦"), ("macOS", os.MacOS, "⬜️"), ("Android", os.Android, "🟩"), ("iOS", os.IOS, "⬛️"), ("Linux", os.Linux, "🟧") }
                     .Where(x => x.Value > 0).OrderByDescending(x => x.Value).ToList();
 
-                foreach (var item in osList)
+                foreach ((string Name, double Value, string Block) in osList)
                 {
-                    compositionSb.AppendLine($"    `{item.Name + ":",-9} {item.Value,5:F1}%` {GenerateProgressBar(item.Value, 10, item.Block)}");
+                    _ = compositionSb.AppendLine($"    `{Name + ":",-9} {Value,5:F1}%` {GenerateProgressBar(Value, 10, Block)}");
                 }
                 compositionItemCount++;
             }
-            if (compositionItemCount > 0) sections.Add(compositionSb.ToString());
+            if (compositionItemCount > 0)
+            {
+                sections.Add(compositionSb.ToString());
+            }
 
             // --- Section: Security Posture ---
-            var securitySb = new StringBuilder();
-            securitySb.AppendLine("*🛡️ Security Posture (7d)*");
-            securitySb.AppendLine("  - __L7 Attacks__");
+            StringBuilder securitySb = new();
+            _ = securitySb.AppendLine("*🛡️ Security Posture (7d)*");
+            _ = securitySb.AppendLine("  - __L7 Attacks__");
             if (data.Layer7Attacks != null && data.Layer7Attacks.PercentageOfTotal > 0)
             {
-                var l7 = data.Layer7Attacks;
-                securitySb.AppendLine($"    `Share: {l7.PercentageOfTotal:F1}% of traffic`");
-                if (l7.TopSourceCountry != "Unknown") securitySb.AppendLine($"    `Origin: {l7.TopSourceCountry}`");
+                AttackData l7 = data.Layer7Attacks;
+                _ = securitySb.AppendLine($"    `Share: {l7.PercentageOfTotal:F1}% of traffic`");
+                if (l7.TopSourceCountry != "Unknown")
+                {
+                    _ = securitySb.AppendLine($"    `Origin: {l7.TopSourceCountry}`");
+                }
             }
-            else { securitySb.AppendLine("    `✅ No significant attacks`"); }
+            else { _ = securitySb.AppendLine("    `✅ No significant attacks`"); }
             if (data.L3AttackDistribution != null && data.L3AttackDistribution.GetType().GetProperties().Sum(p => (double)p.GetValue(data.L3AttackDistribution)!) > 0)
             {
-                securitySb.AppendLine("  - __L3 Attack Protocols__");
-                var l3 = data.L3AttackDistribution;
-                if (l3.Udp > 0) securitySb.AppendLine($"    `{"UDP:",-9} {l3.Udp,5:F1}%` {GenerateProgressBar(l3.Udp, 10, "🟧")}");
-                if (l3.Tcp > 0) securitySb.AppendLine($"    `{"TCP:",-9} {l3.Tcp,5:F1}%` {GenerateProgressBar(l3.Tcp, 10, "🟦")}");
-                if (l3.Icmp > 0) securitySb.AppendLine($"    `{"ICMP:",-9} {l3.Icmp,5:F1}%` {GenerateProgressBar(l3.Icmp, 10, "🟥")}");
+                _ = securitySb.AppendLine("  - __L3 Attack Protocols__");
+                Layer3AttackProtocolData l3 = data.L3AttackDistribution;
+                if (l3.Udp > 0)
+                {
+                    _ = securitySb.AppendLine($"    `{"UDP:",-9} {l3.Udp,5:F1}%` {GenerateProgressBar(l3.Udp, 10, "🟧")}");
+                }
+
+                if (l3.Tcp > 0)
+                {
+                    _ = securitySb.AppendLine($"    `{"TCP:",-9} {l3.Tcp,5:F1}%` {GenerateProgressBar(l3.Tcp, 10, "🟦")}");
+                }
+
+                if (l3.Icmp > 0)
+                {
+                    _ = securitySb.AppendLine($"    `{"ICMP:",-9} {l3.Icmp,5:F1}%` {GenerateProgressBar(l3.Icmp, 10, "🟥")}");
+                }
             }
             if (data.AttackMitigation != null && data.AttackMitigation.GetType().GetProperties().Sum(p => (double)p.GetValue(data.AttackMitigation)!) > 0)
             {
-                securitySb.AppendLine("  - __Attack Mitigation__");
-                var m = data.AttackMitigation;
-                if (m.Waf > 0) securitySb.AppendLine($"    `WAF: {m.Waf,5:F1}%`");
-                if (m.RateLimiting > 0) securitySb.AppendLine($"    `Rate Limit: {m.RateLimiting,5:F1}%`");
-                if (m.BotManagement > 0) securitySb.AppendLine($"    `Bot Mgmt: {m.BotManagement,5:F1}%`");
+                _ = securitySb.AppendLine("  - __Attack Mitigation__");
+                AttackMitigationData m = data.AttackMitigation;
+                if (m.Waf > 0)
+                {
+                    _ = securitySb.AppendLine($"    `WAF: {m.Waf,5:F1}%`");
+                }
+
+                if (m.RateLimiting > 0)
+                {
+                    _ = securitySb.AppendLine($"    `Rate Limit: {m.RateLimiting,5:F1}%`");
+                }
+
+                if (m.BotManagement > 0)
+                {
+                    _ = securitySb.AppendLine($"    `Bot Mgmt: {m.BotManagement,5:F1}%`");
+                }
             }
             sections.Add(securitySb.ToString());
 
             // --- Section: Technology Adoption ---
-            var techSb = new StringBuilder();
-            techSb.AppendLine("*🚀 Technology Adoption (7d)*");
-            techSb.AppendLine("  - __HTTP Versions__");
-            var h = data.HttpProtocolDistribution;
+            StringBuilder techSb = new();
+            _ = techSb.AppendLine("*🚀 Technology Adoption (7d)*");
+            _ = techSb.AppendLine("  - __HTTP Versions__");
+            HttpProtocolData? h = data.HttpProtocolDistribution;
             if (h != null)
             {
-                if (h.Http3 > 0) techSb.AppendLine($"    `{"HTTP/3:",-9} {h.Http3,5:F1}%` {GenerateProgressBar(h.Http3, 10, "🟩")}");
-                if (h.Http2 > 0) techSb.AppendLine($"    `{"HTTP/2:",-9} {h.Http2,5:F1}%` {GenerateProgressBar(h.Http2, 10, "🟦")}");
-                if (h.Http1 > 0) techSb.AppendLine($"    `{"HTTP/1.x:",-9} {h.Http1,5:F1}%` {GenerateProgressBar(h.Http1, 10, "🟥")}");
+                if (h.Http3 > 0)
+                {
+                    _ = techSb.AppendLine($"    `{"HTTP/3:",-9} {h.Http3,5:F1}%` {GenerateProgressBar(h.Http3, 10, "🟩")}");
+                }
+
+                if (h.Http2 > 0)
+                {
+                    _ = techSb.AppendLine($"    `{"HTTP/2:",-9} {h.Http2,5:F1}%` {GenerateProgressBar(h.Http2, 10, "🟦")}");
+                }
+
+                if (h.Http1 > 0)
+                {
+                    _ = techSb.AppendLine($"    `{"HTTP/1.x:",-9} {h.Http1,5:F1}%` {GenerateProgressBar(h.Http1, 10, "🟥")}");
+                }
             }
-            techSb.AppendLine("  - __TLS Versions__");
-            var t = data.TlsVersionDistribution;
+            _ = techSb.AppendLine("  - __TLS Versions__");
+            TlsVersionData? t = data.TlsVersionDistribution;
             if (t != null)
             {
-                if (t.Tls13 > 0) techSb.AppendLine($"    `{"TLS 1.3:",-9} {t.Tls13,5:F1}%` {GenerateProgressBar(t.Tls13, 10, "🟩")}");
-                if (t.Tls12 > 0) techSb.AppendLine($"    `{"TLS 1.2:",-9} {t.Tls12,5:F1}%` {GenerateProgressBar(t.Tls12, 10, "🟦")}");
-                if (t.Tls11 + t.Tls10 > 0) techSb.AppendLine($"    `{"Legacy:",-9} {t.Tls11 + t.Tls10,5:F1}%` {GenerateProgressBar(t.Tls11 + t.Tls10, 10, "🟥")}");
+                if (t.Tls13 > 0)
+                {
+                    _ = techSb.AppendLine($"    `{"TLS 1.3:",-9} {t.Tls13,5:F1}%` {GenerateProgressBar(t.Tls13, 10, "🟩")}");
+                }
+
+                if (t.Tls12 > 0)
+                {
+                    _ = techSb.AppendLine($"    `{"TLS 1.2:",-9} {t.Tls12,5:F1}%` {GenerateProgressBar(t.Tls12, 10, "🟦")}");
+                }
+
+                if (t.Tls11 + t.Tls10 > 0)
+                {
+                    _ = techSb.AppendLine($"    `{"Legacy:",-9} {t.Tls11 + t.Tls10,5:F1}%` {GenerateProgressBar(t.Tls11 + t.Tls10, 10, "🟥")}");
+                }
             }
-            techSb.AppendLine("  - __IP Versions (IPv6 Adoption)__");
-            var ip = data.IpVersionDistribution;
+            _ = techSb.AppendLine("  - __IP Versions (IPv6 Adoption)__");
+            IpVersionData? ip = data.IpVersionDistribution;
             if (ip != null)
             {
-                techSb.AppendLine($"    `{"IPv6:",-9} {ip.Ipv6,5:F1}%` {GenerateProgressBar(ip.Ipv6, 10, "🟩")}");
-                techSb.AppendLine($"    `{"IPv4:",-9} {ip.Ipv4,5:F1}%` {GenerateProgressBar(ip.Ipv4, 10, "🟥")}");
+                _ = techSb.AppendLine($"    `{"IPv6:",-9} {ip.Ipv6,5:F1}%` {GenerateProgressBar(ip.Ipv6, 10, "🟩")}");
+                _ = techSb.AppendLine($"    `{"IPv4:",-9} {ip.Ipv4,5:F1}%` {GenerateProgressBar(ip.Ipv4, 10, "🟥")}");
             }
             if (data.PostQuantumSupport != null && data.PostQuantumSupport.Supported > 0)
             {
-                techSb.AppendLine("  - __Post-Quantum Ready__");
-                var pq = data.PostQuantumSupport;
-                techSb.AppendLine($"    `{"Supported:",-9} {pq.Supported,5:F1}%` {GenerateProgressBar(pq.Supported, 10, "🟩")}");
+                _ = techSb.AppendLine("  - __Post-Quantum Ready__");
+                PostQuantumData pq = data.PostQuantumSupport;
+                _ = techSb.AppendLine($"    `{"Supported:",-9} {pq.Supported,5:F1}%` {GenerateProgressBar(pq.Supported, 10, "🟩")}");
             }
             sections.Add(techSb.ToString());
 
             // --- Combine everything ---
-            var finalReport = new StringBuilder();
-            finalReport.AppendLine($"☁️ *Internet Report: {TelegramMessageFormatter.EscapeMarkdownV2(data.CountryName)}*");
-            finalReport.AppendLine("`-----------------------------------`");
-            finalReport.Append(string.Join("\n─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n", sections.Where(s => !string.IsNullOrWhiteSpace(s))));
+            StringBuilder finalReport = new();
+            _ = finalReport.AppendLine($"☁️ *Internet Report: {TelegramMessageFormatter.EscapeMarkdownV2(data.CountryName)}*");
+            _ = finalReport.AppendLine("`-----------------------------------`");
+            _ = finalReport.Append(string.Join("\n─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n", sections.Where(s => !string.IsNullOrWhiteSpace(s))));
 
             // --- Footer & Legend ---
-            finalReport.AppendLine("\n─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─");
-            finalReport.AppendLine("*Legend*");
-            finalReport.AppendLine("`OS: 🟦Win ⬜️Mac 🟩And ⬛️iOS 🟧Lin`");
-            finalReport.AppendLine("`Dev: 🟦Desktop 🟩Mobile`");
-            finalReport.AppendLine("`HTTP/TLS: 🟩Newest 🟦Modern 🟥Old`");
-            finalReport.AppendLine("`Source/IP: 🟩Human/IPv6 🟥Bot/IPv4`");
+            _ = finalReport.AppendLine("\n─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─");
+            _ = finalReport.AppendLine("*Legend*");
+            _ = finalReport.AppendLine("`OS: 🟦Win ⬜️Mac 🟩And ⬛️iOS 🟧Lin`");
+            _ = finalReport.AppendLine("`Dev: 🟦Desktop 🟩Mobile`");
+            _ = finalReport.AppendLine("`HTTP/TLS: 🟩Newest 🟦Modern 🟥Old`");
+            _ = finalReport.AppendLine("`Source/IP: 🟩Human/IPv6 🟥Bot/IPv4`");
 
-            finalReport.AppendLine("\n`-----------------------------------`");
-            if (!string.IsNullOrWhiteSpace(data.ReportTimestamp) && DateTime.TryParse(data.ReportTimestamp, out var reportTime))
-                finalReport.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._");
+            _ = finalReport.AppendLine("\n`-----------------------------------`");
+            if (!string.IsNullOrWhiteSpace(data.ReportTimestamp) && DateTime.TryParse(data.ReportTimestamp, out DateTime reportTime))
+            {
+                _ = finalReport.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._");
+            }
             else
-                finalReport.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
+            {
+                _ = finalReport.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
+            }
 
             return finalReport.ToString();
         }
@@ -349,17 +421,17 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 
         private async Task<TResult> AnimateWhileExecutingAsync<TResult>(long chatId, int messageId, string baseText, Func<CancellationToken, Task<TResult>> operationToExecute, CancellationToken cancellationToken)
         {
-            var animationFrames = new[] { "·", "··", "···" };
-            var frameIndex = 0;
-            var operationTask = operationToExecute(cancellationToken);
+            string[] animationFrames = new[] { "·", "··", "···" };
+            int frameIndex = 0;
+            Task<TResult> operationTask = operationToExecute(cancellationToken);
 
-            var animationTask = Task.Run(async () =>
+            Task animationTask = Task.Run(async () =>
             {
                 while (!operationTask.IsCompleted && !cancellationToken.IsCancellationRequested)
                 {
                     try
                     {
-                        var text = $"{baseText} {animationFrames[frameIndex++ % animationFrames.Length]}";
+                        string text = $"{baseText} {animationFrames[frameIndex++ % animationFrames.Length]}";
                         await _directMessageSender.EditMessageTextDirectAsync(chatId, messageId, text, ParseMode.MarkdownV2, null, cancellationToken);
                     }
                     catch (ApiRequestException apiEx) when (apiEx.Message.Contains("not modified")) { /* Ignore */ }

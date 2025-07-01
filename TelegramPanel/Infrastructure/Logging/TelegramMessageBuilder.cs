@@ -4,9 +4,8 @@ using Serilog.Events;
 using System.Text;
 using System.Text.RegularExpressions;
 using Telegram.Bot.Types.ReplyMarkups;
-using TL;
 
-namespace Infrastructure.Logging
+namespace TelegramPanel.Infrastructure.Logging
 {
     /// <summary>
     /// The intelligent "brain" of the God Mode sink. This class is responsible for
@@ -29,7 +28,7 @@ namespace Infrastructure.Logging
 
         public (string message, Telegram.Bot.Types.ReplyMarkups.ReplyMarkup keyboard) Build(LogEvent logEvent, int occurrenceCount)
         {
-            var sb = new StringBuilder();
+            StringBuilder sb = new();
 
             BuildHeader(sb, logEvent, occurrenceCount);
             BuildMessageAndException(sb, logEvent);
@@ -38,8 +37,8 @@ namespace Infrastructure.Logging
             BuildIntelligentAnalysis(sb, logEvent);
             BuildTimestamp(sb, logEvent);
 
-            var sanitizedMessage = Sanitize(sb.ToString());
-            var keyboard = BuildActionButtons(logEvent);
+            string sanitizedMessage = Sanitize(sb.ToString());
+            Telegram.Bot.Types.ReplyMarkups.ReplyMarkup keyboard = BuildActionButtons(logEvent);
 
             return (sanitizedMessage, keyboard);
         }
@@ -53,103 +52,109 @@ namespace Infrastructure.Logging
             // --- THIS IS THE FIX ---
             // We now call a helper method to correctly format the level instead of using ":u3".
             string formattedLevel = FormatLevelToString(logEvent.Level);
-            sb.AppendLine($"{headerEmoji} *{formattedLevel} | {GetProperty(logEvent, "Application")}*");
+            _ = sb.AppendLine($"{headerEmoji} *{formattedLevel} | {GetProperty(logEvent, "Application")}*");
 
             if (occurrenceCount > 1)
             {
-                sb.AppendLine($"*This error has now occurred {occurrenceCount} times!*");
+                _ = sb.AppendLine($"*This error has now occurred {occurrenceCount} times!*");
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
         }
 
         // The rest of the methods are unchanged, but included for completeness.
         private void BuildMessageAndException(StringBuilder sb, LogEvent logEvent)
         {
-            sb.AppendLine("📄 *Message*");
-            sb.AppendLine($"`{logEvent.RenderMessage()}`");
+            _ = sb.AppendLine("📄 *Message*");
+            _ = sb.AppendLine($"`{logEvent.RenderMessage()}`");
 
             if (logEvent.Exception != null)
             {
-                sb.AppendLine($"💣 *Exception:* `{logEvent.Exception.GetType().Name}`");
+                _ = sb.AppendLine($"💣 *Exception:* `{logEvent.Exception.GetType().Name}`");
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
         }
 
         private void BuildCodeLocation(StringBuilder sb, LogEvent logEvent)
         {
-            var caller = GetProperty(logEvent, "Caller");
-            var match = CallerRegex.Match(caller ?? "");
+            string caller = GetProperty(logEvent, "Caller");
+            Match match = CallerRegex.Match(caller ?? "");
 
-            if (!match.Success) return;
+            if (!match.Success)
+            {
+                return;
+            }
 
-            sb.AppendLine("🗺️ *Code Location*");
-            var filePath = match.Groups["path"].Value;
-            var line = int.Parse(match.Groups["line"].Value);
+            _ = sb.AppendLine("🗺️ *Code Location*");
+            string filePath = match.Groups["path"].Value;
+            int line = int.Parse(match.Groups["line"].Value);
 
-            sb.AppendLine($"📂 `File:` *{Path.GetFileName(filePath)}*");
-            sb.AppendLine($"#️⃣ `Line:` *{line}*");
-            sb.AppendLine($"🔧 `Method:` `{match.Groups["method"].Value}`");
+            _ = sb.AppendLine($"📂 `File:` *{Path.GetFileName(filePath)}*");
+            _ = sb.AppendLine($"#️⃣ `Line:` *{line}*");
+            _ = sb.AppendLine($"🔧 `Method:` `{match.Groups["method"].Value}`");
 
-            var codeSnippet = ExtractCodeSnippet(filePath, line);
+            string codeSnippet = ExtractCodeSnippet(filePath, line);
             if (!string.IsNullOrEmpty(codeSnippet))
             {
-                sb.AppendLine("\n```csharp\n" + codeSnippet + "\n```");
+                _ = sb.AppendLine("\n```csharp\n" + codeSnippet + "\n```");
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
         }
 
         private void BuildSystemContext(StringBuilder sb, LogEvent logEvent)
         {
-            sb.AppendLine("🌐 *System & Request Context*");
-            sb.AppendLine($"📍 `Env:` {GetProperty(logEvent, "EnvironmentName")}");
-            sb.AppendLine($"💻 `Machine:` {GetProperty(logEvent, "MachineName")}");
-            sb.AppendLine($"🔗 `RequestId:` {GetProperty(logEvent, "RequestId") ?? "N/A"}");
-            sb.AppendLine();
+            _ = sb.AppendLine("🌐 *System & Request Context*");
+            _ = sb.AppendLine($"📍 `Env:` {GetProperty(logEvent, "EnvironmentName")}");
+            _ = sb.AppendLine($"💻 `Machine:` {GetProperty(logEvent, "MachineName")}");
+            _ = sb.AppendLine($"🔗 `RequestId:` {GetProperty(logEvent, "RequestId") ?? "N/A"}");
+            _ = sb.AppendLine();
         }
 
         private void BuildIntelligentAnalysis(StringBuilder sb, LogEvent logEvent)
         {
-            if (logEvent.Exception == null) return;
+            if (logEvent.Exception == null)
+            {
+                return;
+            }
 
-            sb.AppendLine("🤖 *Robo-Analyst Suggestions*");
+            _ = sb.AppendLine("🤖 *Robo-Analyst Suggestions*");
             bool suggestionMade = false;
 
             if (logEvent.Exception is HttpRequestException)
             {
-                var match = HttpErrorRegex.Match(logEvent.Exception.Message);
+                Match match = HttpErrorRegex.Match(logEvent.Exception.Message);
                 if (match.Success)
                 {
-                    sb.AppendLine($"- 💡 Detected HTTP Error `{match.Groups[2].Value}`. Check endpoint availability, firewalls, and DNS.");
+                    _ = sb.AppendLine($"- 💡 Detected HTTP Error `{match.Groups[2].Value}`. Check endpoint availability, firewalls, and DNS.");
                     suggestionMade = true;
                 }
             }
 
-            var exType = logEvent.Exception.GetType().Name;
+            string exType = logEvent.Exception.GetType().Name;
             if (exType.Contains("Npgsql") || exType.Contains("Sql"))
             {
-                sb.AppendLine("- 💡 This is a database error. Verify connection strings, database server status, and user permissions.");
+                _ = sb.AppendLine("- 💡 This is a database error. Verify connection strings, database server status, and user permissions.");
                 suggestionMade = true;
             }
 
             if (!suggestionMade)
             {
-                sb.AppendLine("- 💡 No specific suggestions. Please review the attached stack trace for details.");
+                _ = sb.AppendLine("- 💡 No specific suggestions. Please review the attached stack trace for details.");
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
         }
 
         private void BuildTimestamp(StringBuilder sb, LogEvent logEvent)
         {
-            sb.AppendLine($"🕰️ `Timestamp (UTC):` {logEvent.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
+            _ = sb.AppendLine($"🕰️ `Timestamp (UTC):` {logEvent.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
         }
 
         private Telegram.Bot.Types.ReplyMarkups.ReplyMarkup BuildActionButtons(LogEvent logEvent)
         {
-            var buttons = new List<InlineKeyboardButton>();
+            List<InlineKeyboardButton> buttons = new();
             if (!string.IsNullOrEmpty(_dashboardUrl))
             {
-                var url = _dashboardUrl;
-                if (logEvent.Properties.TryGetValue("RequestId", out var reqId))
+                string url = _dashboardUrl;
+                if (logEvent.Properties.TryGetValue("RequestId", out LogEventPropertyValue? reqId))
                 {
                     url += Uri.EscapeDataString(reqId.ToString("l", null));
                 }
@@ -173,31 +178,39 @@ namespace Infrastructure.Logging
                 LogEventLevel.Warning => "WRN",
                 LogEventLevel.Error => "ERR",
                 LogEventLevel.Fatal => "FTL",
-                _ => level.ToString().ToUpper().Substring(0, 3)
+                _ => level.ToString().ToUpper()[..3]
             };
         }
 
-        private string GetProperty(LogEvent logEvent, string name) =>
-            logEvent.Properties.TryGetValue(name, out var p) && p is ScalarValue sv ? sv.Value?.ToString() ?? "" : "";
+        private string GetProperty(LogEvent logEvent, string name)
+        {
+            return logEvent.Properties.TryGetValue(name, out LogEventPropertyValue? p) && p is ScalarValue sv ? sv.Value?.ToString() ?? "" : "";
+        }
 
-        private string Sanitize(string message) => SensitiveDataRegex.Replace(message, "$1: \"[REDACTED]\"");
+        private string Sanitize(string message)
+        {
+            return SensitiveDataRegex.Replace(message, "$1: \"[REDACTED]\"");
+        }
 
         private string ExtractCodeSnippet(string filePath, int errorLine, int contextLines = 2)
         {
-            if (!File.Exists(filePath)) return null;
+            if (!File.Exists(filePath))
+            {
+                return null;
+            }
 
             try
             {
-                var lines = File.ReadAllLines(filePath);
-                var sb = new StringBuilder();
+                string[] lines = File.ReadAllLines(filePath);
+                StringBuilder sb = new();
 
                 int startLine = Math.Max(0, errorLine - contextLines - 1);
                 int endLine = Math.Min(lines.Length - 1, errorLine + contextLines - 1);
 
                 for (int i = startLine; i <= endLine; i++)
                 {
-                    var linePrefix = i == errorLine - 1 ? ">> " : "   ";
-                    sb.AppendLine($"{linePrefix}{lines[i]}");
+                    string linePrefix = i == errorLine - 1 ? ">> " : "   ";
+                    _ = sb.AppendLine($"{linePrefix}{lines[i]}");
                 }
                 return sb.ToString();
             }
