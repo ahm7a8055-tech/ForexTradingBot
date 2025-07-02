@@ -1,4 +1,4 @@
-﻿// --- File: Infrastructure/Logging/TelegramAdminSink.cs (V8.3 - FINAL FIX) ---
+﻿// --- File: Infrastructure/Logging/TelegramAdminSink.cs (V8.4-CLEAN) ---
 
 using Microsoft.Extensions.Configuration;
 using Polly;
@@ -7,8 +7,9 @@ using Serilog.Core;
 using Serilog.Events;
 using System.Text;
 using Telegram.Bot;
-using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types;
+using System.Collections.Concurrent;
 
 namespace TelegramPanel.Infrastructure.Logging
 {
@@ -17,131 +18,117 @@ namespace TelegramPanel.Infrastructure.Logging
         private readonly IConfiguration _configuration;
         private readonly string _botToken;
         private readonly List<long> _adminChatIds;
-        private readonly AsyncRetryPolicy _telegramRetryPolicy;
+        private readonly AsyncRetryPolicy _retryPolicy;
         private readonly SinkState _sinkState;
         private readonly TelegramMessageBuilder _messageBuilder;
-        private readonly bool _sendMetricsReport;
+        private readonly TelegramBotClient _botClient;
+
         public TelegramAdminSink(IConfiguration configuration)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             _sinkState = new SinkState();
 
-            Console.WriteLine("\n--- ╔═════════════════════════════════════╗ ---");
-            Console.WriteLine("--- ║   Ultimate V8.3 Telegram Sink Init  ║ ---");
-            Console.WriteLine("--- ╚═════════════════════════════════════╝ ---");
+            Console.WriteLine("\n╔═════════════════════════════════════╗");
+            Console.WriteLine("║   Ultimate V8.4 Telegram Sink Init  ║");
+            Console.WriteLine("╚═════════════════════════════════════╝");
+
             _botToken = _configuration["TelegramPanel:BotToken"] ?? string.Empty;
             _adminChatIds = _configuration.GetSection("TelegramPanel:AdminUserIds").Get<List<long>>() ?? [];
-            string? dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
 
+            var dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
             _messageBuilder = new TelegramMessageBuilder(dashboardUrl);
+            _botClient = new TelegramBotClient(_botToken);
 
-            bool isConfigOk = !string.IsNullOrEmpty(_botToken) && _adminChatIds.Any();
-            Console.ForegroundColor = isConfigOk ? ConsoleColor.Green : ConsoleColor.Red;
-            Console.WriteLine($"[SINK V8.3] Status: {(isConfigOk ? "✅ CONFIGURATION OK" : "❌ CONFIGURATION FAILED")}");
+            bool configValid = !string.IsNullOrWhiteSpace(_botToken) && _adminChatIds.Any();
+            Console.ForegroundColor = configValid ? ConsoleColor.Green : ConsoleColor.Red;
+            Console.WriteLine($"[SINK V8.4] Status: {(configValid ? "✅ CONFIG OK" : "❌ CONFIG FAILED")}");
             Console.ResetColor();
 
-            _telegramRetryPolicy = Policy.Handle<Exception>()
-        .WaitAndRetryAsync(
-            retryCount: 3, // Keep the number of retries
-            sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(15), // <-- FIXED 15-SECOND WAIT BETWEEN RETRIES
-            onRetry: (exception, timespan, retryAttempt, context) => // Note: 'onRetry' instead of 'onRetryAsync' if not async
-            {
-                // This delegate is called *before* the wait, but it's good for logging the intent.
-                // The actual wait happens *after* this delegate returns.
-                Console.ForegroundColor = ConsoleColor.DarkYellow;
-                Console.WriteLine($"[SINK V8.4 RETRY] Attempt {retryAttempt} failed: {exception.Message}. Waiting 15 seconds before next attempt...");
-                Console.ResetColor();
-                // If the retry logic itself needs to be async, use WaitAndRetryAsync and onRetryAsync.
-                // For a simple fixed delay, the above is sufficient.
-                // If you *need* async within onRetry, use WaitAndRetryAsync and onRetryAsync.
-            });
+            _retryPolicy = Policy
+                .Handle<Exception>()
+                .WaitAndRetryAsync(3, _ => TimeSpan.FromSeconds(15), (ex, ts, attempt, _) =>
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"[SINK RETRY] Attempt {attempt} failed: {ex.Message}. Retrying in {ts.TotalSeconds}s...");
+                    Console.ResetColor();
+                });
         }
 
         public void Emit(LogEvent logEvent)
         {
             if (string.IsNullOrEmpty(_botToken) || !_adminChatIds.Any())
-            {
                 return;
-            }
 
             if (_sinkState.ShouldThrottle(logEvent, out int occurrenceCount))
-            {
                 return;
-            }
 
             _ = Task.Run(() => SendNotificationAsync(logEvent, occurrenceCount));
         }
 
         private async Task SendNotificationAsync(LogEvent logEvent, int occurrenceCount)
         {
-            Console.WriteLine($"[SINK V8.3 DEBUG] Entering SendNotificationAsync for event: {logEvent.MessageTemplate.Text}");
             try
             {
-                TelegramBotClient botClient = new(_botToken);
-                (string message, Telegram.Bot.Types.ReplyMarkups.ReplyMarkup keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
-                InputFileStream? exceptionFile = BuildExceptionAttachment(logEvent);
+                var (messageText, keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
+                var exceptionAttachment = BuildExceptionAttachment(logEvent);
 
-                foreach (long adminId in _adminChatIds)
+                foreach (var adminId in _adminChatIds)
                 {
-                    await _telegramRetryPolicy.ExecuteAsync(async () =>
+                    await _retryPolicy.ExecuteAsync(async () =>
                     {
-                        _ = await botClient.SendMessage(chatId: adminId, text: message, parseMode: ParseMode.Markdown, replyMarkup: keyboard, cancellationToken: CancellationToken.None);
-                        // if (exceptionFile != null)
+                        await _botClient.SendMessage(
+                            chatId: adminId,
+                            text: messageText,
+                            parseMode: ParseMode.Markdown,
+                            replyMarkup: keyboard
+                        );
+
+                        // Enable the following if you want to send the exception file
+                        /*
+                        if (exceptionAttachment != null)
                         {
-                            //     exceptionFile.Content.Position = 0;
-                            //    await botClient.SendDocument(chatId: adminId, document: exceptionFile, caption: "🗂️ Ultimate debug attachment.", cancellationToken: CancellationToken.None);
+                            exceptionAttachment.Content.Position = 0;
+                            await _botClient.SendDocumentAsync(
+                                chatId: adminId,
+                                document: exceptionAttachment,
+                                caption: "🗂️ Debug attachment"
+                            );
                         }
+                        */
                     });
                 }
             }
             catch (Exception ex)
             {
-                string errorMessage = $"[SINK V8.3 CRITICAL FAILURE] {DateTime.UtcNow:O} | Could not send notification. Error: {ex}";
+                var errorMessage = $"[SINK ERROR] {DateTime.UtcNow:O} - Failed to send log: {ex}";
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine(errorMessage);
                 Console.ResetColor();
+
                 await File.AppendAllTextAsync("telegram_sink_errors.log", errorMessage + Environment.NewLine);
             }
-        }
-        private string BuildMetricsReport(string rawReportText)
-        {
-            StringBuilder sb = new();
-            _ = sb.AppendLine("<b>📊 Queue Metrics Report</b>");
-            _ = sb.AppendLine(); // Add a blank line for spacing
-
-            // The <pre> HTML tag preserves whitespace and uses a monospaced font,
-            // which is perfect for displaying reports exactly as they appear in the console.
-            _ = sb.Append("<pre>");
-            _ = sb.Append(System.Net.WebUtility.HtmlEncode(rawReportText)); // IMPORTANT: Encode to prevent any HTML conflicts
-            _ = sb.Append("</pre>");
-
-            return sb.ToString();
         }
 
         private InputFileStream? BuildExceptionAttachment(LogEvent logEvent)
         {
-            if (logEvent.Exception == null)
-            {
+            if (logEvent.Exception is null)
                 return null;
-            }
 
-            StringBuilder sb = new();
-            _ = sb.AppendLine("--- 🗂️ ULTIMATE DEBUG ATTACHMENT ---");
-            _ = sb.AppendLine($"Timestamp (UTC): {logEvent.Timestamp:O}");
-            _ = sb.AppendLine(new string('=', 50));
-            _ = sb.AppendLine("--- ALL LOG PROPERTIES ---");
-            foreach (KeyValuePair<string, LogEventPropertyValue> prop in logEvent.Properties)
-            {
-                // --- THIS IS THE FIX ---
-                // We remove the invalid "l" format specifier. The default ToString() is safe.
-                _ = sb.AppendLine($"🔹 {prop.Key}: {prop.Value}");
-            }
-            _ = sb.AppendLine(new string('=', 50));
-            _ = sb.AppendLine("--- FULL EXCEPTION STACK TRACE ---");
-            _ = sb.AppendLine(logEvent.Exception.ToString());
+            var sb = new StringBuilder();
+            sb.AppendLine("--- 🗂️ ULTIMATE DEBUG ATTACHMENT ---");
+            sb.AppendLine($"Timestamp (UTC): {logEvent.Timestamp:O}");
+            sb.AppendLine(new string('=', 50));
+            sb.AppendLine("--- LOG PROPERTIES ---");
 
-            byte[] exceptionBytes = Encoding.UTF8.GetBytes(sb.ToString());
-            return new InputFileStream(new MemoryStream(exceptionBytes), $"Exception_{logEvent.Timestamp:yyyyMMdd_HHmmss}.txt");
+            foreach (var prop in logEvent.Properties)
+                sb.AppendLine($"🔹 {prop.Key}: {prop.Value}");
+
+            sb.AppendLine(new string('=', 50));
+            sb.AppendLine("--- EXCEPTION TRACE ---");
+            sb.AppendLine(logEvent.Exception.ToString());
+
+            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            return new InputFileStream(new MemoryStream(bytes), $"Exception_{logEvent.Timestamp:yyyyMMdd_HHmmss}.txt");
         }
     }
 }

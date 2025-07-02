@@ -8,8 +8,8 @@ using System.Text;
 namespace TelegramPanel.Infrastructure.Logging
 {
     /// <summary>
-    /// Manages the state for the God Mode sink, primarily for intelligent error deduplication and throttling.
-    /// This prevents alert storms by tracking the frequency of unique errors.
+    /// Maintains state for the "God Mode" logging sink, enabling intelligent error deduplication and throttling.
+    /// It avoids alert storms by tracking the frequency and recency of unique error events.
     /// </summary>
     public class SinkState
     {
@@ -17,7 +17,7 @@ namespace TelegramPanel.Infrastructure.Logging
         private readonly TimeSpan _throttlingPeriod = TimeSpan.FromMinutes(5);
 
         /// <summary>
-        /// Represents a unique error occurrence for tracking.
+        /// Represents the occurrence details of a specific error signature.
         /// </summary>
         private class ErrorOccurrence
         {
@@ -27,53 +27,59 @@ namespace TelegramPanel.Infrastructure.Logging
         }
 
         /// <summary>
-        /// Determines if a given log event should be throttled (i.e., not sent as a new notification).
+        /// Determines whether a log event should be throttled based on its error signature.
         /// </summary>
-        /// <param name="logEvent">The log event to check.</param>
-        /// <param name="occurrenceCount">The number of times this specific error has occurred.</param>
-        /// <returns>True if the notification should be suppressed; otherwise, false.</returns>
+        /// <param name="logEvent">The log event to evaluate.</param>
+        /// <param name="occurrenceCount">Outputs the total count of occurrences for this specific signature.</param>
+        /// <returns>True if throttling is active and the notification should be suppressed; otherwise, false.</returns>
         public bool ShouldThrottle(LogEvent logEvent, out int occurrenceCount)
         {
-            string errorSignature = CreateErrorSignature(logEvent);
+            string signature = GenerateErrorSignature(logEvent);
             occurrenceCount = 1;
 
-            if (_errorCache.TryGetValue(errorSignature, out ErrorOccurrence? occurrence))
+            if (_errorCache.TryGetValue(signature, out var occurrence))
             {
                 occurrence.Count++;
                 occurrenceCount = occurrence.Count;
 
                 if (DateTime.UtcNow - occurrence.LastNotification < _throttlingPeriod)
                 {
-                    return true; // Suppress the notification, it's too soon.
+                    // Still within throttling window — suppress notification
+                    return true;
                 }
 
-                // Throttling period has passed, so we will send a summary notification.
+                // Throttling expired — allow and update timestamp
                 occurrence.LastNotification = DateTime.UtcNow;
                 return false;
             }
 
-            // This is a new, unique error.
-            _ = _errorCache.TryAdd(errorSignature, new ErrorOccurrence());
+            // First time seeing this error — store it
+            _errorCache.TryAdd(signature, new ErrorOccurrence());
             return false;
         }
 
         /// <summary>
-        /// Creates a unique, stable hash signature for a log event based on its core properties.
+        /// Generates a stable and unique hash for the log event, based on its exception type, message, and caller.
         /// </summary>
-        private string CreateErrorSignature(LogEvent logEvent)
+        /// <param name="logEvent">The log event to create a signature for.</param>
+        /// <returns>A base64-encoded SHA-256 hash string representing the error identity.</returns>
+        private string GenerateErrorSignature(LogEvent logEvent)
         {
-            StringBuilder sb = new();
-            _ = sb.Append(logEvent.Exception?.GetType().Name);
-            _ = sb.Append(logEvent.MessageTemplate.Text);
+            var sb = new StringBuilder();
 
-            if (logEvent.Properties.TryGetValue("Caller", out LogEventPropertyValue? caller))
-            {
-                _ = sb.Append(caller.ToString("l", null));
-            }
+            if (logEvent.Exception is not null)
+                sb.Append(logEvent.Exception.GetType().FullName);
 
-            using SHA256 sha256 = SHA256.Create();
-            byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
-            return Convert.ToBase64String(hashBytes);
+            sb.Append(logEvent.MessageTemplate.Text);
+
+            if (logEvent.Properties.TryGetValue("Caller", out var caller))
+                sb.Append(caller.ToString("l", null));
+
+            using var sha = SHA256.Create();
+            byte[] bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            byte[] hash = sha.ComputeHash(bytes);
+
+            return Convert.ToBase64String(hash);
         }
     }
 }

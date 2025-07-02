@@ -8,66 +8,61 @@ using System.Reflection;
 namespace TelegramPanel.Infrastructure.Logging
 {
     /// <summary>
-    /// A powerful, custom Serilog enricher that accurately finds the true calling method
-    /// of a log event, intelligently skipping specified framework namespaces.
-    /// This is the "God Mode" version of a caller enricher.
+    /// A powerful custom Serilog enricher that extracts the actual caller method
+    /// from the call stack, intelligently skipping framework or irrelevant namespaces.
     /// </summary>
     public class CustomCallerEnricher : ILogEventEnricher
     {
         private readonly string[] _excludedNamespaces;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="CustomCallerEnricher"/> class.
+        /// Initializes a new instance of <see cref="CustomCallerEnricher"/>.
         /// </summary>
-        /// <param name="excludedNamespaces">An array of namespace prefixes to ignore when searching the call stack.</param>
+        /// <param name="excludedNamespaces">
+        /// An array of namespace prefixes to exclude while walking up the stack trace.
+        /// </param>
         public CustomCallerEnricher(params string[] excludedNamespaces)
         {
             _excludedNamespaces = excludedNamespaces ?? Array.Empty<string>();
         }
 
+        /// <inheritdoc />
         public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
         {
-            (MethodBase method, string filePath, int lineNumber) = FindCallingMethod();
+            var (method, filePath, lineNumber) = FindActualCaller();
 
-            if (method != null)
+            if (method is not null)
             {
-                string callerInfo = $"{method.DeclaringType.FullName}.{method.Name}() in {filePath}:line {lineNumber}";
-                LogEventProperty property = propertyFactory.CreateProperty("Caller", callerInfo);
+                string caller = $"{method.DeclaringType?.FullName}.{method.Name}() in {filePath ?? "UnknownFile"}:line {lineNumber}";
+                LogEventProperty property = propertyFactory.CreateProperty("Caller", caller);
                 logEvent.AddPropertyIfAbsent(property);
             }
         }
 
-        private (MethodBase method, string filePath, int lineNumber) FindCallingMethod()
+        private (MethodBase? method, string? filePath, int lineNumber) FindActualCaller()
         {
-            StackTrace stack = new(true);
+            StackTrace trace = new(true);
 
-            foreach (StackFrame frame in stack.GetFrames())
+            foreach (var frame in trace.GetFrames() ?? Array.Empty<StackFrame>())
             {
                 MethodBase? method = frame.GetMethod();
                 if (method?.DeclaringType == null)
-                {
                     continue;
-                }
 
-                string ns = method.DeclaringType.Namespace ?? "";
+                string ns = method.DeclaringType.Namespace ?? string.Empty;
 
-                // This is the core logic: if the namespace starts with any of our
-                // excluded prefixes, we skip this frame and check the next one.
-                if (_excludedNamespaces.Any(ns.StartsWith))
-                {
+                if (_excludedNamespaces.Any(prefix => ns.StartsWith(prefix)))
                     continue;
-                }
 
-                // If we get here, we've found the first method that is NOT in an excluded namespace.
-                // This is our true caller.
-                int lineNumber = frame.GetFileLineNumber();
-                string? filePath = frame.GetFileName();
+                // Found relevant frame
+                int line = frame.GetFileLineNumber();
+                string? file = frame.GetFileName();
 
-                // Return if we have useful info.
-                if (lineNumber > 0)
-                {
-                    return (method, filePath, lineNumber);
-                }
+                // If no PDBs are present, fallback to IL offset line numbers
+                if (line == 0)
+                    line = frame.GetILOffset();
+
+                return (method, file, line);
             }
 
             return (null, null, 0);
