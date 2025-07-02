@@ -951,19 +951,13 @@ namespace BackgroundTasks.Services
         {
             StringBuilder messageTextBuilder = new();
 
-            // --- In-Method Strategy: Escaping Logic ---
-            // Define the characters that need escaping in MarkdownV2.
-            // This lambda function encapsulates the escaping logic.
-            Func<string?, string> escapeMarkdownV2 = (input) =>
+            // Helper: Escape special MarkdownV2 chars in text (not URL)
+            string EscapeMarkdownV2(string? input)
             {
-                if (string.IsNullOrEmpty(input))
-                {
-                    return string.Empty;
-                }
+                if (string.IsNullOrEmpty(input)) return string.Empty;
 
-                // Escape characters that have special meaning in Telegram's MarkdownV2.
-                // It's crucial that this covers all special characters.
                 return input
+                    .Replace(@"\", @"\\")  // مهم: ابتدا بک‌اسلش رو فرار بدیم
                     .Replace("_", "\\_")
                     .Replace("*", "\\*")
                     .Replace("[", "\\[")
@@ -980,57 +974,39 @@ namespace BackgroundTasks.Services
                     .Replace("|", "\\|")
                     .Replace("{", "\\{")
                     .Replace("}", "\\}")
-                    .Replace(".", "\\.") // Period is special in inline links like [text](url). Escaping it generally safe.
-                    .Replace("!", "\\!"); // Exclamation mark can be special too in some contexts.
-            };
-            // --- End In-Method Strategy: Escaping Logic ---
+                    ;
+            }
 
-
-            // --- In-Method Strategy: Data Preparation and Formatting ---
-
-            // 1. Process and escape Title
-            string title = escapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
-            // Apply bold formatting to the escaped title.
+            // 1. Title
+            var title = EscapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
             messageTextBuilder.AppendLine($"*{title}*");
 
-            // 2. Process and escape Source Name
-            string sourceName = escapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
-            // Apply italic formatting to the escaped source name.
-            // Adding a space before the underscore can sometimes improve rendering clarity in Telegram.
+            // 2. Source Name (ایتالیک)
+            var sourceName = EscapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
             messageTextBuilder.AppendLine($" _Source: {sourceName}_");
 
-            // 3. Process and escape Summary
-            string summaryRaw = newsItem.Summary?.Trim() ?? string.Empty;
-            // Replace internal newlines/carriage returns with spaces to ensure the summary
-            // remains a single block of text within the message unless specific paragraph
-            // breaks are intended. MarkdownV2 does not support multi-line text within a single
-            // bold/italic block easily, so collapsing is often preferred.
-            string summaryProcessed = summaryRaw.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
-            string summary = escapeMarkdownV2(summaryProcessed);
+            // 3. Summary: خط جدید‌ها را به فاصله تبدیل کنیم
+            var summaryRaw = newsItem.Summary?.Trim() ?? "";
+            var summarySingleLine = summaryRaw
+                .Replace("\r\n", " ")
+                .Replace("\n", " ")
+                .Replace("\r", " ");
+            var summaryEscaped = EscapeMarkdownV2(summarySingleLine);
 
-            // Add summary to the message if it's not empty.
-            // Include a blank line for visual separation before the summary.
-            if (!string.IsNullOrWhiteSpace(summary))
+            if (!string.IsNullOrWhiteSpace(summaryEscaped))
             {
-                messageTextBuilder.AppendLine(); // Blank line
-                messageTextBuilder.AppendLine(summary);
+                messageTextBuilder.AppendLine();
+                messageTextBuilder.AppendLine(summaryEscaped);
             }
 
-            // 4. Process and add Link
-            string? link = newsItem.Link?.Trim();
-
-            // Add the "Read Full Article" link if a valid URL is provided.
-            // Include a blank line for visual separation before the link.
+            // 4. لینک - مهم: لینک را Escape نکن!
+            var link = newsItem.Link?.Trim();
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                messageTextBuilder.AppendLine(); // Blank line
-                                                 // Format the link using MarkdownV2 syntax: [Link Text](URL)
+                messageTextBuilder.AppendLine();
                 messageTextBuilder.AppendLine($"[Read Full Article]({link})");
             }
-            // --- End In-Method Strategy: Data Preparation and Formatting ---
 
-
-            // Final trimming of any leading/trailing whitespace from the entire message.
             return messageTextBuilder.ToString().Trim();
         }
 
@@ -1058,18 +1034,21 @@ namespace BackgroundTasks.Services
         /// </returns>
         private List<NotificationButton> BuildSimpleNotificationButtons(NewsItem newsItem)
         {
-            List<NotificationButton> buttons = [];
+            // درست کردن لیست خالی با استفاده از new List<NotificationButton>()
+            List<NotificationButton> buttons = new List<NotificationButton>();
+
             if (!string.IsNullOrWhiteSpace(newsItem.Link) && Uri.TryCreate(newsItem.Link, UriKind.Absolute, out _))
             {
-                buttons.Add(new NotificationButton { Text = "Read More", CallbackDataOrUrl = newsItem.Link, IsUrl = true });
+                buttons.Add(new NotificationButton
+                {
+                    Text = "Read More",
+                    CallbackDataOrUrl = newsItem.Link,
+                    IsUrl = true
+                });
             }
 
-            // --- THE DEFINITIVE FIX ---
-            // The .Select() operation in the original code might have been creating an iterator type
-            // that Newtonsoft.Json cannot deserialize. By calling .ToList(), we force the LINQ
-            // query to execute immediately and return a concrete List<T>, which is serializable.
-            return buttons.ToList();
-            // --- END OF FIX ---
+            // چون buttons خودمون از ابتدا لیست هست، نیازی به ToList() نیست
+            return buttons;
         }
 
         #endregion
