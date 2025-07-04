@@ -1,4 +1,5 @@
 ﻿using Application.Interfaces;
+using System;
 using System.Collections.Concurrent;
 
 namespace Infrastructure.Services
@@ -19,126 +20,177 @@ namespace Infrastructure.Services
     "#Business", "#GlobalMarkets", "#Economics", "#WallStreet", "#Portfolio", "#Trader", "#Investor",
     "#DayTrader", "#SwingTrader", "#FinancialFreedom", "#Assets", "#Liquidity", "#WealthManagement",
     "#FinancialLiteracy", "#AssetAllocation", "#EconomicOutlook", "#MarketWrap", "#BusinessNews",
-
+    "#PersonalFinance", "#FinancialPlanning", "#FinancialGoals", "#NetWorth", "#BullVsBear",
+    
     // --- Forex (FX) & Currencies ---
     "#Forex", "#FXTrading", "#CurrencyTrading", "#ForeignExchange", "#ForexSignals", "#ForexLife",
     "#ForexMarket", "#Currency", "#CurrencyPairs", "#FXAnalysis", "#ForexEducation", "#Pip", "#Pips",
+    "#ForexTrader", "#MajorPairs", "#MinorPairs", "#ExoticPairs", "#CrossPairs",
     // Major Currencies
-    "#USD", "#Dollar", "#EUR", "#Euro", "#JPY", "#Yen", "#GBP", "#Pound", "#CHF", "#SwissFranc",
-    "#CAD", "#Loonie", "#AUD", "#Aussie", "#NZD", "#Kiwi",
+    "#USD", "#Dollar", "#Greenback", "#EUR", "#Euro", "#JPY", "#Yen", "#GBP", "#Pound", "#Cable",
+    "#CHF", "#SwissFranc", "#Swissy", "#CAD", "#Loonie", "#AUD", "#Aussie", "#NZD", "#Kiwi",
     // Major Pairs
     "#EURUSD", "#GBPUSD", "#USDJPY", "#USDCAD", "#AUDUSD", "#USDCHF", "#NZDUSD",
     // Euro Crosses
-    "#EURJPY", "#EURGBP", "#EURCHF", "#EURAUD", "#EURCAD", "#EURNZD", "#EURNOK", "#EURSEK",
+    "#EURJPY", "#EURGBP", "#EURCHF", "#EURAUD", "#EURCAD", "#EURNZD", "#EURNOK", "#EURSEK", "#EURPLN", "#EURTRY",
     // Yen Crosses
-    "#GBPJPY", "#CHFJPY", "#CADJPY", "#AUDJPY", "#NZDJPY",
+    "#GBPJPY", "#CHFJPY", "#CADJPY", "#AUDJPY", "#NZDJPY", "#TRYJPY", "#ZARJPY", "#MXNJPY",
     // Pound Crosses
-    "#GBPAUD", "#GBPCAD", "#GBPCHF", "#GBPNZD",
+    "#GBPAUD", "#GBPCAD", "#GBPCHF", "#GBPNZD", "#GBPSEK", "#GBPNOK",
     // Other Crosses
-    "#AUDCAD", "#AUDCHF", " #AUDNZD", "#CADCHF", "#NZDCAD", "#NZDCHF",
-    // Exotic Currencies & Pairs
-    "#CNY", "#CNH", "#HKD", "#SGD", "#KRW", "#INR", "#RUB", "#BRL", "#ZAR", "#TRY", "#MXN",
-    "#NOK", "#SEK", "#PLN", "#DKK", "#HUF", "#CZK", "#ILS", "#CLP", "#THB", "#IDR", "#PHP",
-    "#USDTRY", "#USDZAR", "#USDMXN", "#USDSGD", "#USDHKD", "#USDCNH", "#USDNOK", "#USDSEK",
+    "#AUDCAD", "#AUDCHF", "#AUDNZD", "#CADCHF", "#NZDCAD", "#NZDCHF", "#EURSGD", "#GBPSGD",
+    // Exotic Currencies
+    "#CNY", "#Yuan", "#CNH", "#OffshoreYuan", "#HKD", "#HongKongDollar", "#SGD", "#SingaporeDollar", "#KRW", "#KoreanWon",
+    "#INR", "#IndianRupee", "#RUB", "#RussianRuble", "#BRL", "#BrazilianReal", "#ZAR", "#SouthAfricanRand",
+    "#TRY", "#TurkishLira", "#MXN", "#MexicanPeso", "#NOK", "#NorwegianKrone", "#SEK", "#SwedishKrona",
+    "#PLN", "#PolishZloty", "#DKK", "#DanishKrone", "#HUF", "#HungarianForint", "#CZK", "#CzechKoruna",
+    "#ILS", "#IsraeliShekel", "#CLP", "#ChileanPeso", "#THB", "#ThaiBaht", "#IDR", "#IndonesianRupiah",
+    "#PHP", "#PhilippinePeso", "#MYR", "#MalaysianRinggit", "#TWD", "#TaiwanDollar",
+    // Exotic Pairs
+    "#USDTRY", "#USDZAR", "#USDMXN", "#USDSGD", "#USDHKD", "#USDCNH", "#USDNOK", "#USDSEK", "#USDRUB", "#USDINR", "#USDBRL",
+    "#EURZAR", "#EURMXN",
 
     // --- Cryptocurrencies & Blockchain ---
     "#Crypto", "#Cryptocurrency", "#Blockchain", "#CryptoTrading", "#CryptoNews", "#Altcoin",
     "#Altcoins", "#DeFi", "#DecentralizedFinance", "#NFT", "#NFTs", "#NFTCommunity", "#Metaverse",
     "#Web3", "#Web3Gaming", "#DAO", "#SmartContracts", "#DigitalAssets", "#CryptoCommunity", "#HODL",
+    "#DiamondHands", "#PaperHands", "#CryptoGems", "#ToTheMoon", "#WhaleAlert",
     // Top-Tier Coins
     "#Bitcoin", "#BTC", "#Ethereum", "#ETH", "#Ripple", "#XRP", "#Cardano", "#ADA", "#Solana", "#SOL",
     "#BinanceCoin", "#BNB", "#Dogecoin", "#DOGE", "#Avalanche", "#AVAX", "#Polkadot", "#DOT",
-    "#TRON", "#TRX", "#Chainlink", "#LINK", "#Polygon", "#MATIC",
+    "#TRON", "#TRX", "#Chainlink", "#LINK", "#Polygon", "#MATIC", "#Toncoin", "#TON",
     // Popular & Mid-Cap Coins
     "#Litecoin", "#LTC", "#Stellar", "#XLM", "#Monero", "#XMR", "#Uniswap", "#UNI", "#Cosmos", "#ATOM",
-    "#Toncoin", "#TON", "#Aptos", "#APT", "#Sui", "#SUI", "#NEARProtocol", "#NEAR", "#InternetComputer", "#ICP",
+    "#Aptos", "#APT", "#Sui", "#SUI", "#NEARProtocol", "#NEAR", "#InternetComputer", "#ICP",
     "#Hedera", "#HBAR", "#VeChain", "#VET", "#Filecoin", "#FIL", "#Algorand", "#ALGO", "#Tezos", "#XTZ",
     "#Fantom", "#FTM", "#Aave", "#AAVE", "#Maker", "#MKR", "#TheGraph", "#GRT", "#Decentraland", "#MANA",
     "#TheSandbox", "#SAND", "#AxieInfinity", "#AXS", "#Gala", "#GALA", "#Injective", "#INJ",
     "#Thorchain", "#RUNE", "#Kaspa", "#KAS", "#Render", "#RNDR", "#Optimism", "#OP", "#Arbitrum", "#ARB",
-    "#LidoDAO", "#LDO", "#FetchAI", "#FET", "#SingularityNET", "#AGIX", "#Pepe", "#PEPE", "#Bonk", "#BONK",
-    "#Dogwifhat", "#WIF",
+    "#LidoDAO", "#LDO", "#FetchAI", "#FET", "#SingularityNET", "#AGIX", "#Stacks", "#STX", "#Theta", "#THETA",
+    "#Quant", "#QNT", "#ImmutableX", "#IMX", "#Celestia", "#TIA", "#Sei", "#SEI", "#Synthetix", "#SNX",
+    "#Helium", "#HNT", "#Arweave", "#AR", "#CurveDAO", "#CRV", "#JasmyCoin", "#JASMY",
+    // Meme Coins
+    "#ShibaInu", "#SHIB", "#Pepe", "#PEPE", "#Bonk", "#BONK", "#Dogwifhat", "#WIF",
     // Crypto Concepts
-    "#CryptoMining", "#Staking", "#YieldFarming", "#CryptoWallet", "#HardwareWallet", "#ColdStorage",
-    "#HotWallet", "#DEX", "#CEX", "#Layer1", "#Layer2", "#BitcoinHalving", "#EthereumMerge", "#GasFees",
-    "#Oracles", "#Tokenomics", "#DigitalCurrency", "#CBDC", "#CryptoRegulation", "#SEC", "#Tokenization",
-    "#Stablecoin", "#USDT", "#USDC", "#DAI", "#OnChainAnalysis", "#ProofOfWork", "#ProofOfStake",
-
+    "#CryptoMining", "#Staking", "#YieldFarming", "#LiquidityPool", "#ImpermanentLoss", "#CryptoWallet",
+    "#HardwareWallet", "#ColdStorage", "#HotWallet", "#DEX", "#CEX", "#Layer1", "#Layer2", "#Layer0",
+    "#Rollups", "#ZKRollups", "#OptimisticRollups", "#Sharding", "#BitcoinHalving", "#EthereumMerge", "#GasFees",
+    "#Oracles", "#Tokenomics", "#DigitalCurrency", "#CBDC", "#CryptoRegulation", "#SEC", "#CFTC", "#MiCA",
+    "#Tokenization", "#RWA", "#RealWorldAssets", "#Stablecoin", "#USDT", "#Tether", "#USDC", "#DAI",
+    "#OnChainAnalysis", "#ProofOfWork", "#PoW", "#ProofOfStake", "#PoS", "#ProofOfHistory", "#PoH",
+    "#Airdrop", "#ICO", "#IEO", "#IDO", "#SeedPhrase", "#Cryptography", "#BitcoinPizzaDay",
+    
     // --- Stocks, Equities & Indices ---
     "#Stocks", "#StockMarket", "#Equities", "#Shares", "#StockTrading", "#StockPicking", "#DayTradingStocks",
     "#ValueInvesting", "#GrowthInvesting", "#DividendInvesting", "#BlueChipStocks", "#PennyStocks",
-    "#Earnings", "#EarningsSeason", "#EPS", "#Shareholder", "#IPO", "#MarketCap", "#PricetoEarnings",
-    "#StockBuyback", "#ActivistInvestor", "#MergersAndAcquisitions",
+    "#Earnings", "#EarningsSeason", "#EPS", "#Shareholder", "#IPO", "#MarketCap", "#PricetoEarnings", "#PERatio",
+    "#StockBuyback", "#ActivistInvestor", "#MergersAndAcquisitions", "#MNA", "#SPAC",
     // Major US Indices
-    "#SP500", "#SPX", "#DowJones", "#DJIA", "#NASDAQ", "#NDX", "#Russell2000",
+    "#SP500", "#SPX", "$SPX", "#DowJones", "#DJIA", "$DJI", "#NASDAQ", "#NDX", "$NDX", "#Russell2000", "#RUT",
     // Major Global Indices
     "#FTSE100", "#DAX40", "#CAC40", "#Nikkei225", "#HangSeng", "#HSI", "#ASX200", "#EuroStoxx50",
-    "#SENSEX", "#NIFTY50", "#KOSPI", "#IBOVESPA", "#TSX", "#MOEX", "#ShanghaiComposite",
+    "#SENSEX", "#NIFTY50", "#KOSPI", "#IBOVESPA", "#TSX", "#MOEX", "#ShanghaiComposite", "#CSI300",
     // Major Company Tickers (Examples)
-    "#AAPL", "#MSFT", "#GOOGL", "#AMZN", "#NVDA", "#TSLA", "#META", "#BRK", "#JPM", "#V", "#JNJ", "#WMT",
-    "#PG", "#MA", "#UNH", "#HD", "#DIS", "#NKE", "#CRM", "#BAC",
-    // Sectors
-    "#TechStocks", "#Financials", "#Healthcare", "#EnergySector", "#Industrials", "#RealEstate",
-    "#Utilities", "#ConsumerDiscretionary", "#ConsumerStaples", "#Materials", "#Semiconductors",
-    "#Biotech", "#EV", "#AI", "#ArtificialIntelligence", "#CloudComputing",
+    "#AAPL", "#MSFT", "#GOOG", "#GOOGL", "#AMZN", "#NVDA", "#TSLA", "#META", "#BRKA", "#BRKB", "#JPM", "#V",
+    "#JNJ", "#WMT", "#PG", "#MA", "#UNH", "#HD", "#DIS", "#NKE", "#CRM", "#BAC", "#XOM", "#CVX", "#KO", "#PEP",
+    "#PFE", "#MRK", "#LLY", "#ABBV", "#MCD", "#CSCO", "#INTC", "#AMD", "#QCOM", "#BA", "#CAT", "#GS", "#ORCL",
+    // Sectors & Industries
+    "#TechStocks", "#Financials", "#Healthcare", "#EnergySector", "#Industrials", "#RealEstate", "#REIT",
+    "#Utilities", "#ConsumerDiscretionary", "#ConsumerStaples", "#Materials", "#CommunicationServices",
+    "#Software", "#Hardware", "#SaaS", "#Cybersecurity", "#FinTech", "#CleanEnergy", "#RenewableEnergy",
+    "#EV", "#ArtificialIntelligence", "#AI", "#CloudComputing", "#Semiconductors", "#Biotech", "#Pharma",
+    "#Defense", "#Aerospace", "#Retail", "#Ecommerce", "#Gaming", "#Streaming", "#Airlines", "#Automotive",
+    "#Banking", "#Insurance", "#BigOil",
 
     // --- Economic Indicators & Events ---
-    "#Economy", "#EconomicData", "#Inflation", "#CPI", "#CoreCPI", "#PPI", "#Recession", "#GDP", "#GDPGrowth",
-    "#InterestRates", "#NFP", "#NonFarmPayrolls", "#Unemployment", "#JobsReport", "#RetailSales",
-
-    "#ConsumerConfidence", "#ConsumerSentiment", "#ManufacturingPMI", "#ServicesPMI", "#ISM",
-    "#DurableGoods", "#InitialJoblessClaims", "#HousingStarts", "#BuildingPermits", "#TradeBalance",
-    "#CurrentAccount",
+    "#Economy", "#EconomicData", "#Inflation", "#CPI", "#CoreCPI", "#PPI", "#CorePPI", "#Stagflation", "#Deflation",
+    "#Recession", "#GDP", "#GDPGrowth", "#InterestRates", "#NFP", "#NonFarmPayrolls", "#Unemployment",
+    "#JobsReport", "#RetailSales", "#CoreRetailSales", "#ConsumerConfidence", "#ConsumerSentiment",
+    "#ManufacturingPMI", "#ServicesPMI", "#ISM", "#DurableGoods", "#InitialJoblessClaims", "#ContinuingClaims",
+    "#HousingStarts", "#BuildingPermits", "#ExistingHomeSales", "#NewHomeSales", "#CaseShiller",
+    "#TradeBalance", "#CurrentAccount", "#FactoryOrders", "#IndustrialProduction", "#CapacityUtilization",
+    "#BeigeBook", "#LeadingIndicators",
     
     // --- Central Banks & Monetary Policy ---
-    "#CentralBank", "#MonetaryPolicy", "#FederalReserve", "#TheFed", "#FOMC", "#JeromePowell",
+    "#CentralBank", "#MonetaryPolicy", "#FederalReserve", "#TheFed", "#FOMC", "#FOMCMinutes", "#JeromePowell",
     "#ECB", "#EuropeanCentralBank", "#ChristineLagarde", "#BOE", "#BankOfEngland",
     "#BOJ", "#BankOfJapan", "#SNB", "#SwissNationalBank", "#BOC", "#BankOfCanada",
-    "#RBA", "#ReserveBankOfAustralia", "#RBNZ", "#ReserveBankOfNewZealand", "#PBOC",
+
+    "#RBA", "#ReserveBankOfAustralia", "#RBNZ", "#ReserveBankOfNewZealand", "#PBOC", "#PeoplesBankOfChina",
     "#RateHike", "#RateCut", "#InterestRateHike", "#QuantitativeEasing", "#QE",
     "#QuantitativeTightening", "#QT", "#Hawkish", "#Dovish", "#ForwardGuidance", "#YieldCurveControl",
-    "#BalanceSheet", "#CentralBankPolicy",
-
+    "#BalanceSheet", "#CentralBankPolicy", "#DotPlot", "#FedWatch", "#InflationTargeting",
+    
     // --- Trading Strategies & Technical Analysis ---
     "#MarketAnalysis", "#TechnicalAnalysis", "#TA", "#FundamentalAnalysis", "#FA", "#PriceAction",
     "#Candlesticks", "#ChartPatterns", "#Indicators", "#DayTrading", "#SwingTrading", "#Scalping",
-    "#PositionTrading", "#AlgorithmicTrading", "#HFT", "#PairsTrading", "#Arbitrage",
-    "#Support", "#Resistance", "#SupportAndResistance", "#Trendline", "#Channels", "#Fibonacci",
-    "#MovingAverage", "#EMA", "#SMA", "#RSI", "#MACD", "#BollingerBands", "#Ichimoku", "#Stochastics",
-    "#BreakoutTrading", "#Pullback", "#Reversal", "#Continuation", "#Doji", "#Hammer", "#EngulfingPattern",
+    "#PositionTrading", "#AlgorithmicTrading", "#AlgoTrading", "#HFT", "#PairsTrading", "#Arbitrage",
+    "#Support", "#Resistance", "#SupportAndResistance", "#Trendline", "#Channels", "#Fibonacci", "#Fibs",
+    "#MovingAverage", "#EMA", "#SMA", "#RSI", "#MACD", "#BollingerBands", "#Ichimoku", "#IchimokuCloud", "#Stochastics",
+    "#BreakoutTrading", "#Pullback", "#Reversal", "#Continuation", "#MeanReversion", "#TrendFollowing",
+    // Candlestick Patterns
+    "#Doji", "#Hammer", "#InvertedHammer", "#HangingMan", "#ShootingStar", "#EngulfingPattern",
+    "#BullishEngulfing", "#BearishEngulfing", "#Harami", "#PiercingPattern", "#DarkCloudCover",
+    "#MorningStar", "#EveningStar", "#ThreeWhiteSoldiers", "#ThreeBlackCrows", "#Marubozu",
+    // Chart Patterns
+    "#DoubleTop", "#DoubleBottom", "#TripleTop", "#TripleBottom", "#HeadAndShoulders", "#InverseHeadAndShoulders",
+    "#BullFlag", "#BearFlag", "#Pennant", "#Wedge", "#FallingWedge", "#RisingWedge", "#Triangle",
+    "#AscendingTriangle", "#DescendingTriangle", "#SymmetricalTriangle", "#CupAndHandle", "#Rectangle",
+    // TA Concepts
     "#MovingAverageCrossover", "#GoldenCross", "#DeathCross", "#RSIOversold", "#RSIOverbought",
-    "#MACDCrossover", "#Divergence", "#ElliottWave", "#WyckoffMethod", "#MarketStructure",
-    "#OrderFlow", "#LiquidityGrab", "#OrderBlock",
+    "#MACDCrossover", "#Divergence", "#BullishDivergence", "#BearishDivergence", "#HiddenDivergence",
+    "#ElliottWave", "#ImpulseWave", "#CorrectiveWave", "#WaveAnalysis", "#MarketStructure", "#HigherHighs",
+    "#LowerLows", "#MarketStructureShift", "#BOS", "#CHoCH", "#VolumeAnalysis", "#OnBalanceVolume", "#OBV",
+    // Advanced TA / Niche Strategies
+    "#WyckoffMethod", "#Accumulation", "#Distribution", "#Spring", "#Upthrust", "#SignOfStrength", "#CompositeMan",
+    "#ICT", "#SmartMoneyConcepts", "#SMC", "#OrderFlow", "#LiquidityGrab", "#StopHunt", "#OrderBlock",
+    "#BreakerBlock", "#MitigationBlock", "#FairValueGap", "#FVG", "#Imbalance", "#JudasSwing", "#PremiumAndDiscount",
+    "#MarketProfile", "#VolumeProfile", "#PointOfControl", "#POC", "#ValueArea", "#TPO", "#Gann", "#HarmonicPatterns",
+    "#Gartley", "#BatPattern", "#ButterflyPattern", "#CrabPattern",
     
     // --- Risk Management & Trading Psychology ---
     "#RiskManagement", "#StopLoss", "#TakeProfit", "#RiskReward", "#PositionSizing", "#TradeManagement",
-    "#TradingPsychology", "#TradingPlan", "#TradingJournal", "#Discipline", "#Patience",
-    "#GreedAndFear", "#FOMO", "#FUD", "#ConfirmationBias", "#LossAversion",
+    "#TradingPsychology", "#TraderMindset", "#TradingPlan", "#TradingJournal", "#Discipline", "#Patience",
+    "#GreedAndFear", "#FOMO", "#FearOfMissingOut", "#FUD", "#FearUncertaintyDoubt", "#RevengeTrading",
+    "#Overtrading", "#ConfirmationBias", "#LossAversion", "#AnalysisParalysis", "#EmotionalTrading",
+    "#Mindfulness", "#MentalEdge", "#TradingMistakes", "#TradingRules", "#CapitalPreservation",
     
     // --- Market Sentiment & Conditions ---
     "#MarketSentiment", "#Bullish", "#Bearish", "#BullMarket", "#BearMarket", "#Correction",
-    "#MarketCrash", "#Volatility", "#VIX", "#RiskOn", "#RiskOff", "#Contrarian", "#ContrarianInvesting",
-    "#HerdingBehavior", "#Capitulation", "#ATH", "#AllTimeHigh", "#ATL", "#AllTimeLow",
+    "#MarketCrash", "#Volatility", "#VIX", "$VIX", "#RiskOn", "#RiskOff", "#Contrarian", "#ContrarianInvesting",
+    "#HerdingBehavior", "#Capitulation", "#ATH", "#AllTimeHigh", "#ATL", "#AllTimeLow", "#Euphoria", "#PanicSelling",
     
     // --- Commodities ---
     "#Commodities", "#CommodityTrading",
     // Metals
-    "#Gold", "#XAUUSD", "#Silver", "#XAGUSD", "#Platinum", "#Palladium", "#Copper", "#Aluminum", "#Zinc", "#Nickel",
+    "#Gold", "#XAUUSD", "#Silver", "#XAGUSD", "#Platinum", "#XPTUSD", "#Palladium", "#XPDUSD",
+    "#PreciousMetals", "#IndustrialMetals", "#Copper", "#Aluminum", "#Zinc", "#Nickel", "#IronOre", "#Lithium",
+
     // Energy
-    "#Oil", "#CrudeOil", "#WTI", "#BrentCrude", "#NaturalGas", "#OPEC", "#EnergyCrisis",
+    "#Oil", "#CrudeOil", "#WTI", "#BrentCrude", "#NaturalGas", "#NatGas", "#HenryHub", "#OPEC", "#OPECPlus",
+    "#EnergyCrisis", "#Gasoline", "#HeatingOil", "#Uranium",
     // Agricultural
-    "#Corn", "#Wheat", "#Soybeans", "#Coffee", "#Sugar", "#Cocoa", "#Cotton", "#Lumber", "#Livestock",
+    "#Agriculture", "#SoftCommodities", "#Corn", "#Wheat", "#Soybeans", "#Coffee", "#Sugar", "#Cocoa", "#Cotton",
+    "#Lumber", "#Livestock", "#LeanHogs", "#LiveCattle",
     
     // --- Bonds & Fixed Income ---
     "#Bonds", "#Treasuries", "#YieldCurve", "#FixedIncome", "#GovernmentBonds", "#CorporateBonds",
-    "#JunkBonds", "#BondYields", "#10YearTreasury", "#YieldCurveInversion",
+    "#JunkBonds", "#HighYieldBonds", "#MunicipalBonds", "#BondYields", "#10YearTreasury", "#2YearTreasury",
+    "#YieldCurveInversion", "#BondMarket", "#CreditSpreads", "#Duration",
     
     // --- Geopolitics & Global Events ---
     "#Geopolitics", "#WorldNews", "#TradeWar", "#TradeDeals", "#Sanctions", "#Politics", "#Elections",
-    "#GlobalTensions", "#SupplyChain",
+    "#GlobalTensions", "#SupplyChain", "#GlobalConflict", "#PoliticalRisk",
     
     // --- Derivatives & Miscellaneous Finance ---
-    "#Derivatives", "#OptionsTrading", "#FuturesTrading", "#CFD", "#HedgeFund", "#VentureCapital", "#PrivateEquity"
+    "#Derivatives", "#OptionsTrading", "#FuturesTrading", "#CFD", "#HedgeFund", "#VentureCapital", "#VC",
+    "#PrivateEquity", "#PE", "#ETF", "#ETFs", "#IndexFunds", "#MutualFunds", "#Puts", "#Calls", "#OptionsStrategy",
+    "#TheGreeks", "#Delta", "#Gamma", "#Theta", "#Vega", "#VolatilitySmile", "#Leverage", "#Margin",
+    
+    // --- Educational & Community ---
+    "#LearnToTrade", "#TradingForBeginners", "#TradingEducation", "#TradingTips", "#Trading101",
+    "#TraderLife", "#DayTraderLife", "#FullTimeTrader", "#TradingCommunity", "#Mentorship", "#StockMarketTips",
+      "#ResearchAnalyst", "#Trader", "#ExecutionTrader", "#PropTrader", "#MarketMaker", "#InvestmentBanker"
 }.AsReadOnly();
 
         // A single, thread-safe queue to hold the shuffled hashtags for the channel.

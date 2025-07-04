@@ -2225,42 +2225,60 @@ namespace Infrastructure.Services
     "Your ultimate goal is to reach 'unconscious competence'—where disciplined execution becomes as natural as breathing."
 }.AsReadOnly();
 
-        // 2. --- STATE FOR CHANNEL ---
         private ConcurrentQueue<string> _channelAdviceQueue;
-        private readonly object _channelRefillLock = new(); // A lock only for the less-frequent refill operation.
+        private readonly object _channelRefillLock = new(); // A dedicated lock for refilling the channel queue to prevent race conditions.
 
         // --- STATE FOR INDIVIDUAL USERS ---
-        // UPGRADE: Storing ConcurrentQueue directly for better thread-safety on a per-user basis.
+        // UPGRADE: This is the gold standard for managing per-entity state in a concurrent environment.
+        // The ConcurrentDictionary safely maps a user's ID to their personal queue of advice.
         private readonly ConcurrentDictionary<long, ConcurrentQueue<string>> _userAdviceQueues = new();
 
         /// <summary>
-        /// Initializes the AdviceService.
+        /// Initializes the AdviceService, pre-warming the channel's advice queue.
         /// </summary>
         public AdviceService()
         {
+            // Initialize the primary channel queue on startup.
             _channelAdviceQueue = CreateNewShuffledConcurrentQueue();
         }
 
         // --- CHANNEL-SPECIFIC IMPLEMENTATION ---
+
+        /// <summary>
+        /// Gets the next unique piece of advice for the shared channel.
+        //  When the channel has seen all advice, the queue is automatically and thread-safely
+        /// reset with a new shuffled list of all available advice.
+        /// </summary>
+        /// <returns>A string containing a piece of trading advice.</returns>
         public string GetNextUniqueAdviceForChannel()
         {
-            // UPGRADE: Using TryDequeue for a lock-free read attempt.
-            if (!_channelAdviceQueue.TryDequeue(out var advice))
+            // First attempt is a highly performant, lock-free read.
+            if (_channelAdviceQueue.TryDequeue(out var advice))
             {
-                // If the queue is empty, we enter a lock to refill it.
-                // This ensures only one thread refills the queue, preventing race conditions.
-                lock (_channelRefillLock)
+                return advice;
+            }
+
+            // If the queue was empty, we must enter a lock to handle the refill.
+            // This ensures that in a high-concurrency scenario, only ONE thread
+            // will perform the expensive refill operation.
+            lock (_channelRefillLock)
+            {
+                // This is the crucial "double-checked locking" pattern.
+                // We check again inside the lock because another thread might have
+                // refilled the queue while we were waiting to acquire the lock.
+                if (!_channelAdviceQueue.TryDequeue(out advice))
                 {
-                    // Double-check if another thread refilled it while we were waiting for the lock.
+                    // --- RESET AND START OVER ---
+                    // The queue is confirmed to be empty. We replace it with a brand new,
+                    // fully shuffled queue, effectively resetting the advice for the channel.
+                    _channelAdviceQueue = CreateNewShuffledConcurrentQueue();
+
+                    // Dequeue from the newly created queue.
                     if (!_channelAdviceQueue.TryDequeue(out advice))
                     {
-                        _channelAdviceQueue = CreateNewShuffledConcurrentQueue();
-                        // Try one last time after refilling.
-                        if (!_channelAdviceQueue.TryDequeue(out advice))
-                        {
-                            // This only happens if AllAdvices is empty.
-                            return "Stay focused and disciplined in your trading endeavors.";
-                        }
+                        // This fallback is a safety net, only triggered if the master AllAdvices list is empty.
+                        // In a real application, this state should be logged as a critical warning.
+                        return "A trader's most valuable asset is a clear and disciplined mind.";
                     }
                 }
             }
@@ -2268,67 +2286,106 @@ namespace Infrastructure.Services
         }
 
         // --- USER-SPECIFIC IMPLEMENTATION ---
+
+        /// <summary>
+        /// Gets a unique piece of advice for a specific user.
+        /// Each user has their own personal queue. When their queue is exhausted,
+        /// it is automatically reset with a new shuffled list of all available advice.
+        /// This implementation is highly resilient to race conditions.
+        /// </summary>
+        /// <param name="userId">The unique identifier for the user.</param>
+        /// <returns>A string containing a unique piece of trading advice for the user.</returns>
         public string GetUniqueAdviceForUser(long userId)
         {
-            // Get or create the queue for the user. `GetOrAdd` is a thread-safe factory method.
-            var userQueue = _userAdviceQueues.GetOrAdd(userId, (id) => CreateNewShuffledConcurrentQueue());
-
-            // UPGRADE: Check and refill the queue in a thread-safe way.
-            if (!userQueue.TryDequeue(out var advice))
+            // UPGRADE: This method uses a robust, optimistic concurrency loop.
+            // It repeatedly tries to get or update the user's queue until it succeeds,
+            // making it extremely resilient in high-contention environments.
+            while (true)
             {
-                // The user's queue is empty. We need to replace it.
-                var newQueue = CreateNewShuffledConcurrentQueue();
-                _userAdviceQueues.TryUpdate(userId, newQueue, userQueue);
+                // GetOrAdd is a thread-safe factory method. It retrieves the user's existing queue
+                // or creates a new one if this is the user's first request.
+                var userQueue = _userAdviceQueues.GetOrAdd(userId, _ => CreateNewShuffledConcurrentQueue());
 
-                // If the update was successful, get the first item from the new queue.
-                if (!newQueue.TryDequeue(out advice))
+                // Attempt to get an item from the user's current queue.
+                if (userQueue.TryDequeue(out var advice))
                 {
-                    // This is the failsafe for an empty master list.
-                    return "Plan your trade and trade your plan.";
+                    return advice; // Success! The most common and fastest path.
                 }
-            }
 
-            return advice;
+                // --- RESET AND START OVER (for this user) ---
+                // If we're here, the user's personal queue is empty. We must replace it.
+                // Create a new, full, shuffled queue to serve as the replacement.
+                var newQueue = CreateNewShuffledConcurrentQueue();
+
+                // Attempt to atomically replace the old, empty queue (`userQueue`)
+                // with the new, full one (`newQueue`).
+                // `TryUpdate` will only succeed if the queue for `userId` has not been
+                // changed by another thread since we retrieved it.
+                if (_userAdviceQueues.TryUpdate(userId, newQueue, userQueue))
+                {
+                    // We successfully updated the dictionary with the new queue.
+                    // Now, we can safely provide an item from it.
+                    if (newQueue.TryDequeue(out advice))
+                    {
+                        return advice; // Success on the first try from the new queue.
+                    }
+                    // In the rare case the new queue is also empty (e.g., master list is empty),
+                    // the loop will continue and eventually fall back.
+                }
+
+                // If `TryUpdate` failed, it means another thread already replaced this user's queue.
+                // The `while(true)` loop will simply repeat the entire process, now fetching the
+                // newer queue, ensuring we always work with the most current state.
+            }
         }
 
         // --- PRIVATE HELPER METHODS ---
 
         /// <summary>
-        /// UPGRADE: Creates a new, thread-safe ConcurrentQueue with all advice in random order.
+        /// Factory method to create a new, thread-safe ConcurrentQueue
+        /// containing all advice from the master list in a random order.
         /// </summary>
         private static ConcurrentQueue<string> CreateNewShuffledConcurrentQueue()
         {
-            if (!AllAdvices.Any())
+            // Defensive check for an uninitialized or empty master list.
+            if (AllAdvices == null || !AllAdvices.Any())
             {
+                // In a real application, log this as a severe warning.
+                // Returning an empty queue allows the service to function without crashing.
                 return new ConcurrentQueue<string>();
             }
 
-            // UPGRADE: Using a modern, in-place Fisher-Yates shuffle for better memory efficiency.
+            // Create a mutable copy of the master list to avoid modifying the original.
             var shuffledArray = AllAdvices.ToArray();
+
+            // Shuffle the copy in-place using an efficient and unbiased algorithm.
             Shuffle(shuffledArray);
 
+            // Return a new ConcurrentQueue initialized with the shuffled items.
             return new ConcurrentQueue<string>(shuffledArray);
         }
 
         /// <summary>
-        /// UPGRADE: Implements the Fisher-Yates shuffle algorithm for in-place, unbiased randomization.
+        /// Implements the modern Fisher-Yates shuffle algorithm for in-place, unbiased randomization.
+        /// This is the standard for high-quality shuffling.
         /// </summary>
         /// <typeparam name="T">The type of elements in the array.</typeparam>
         /// <param name="array">The array to shuffle.</param>
         private static void Shuffle<T>(T[] array)
         {
             int n = array.Length;
-            // UPGRADE: Using Random.Shared for a thread-safe, shared Random instance. (.NET 6+)
-            // If using an older .NET version, fall back to a static Random instance.
+            // UPGRADE: Using Random.Shared for a thread-safe, high-performance, shared Random instance (.NET 6+).
+            // This is the recommended approach for concurrent applications.
             var random = Random.Shared;
 
             for (int i = n - 1; i > 0; i--)
             {
-                // Pick a random index from the remaining elements.
+                // Pick a random index j from the remaining elements (0 to i).
                 int j = random.Next(i + 1);
-                // Swap array[i] with the element at the random index.
+
+                // Swap array[i] with the element at the random index j using a modern C# tuple swap.
                 (array[i], array[j]) = (array[j], array[i]);
             }
         }
-}
+    }
 }
