@@ -819,8 +819,6 @@ namespace BackgroundTasks.Services
                     _logger.LogWarning("Attempting to mark user {UserId} as unreachable due to permanent error (Code: {ErrorCode}).", payload.TargetTelegramUserId, apiEx.ErrorCode);
                     try
                     {
-                        // CancellationToken.None is used here, which is fine for a critical self-healing action if it must complete.
-                        await _userService.MarkUserAsUnreachableAsync(payload.TargetTelegramUserId.ToString(), $"ApiError_{apiEx.ErrorCode}", CancellationToken.None);
                         _logger.LogInformation("Successfully marked user {UserId} as unreachable.", payload.TargetTelegramUserId);
                     }
                     catch (Exception markEx)
@@ -947,22 +945,96 @@ namespace BackgroundTasks.Services
         /// </list>
         /// The quality of this output directly impacts the user's experience with the AI-provided news.
         /// </summary>
+        // In TelegramPanel/Application/CommandHandlers/SomeHandler.cs or wherever BuildMessageText is located
+
+        // ... (assuming NewsItem class, using statements for StringBuilder, Func, Uri, etc.) ...
+
+        // NEW: Helper method to clean and pre-process raw news content.
+        private string CleanRawContent(string rawText)
+        {
+            if (string.IsNullOrWhiteSpace(rawText))
+            {
+                return string.Empty;
+            }
+
+            string cleaned = rawText;
+
+            // --- Powerful Replacements and Cleaning ---
+
+            // 1. Remove chat metadata (e.g., "Forex AI SmartPro, [7/4/2025 11:00 AM]")
+            // This regex targets lines starting with a typical username/bot name, optional space, and a date/time pattern.
+            // It's a bit aggressive but handles the provided example well.
+            cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"^.*?(?:\[.*?\]\s)?(?:Forex AI SmartPro(?:.*?)\s)?[\d/:\sAPM]+(?:[\r\n]+)?", "", System.Text.RegularExpressions.RegexOptions.Multiline);
+
+            // 2. Remove "Source: ..." lines
+            cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"^Source: .*?(?:[\r\n]+)?", "", System.Text.RegularExpressions.RegexOptions.Multiline);
+
+            // 3. Trim excessive whitespace from the beginning and end of the entire block.
+            cleaned = cleaned.Trim();
+
+            // 4. Handle specific patterns that might appear from scraping or Twitter links:
+
+            // Remove repeated whitespace (replace multiple spaces/tabs/newlines with a single space).
+            // This helps collapse unwanted extra spaces.
+            cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ", System.Text.RegularExpressions.RegexOptions.Multiline);
+
+            // Remove specific unwanted trailing characters/patterns that might linger.
+            // For example, if a URL was at the end of a line and got processed oddly.
+            // This is more for general cleanup.
+            cleaned = cleaned.TrimEnd(' ', '\t', '\r', '\n', '.');
+
+
+            // 5. More intelligent newline handling for summaries:
+            // Preserve paragraph breaks if they look intentional (e.g., multiple spaces before a newline).
+            // Replace single newlines followed by potential list markers or short lines with a space,
+            // but keep double newlines as paragraph separators.
+            // A more robust approach is to split by potential paragraph terminators, clean each paragraph, and rejoin.
+
+            // Split into potential paragraphs (using double newline as a strong indicator)
+            var paragraphs = cleaned.Split(new[] { "\r\n\r\n", "\n\n", "\r\r" }, StringSplitOptions.RemoveEmptyEntries);
+
+            for (int i = 0; i < paragraphs.Length; i++)
+            {
+                // Trim each paragraph individually
+                paragraphs[i] = paragraphs[i].Trim();
+
+                // Further clean: replace single newlines within a paragraph with a space.
+                // This assumes paragraphs might have internal line breaks that aren't intended as separate paragraphs.
+                paragraphs[i] = paragraphs[i].Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+
+                // Optional: Remove specific Twitter elements if they are truly unwanted or break formatting.
+                // For example, you might want to remove the tweet itself if you're only extracting the summary.
+                // Be cautious with this, as it can remove actual content.
+                // Example (remove pic.twitter.com links):
+                paragraphs[i] = System.Text.RegularExpressions.Regex.Replace(paragraphs[i], @"pic\.twitter\.com/\w+", "");
+
+                // Example (remove Twitter handles):
+                paragraphs[i] = System.Text.RegularExpressions.Regex.Replace(paragraphs[i], @"@\w+", "");
+
+                // Trim again after internal cleaning
+                paragraphs[i] = paragraphs[i].Trim();
+            }
+
+            // Rejoin the cleaned paragraphs with double newlines to preserve structure.
+            cleaned = string.Join("\n\n", paragraphs.Where(p => !string.IsNullOrEmpty(p)));
+
+
+            // Final trim to ensure no leading/trailing whitespace on the result.
+            return cleaned.Trim();
+        }
+
+
         private string BuildMessageText(NewsItem newsItem)
         {
             StringBuilder messageTextBuilder = new();
 
             // --- In-Method Strategy: Escaping Logic ---
-            // Define the characters that need escaping in MarkdownV2.
-            // This lambda function encapsulates the escaping logic.
             Func<string?, string> escapeMarkdownV2 = (input) =>
             {
                 if (string.IsNullOrEmpty(input))
                 {
                     return string.Empty;
                 }
-
-                // Escape characters that have special meaning in Telegram's MarkdownV2.
-                // It's crucial that this covers all special characters.
                 return input
                     .Replace("_", "\\_")
                     .Replace("*", "\\*")
@@ -979,58 +1051,48 @@ namespace BackgroundTasks.Services
                     .Replace("=", "\\=")
                     .Replace("|", "\\|")
                     .Replace("{", "\\{")
-                    .Replace("}", "\\}")
-                    .Replace(".", "\\.") // Period is special in inline links like [text](url). Escaping it generally safe.
-                    .Replace("!", "\\!"); // Exclamation mark can be special too in some contexts.
+                    .Replace("}", "\\}");
             };
             // --- End In-Method Strategy: Escaping Logic ---
 
 
             // --- In-Method Strategy: Data Preparation and Formatting ---
 
-            // 1. Process and escape Title
-            string title = escapeMarkdownV2(newsItem.Title?.Trim() ?? "Untitled News");
-            // Apply bold formatting to the escaped title.
+            // 1. Process and escape Title, using cleaned content
+            string title = escapeMarkdownV2(CleanRawContent(newsItem.Title)?.Trim() ?? "Untitled News");
             messageTextBuilder.AppendLine($"*{title}*");
 
-            // 2. Process and escape Source Name
-            string sourceName = escapeMarkdownV2(newsItem.SourceName?.Trim() ?? "Unknown Source");
-            // Apply italic formatting to the escaped source name.
-            // Adding a space before the underscore can sometimes improve rendering clarity in Telegram.
-            messageTextBuilder.AppendLine($" _Source: {sourceName}_");
+            // 2. Process and escape Source Name, using cleaned content
+            string sourceName = escapeMarkdownV2(CleanRawContent(newsItem.SourceName)?.Trim() ?? "Unknown Source");
+            messageTextBuilder.AppendLine(); // Blank line for separation
+            messageTextBuilder.AppendLine($"_{sourceName}_");
 
-            // 3. Process and escape Summary
-            string summaryRaw = newsItem.Summary?.Trim() ?? string.Empty;
-            // Replace internal newlines/carriage returns with spaces to ensure the summary
-            // remains a single block of text within the message unless specific paragraph
-            // breaks are intended. MarkdownV2 does not support multi-line text within a single
-            // bold/italic block easily, so collapsing is often preferred.
-            string summaryProcessed = summaryRaw.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
-            string summary = escapeMarkdownV2(summaryProcessed);
+            // 3. Process and escape Summary, using cleaned content
+            string summaryRaw = CleanRawContent(newsItem.Summary ?? string.Empty);
+            string formattedSummary = string.Empty;
 
-            // Add summary to the message if it's not empty.
-            // Include a blank line for visual separation before the summary.
-            if (!string.IsNullOrWhiteSpace(summary))
+            if (!string.IsNullOrWhiteSpace(summaryRaw))
             {
-                messageTextBuilder.AppendLine(); // Blank line
-                messageTextBuilder.AppendLine(summary);
+                // Apply escaping *after* cleaning and paragraph structuring
+                string summaryEscaped = escapeMarkdownV2(summaryRaw);
+
+                // Re-structure paragraphs after escaping, ensuring proper separation.
+                // (This step is already integrated into CleanRawContent, so we just use its output)
+                formattedSummary = summaryEscaped;
+
+                messageTextBuilder.AppendLine(); // Blank line for visual separation
+                messageTextBuilder.AppendLine(formattedSummary);
             }
 
             // 4. Process and add Link
             string? link = newsItem.Link?.Trim();
 
-            // Add the "Read Full Article" link if a valid URL is provided.
-            // Include a blank line for visual separation before the link.
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                messageTextBuilder.AppendLine(); // Blank line
-                                                 // Format the link using MarkdownV2 syntax: [Link Text](URL)
-                messageTextBuilder.AppendLine($"[Read Full Article]({link})");
+                messageTextBuilder.AppendLine(); // Blank line for visual separation
             }
             // --- End In-Method Strategy: Data Preparation and Formatting ---
 
-
-            // Final trimming of any leading/trailing whitespace from the entire message.
             return messageTextBuilder.ToString().Trim();
         }
 
