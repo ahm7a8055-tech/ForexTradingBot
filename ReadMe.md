@@ -114,7 +114,7 @@ For developers who prefer to run the application directly on their machine, foll
     dotnet run --project WebApi
     ```
 
-For more comprehensive details and production deployment instructions, please refer to the dedicated [INSTALL.md guide](https://github.com/Opselon/ForexTradingBot/blob/master/INSTALL.md).
+For more comprehensive details and production deployment instructions, please refer to the dedicated [INSTALL.md guide](https://github.com/Opselon/ForexTradingBot/blob/master/WebAPI/INSTALL.md).
 
 ---
 
