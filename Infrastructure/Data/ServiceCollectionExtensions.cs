@@ -211,6 +211,7 @@ namespace Infrastructure.Data
             // Register the Scoped DbContext interface.
             _ = services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
             _ = services.AddSingleton<IAdviceService, AdviceService>();
+            _ = services.AddSingleton<IHashtagService, HashtagService>();
             #endregion
 
             // =================================================================

@@ -28,6 +28,7 @@ namespace Infrastructure.Services
         #region Private Readonly Fields
         private readonly ILogger<TelegramUserApiClient> _logger;
         private readonly TelegramUserApiSettings _settings;
+        private readonly IHashtagService _hashtagService;
         private readonly ConcurrentDictionary<long, (TL.User User, DateTime Expiry)> _userCacheWithExpiry = new();
         private readonly ConcurrentDictionary<long, (TL.ChatBase Chat, DateTime Expiry)> _chatCacheWithExpiry = new();
         private readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30);
@@ -78,10 +79,11 @@ namespace Infrastructure.Services
 
         #region Constructor
         public TelegramUserApiClient(IAdviceService adviceService,
-             ILogger<TelegramUserApiClient> logger,
+             ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
              IOptions<TelegramUserApiSettings> settingsOptions,
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
+            _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
             _useChannelForDispatch = useChannelForDispatch; // LEVEL 10: Initialize the flag
@@ -1436,11 +1438,10 @@ namespace Infrastructure.Services
             }
             catch (Exception ex)
             {
-                // Log the error but do not re-throw. This ensures that if the advice API is down,
-                // the original message can still be sent without the footer.
-                _logger.LogWarning(ex, "SendMessageAsync: Failed to get/append random advice due to an exception. Message will be sent without the footer.");
+                _logger.LogWarning(ex, "Failed to get advice for message footer. Skipping advice.");
             }
-            // --- END OF NEW LOGIC ---
+
+           
 
             try
             {
@@ -1457,6 +1458,33 @@ namespace Infrastructure.Services
                     : null;
 
                 UpdatesBase updatesBase;
+
+
+                string finalMessage = message ?? "";
+                // --- 2. Get and format Hashtags ---
+                // --- Get and Append Hashtags ---
+                try
+                {
+                    // Get exactly 3 random hashtags from our dedicated service.
+                    string hashtags = _hashtagService.GetRandomHashtags(3);
+
+                    if (!string.IsNullOrWhiteSpace(hashtags))
+                    {
+                        // Create the footer string.
+                        string footer = $"\n{hashtags}";
+
+                        // Append the footer to the final message.
+                        finalMessage += footer;
+
+                        _logger.LogDebug("Appended random hashtag footer to the message for PeerID {PeerId}.", peerIdForLog);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Log the error but do not re-throw. This ensures that if the hashtag service fails for any reason,
+                    // the original message can still be sent without the footer.
+                    _logger.LogWarning(ex, "Failed to generate hashtag footer due to an exception. Message will be sent without it.");
+                }
 
 
                 try
