@@ -31,7 +31,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         private readonly IPaymentService _paymentService; //✅ تزریق سرویس پرداخت
         private readonly IUserConversationStateService _stateService; // Inject the state service
         public const string BackToMainMenuGeneral = "main_menu_back"; // ✅ این ثابت تعریف شد
-
+        private readonly ICryptoPriceService _cryptoPriceService;
         // Callback Data Prefix برای انتخاب پلن
         public const string SelectPlanPrefix = "select_plan_";
 
@@ -57,8 +57,18 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         // Callback data برای انتخاب ارز دیجیتال برای پرداخت
         public const string PayWithUsdtForPremiumMonthly = "pay_usdt_premium_1m";
 
+        private const decimal PremiumPlanPriceUsd = 150.00m;
+        private const decimal BestPlanPriceUsd = 500.00m;
+
+        private static readonly Dictionary<string, string> CryptoAssetToCoinGeckoId = new()
+        {
+            { "USDT", "tether" },
+            { "TON", "the-open-network" },
+            { "BTC", "bitcoin" }
+        };
+
         #region Constructor
-        public MenuCallbackQueryHandler(
+        public MenuCallbackQueryHandler(ICryptoPriceService cryptoPriceService,
             ILogger<MenuCallbackQueryHandler> logger,
             ITelegramMessageSender messageSender,
             ITelegramBotClient botClient,
@@ -70,6 +80,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
             , IUserConversationStateService stateService
             )
         {
+            _cryptoPriceService = cryptoPriceService ?? throw new ArgumentNullException(nameof(cryptoPriceService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _messageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
@@ -249,30 +260,25 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
             string planIdString = callbackData[SelectPlanPrefix.Length..];
             if (!Guid.TryParse(planIdString, out Guid selectedPlanId))
             {
-                _logger.LogWarning("Invalid PlanID format in callback data: {CallbackData}", callbackData);
-                // EditMessageOrSendNewAsync باید ParseMode را از DefaultParseMode بگیرد یا به آن پاس داده شود
-                await EditMessageOrSendNewAsync(chatId, messageIdToEdit, "Invalid plan selection. Please try again.", null, ParseMode.Markdown, cancellationToken);
+                await EditMessageOrSendNewAsync(chatId, messageIdToEdit, "Invalid plan selection.", null, ParseMode.Markdown, cancellationToken);
                 return;
             }
 
-            string planNameForDisplay = selectedPlanId == PremiumMonthlyPlanId ? "Premium Monthly" :
-                                        selectedPlanId == PremiumQuarterlyPlanId ? "Premium Quarterly" :
+            // ✅ MODIFIED: Update display name to match new plan names
+            string planNameForDisplay = selectedPlanId == PremiumMonthlyPlanId ? $"Premium Plan (${PremiumPlanPriceUsd})" :
+                                        selectedPlanId == PremiumQuarterlyPlanId ? $"Best Plan (${BestPlanPriceUsd})" :
                                         "Selected Plan";
-            _logger.LogInformation("UserID {TelegramUserId} selected PlanID: {PlanId} ({PlanName})", telegramUserId, selectedPlanId, planNameForDisplay);
 
-            // استفاده از DefaultParseMode برای TelegramMessageFormatter
-            string paymentOptionsText = $"You have selected: {TelegramMessageFormatter.Bold(planNameForDisplay)}.\n\n" + // اطمینان از escapePlainText صحیح
-                                     "Please choose your preferred cryptocurrency for payment:";
+            string paymentOptionsText = $"You have selected: {TelegramMessageFormatter.Bold(planNameForDisplay)}.\n\n" +
+                                        "Please choose your preferred cryptocurrency for payment:";
 
-            // ساخت paymentKeyboard با MarkupBuilder
             InlineKeyboardMarkup? paymentKeyboard = MarkupBuilder.CreateInlineKeyboard(
-     new[] { InlineKeyboardButton.WithCallbackData("💳 Pay with USDT", $"{PayWithCryptoPrefix}usdt_for_plan_{selectedPlanId}") },
-     new[] { InlineKeyboardButton.WithCallbackData("💳 Pay with TON", $"{PayWithCryptoPrefix}ton_for_plan_{selectedPlanId}") },
-     new[] { InlineKeyboardButton.WithCallbackData("💳 Pay with BTC", $"{PayWithCryptoPrefix}btc_for_plan_{selectedPlanId}") },
-     new[] { InlineKeyboardButton.WithCallbackData("⬅️ Change Plan", MenuCommandHandler.SubscribeCallbackData) }
- );
+                new[] { InlineKeyboardButton.WithCallbackData("💳 Pay with USDT", $"{PayWithCryptoPrefix}usdt_for_plan_{selectedPlanId}") },
+                new[] { InlineKeyboardButton.WithCallbackData("💳 Pay with TON", $"{PayWithCryptoPrefix}ton_for_plan_{selectedPlanId}") },
+                new[] { InlineKeyboardButton.WithCallbackData("💳 Pay with BTC", $"{PayWithCryptoPrefix}btc_for_plan_{selectedPlanId}") },
+                new[] { InlineKeyboardButton.WithCallbackData("⬅️ Change Plan", MenuCommandHandler.SubscribeCallbackData) }
+            );
 
-            // پاس دادن DefaultParseMode به EditMessageOrSendNewAsync
             await EditMessageOrSendNewAsync(chatId, messageIdToEdit, paymentOptionsText, paymentKeyboard, ParseMode.Markdown, cancellationToken);
         }
 
@@ -280,99 +286,164 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
 
         private async Task HandleCryptoPaymentSelectionAsync(long chatId, long telegramUserId, int messageIdToEdit, string callbackData, CancellationToken cancellationToken)
         {
-            _logger.LogInformation("UserID {TelegramUserId} selected crypto payment option. CallbackData: {CallbackData}", telegramUserId, callbackData);
+            _logger.LogInformation("UserID {TelegramUserId} selected crypto payment. Callback: {CallbackData}", telegramUserId, callbackData);
+
+            // --- 1. Parse Callback Data ---
             string[] parts = callbackData[PayWithCryptoPrefix.Length..].Split(new[] { "_for_plan_" }, StringSplitOptions.None);
-            if (parts.Length != 2)
+            if (parts.Length != 2 || !Guid.TryParse(parts[1], out Guid selectedPlanId))
             {
-                _logger.LogWarning("Invalid payment callback data format: {CallbackData}", callbackData);
-                await EditMessageOrSendNewAsync(chatId, messageIdToEdit, "Invalid payment option. Please try again.", null, ParseMode.MarkdownV2, cancellationToken);
+                await EditMessageOrSendNewAsync(chatId, messageIdToEdit, "Invalid payment option. Please try again.", null, ParseMode.Markdown, cancellationToken);
                 return;
             }
-
             string selectedCryptoAsset = parts[0].ToUpper();
-            if (!Guid.TryParse(parts[1], out Guid selectedPlanId))
+
+            await EditMessageOrSendNewAsync(chatId, messageIdToEdit, $"⏳ Please wait, calculating price and generating invoice for {selectedCryptoAsset}...", null, ParseMode.Markdown, cancellationToken);
+
+            // --- 2. Determine Plan's USD Price ---
+            decimal usdPrice = selectedPlanId == PremiumMonthlyPlanId ? PremiumPlanPriceUsd :
+                               selectedPlanId == PremiumQuarterlyPlanId ? BestPlanPriceUsd : 0;
+
+            if (usdPrice <= 0)
             {
-                _logger.LogWarning("Invalid PlanID in payment callback data: {CallbackData}", callbackData);
-                await EditMessageOrSendNewAsync(chatId, messageIdToEdit, "Invalid plan ID in payment option. Please try again.", null, ParseMode.MarkdownV2, cancellationToken);
+                await _messageSender.SendTextMessageAsync(chatId, "Error: Invalid plan selected.", cancellationToken: cancellationToken);
                 return;
             }
 
-            _logger.LogInformation("UserID {TelegramUserId} attempting to pay for PlanID {PlanId} with Asset {Asset}", telegramUserId, selectedPlanId, selectedCryptoAsset);
-            await EditMessageOrSendNewAsync(chatId, messageIdToEdit, $"⏳ Please wait, generating payment invoice for {selectedCryptoAsset}...", null, ParseMode.MarkdownV2, cancellationToken);
+            // --- 3. Get Live Crypto Price ---
+            if (!CryptoAssetToCoinGeckoId.TryGetValue(selectedCryptoAsset, out var coinGeckoId))
+            {
+                await _messageSender.SendTextMessageAsync(chatId, $"Error: The cryptocurrency '{selectedCryptoAsset}' is not supported.", cancellationToken: cancellationToken);
+                return;
+            }
 
-            global::Application.DTOs.UserDto? userDto = await _userService.GetUserByTelegramIdAsync(telegramUserId.ToString(), cancellationToken);
+            var prices = await _cryptoPriceService.GetPricesAsync(new[] { coinGeckoId }, "usd");
+            if (prices == null || !prices.TryGetValue(coinGeckoId, out decimal liveCryptoPrice) || liveCryptoPrice <= 0)
+            {
+                await _messageSender.SendTextMessageAsync(chatId, $"⚠️ Sorry, we couldn't fetch the live price for {selectedCryptoAsset}. Please try again in a moment.", cancellationToken: cancellationToken);
+                return;
+            }
+
+            // --- 4. Calculate Final Crypto Amount ---
+            decimal finalCryptoAmount = usdPrice / liveCryptoPrice;
+            _logger.LogInformation("Calculation: Plan USD ${UsdPrice} / {Asset} Price ${LivePrice} = {FinalAmount} {Asset}",
+                usdPrice, selectedCryptoAsset, liveCryptoPrice, finalCryptoAmount, selectedCryptoAsset);
+
+            // --- 5. Call the Payment Service with the dynamic amount ---
+            var userDto = await _userService.GetUserByTelegramIdAsync(telegramUserId.ToString(), cancellationToken);
             if (userDto == null)
             {
-                _logger.LogError("CRITICAL: User with TelegramID {TelegramUserId} not found when creating payment invoice.", telegramUserId);
-                await _messageSender.SendTextMessageAsync(chatId, "Error: Your user profile could not be found. Please use /start again.", cancellationToken: cancellationToken);
+                await _messageSender.SendTextMessageAsync(chatId, "Error: Your user profile could not be found.", cancellationToken: cancellationToken);
                 return;
             }
 
-            Shared.Results.Result<global::Application.DTOs.CryptoPay.CryptoPayInvoiceDto> invoiceResult = await _paymentService.CreateCryptoPaymentInvoiceAsync(userDto.Id, selectedPlanId, selectedCryptoAsset, cancellationToken);
+            // ✅ CALLING THE NEW, CORRECTED METHOD
+            var invoiceResult = await _paymentService.CreateCryptoPaymentInvoiceAsync(
+                userDto.Id,
+                selectedPlanId,
+                selectedCryptoAsset,
+                finalCryptoAmount, // Pass the dynamically calculated crypto amount
+                cancellationToken
+            );
 
+            // --- 6. Display Result to User (same as before) ---
             if (invoiceResult.Succeeded && invoiceResult.Data != null)
             {
-                global::Application.DTOs.CryptoPay.CryptoPayInvoiceDto invoice = invoiceResult.Data;
-                _logger.LogInformation("CryptoPay invoice created for UserID {UserId}. InvoiceID: {CryptoInvoiceId}, BotPayUrl: {PayUrl}", userDto.Id, invoice.InvoiceId, invoice.BotInvoiceUrl);
-                string paymentMessage = $"✅ Your payment invoice for {TelegramMessageFormatter.Bold(selectedCryptoAsset, escapePlainText: false)} has been created!\n\n" +
-                                     $"Please use the button below or copy the link to complete your payment:\n" +
-                                     $"{TelegramMessageFormatter.Link("➡️ Click here to Pay ⬅️", invoice.BotInvoiceUrl!)}\n\n" +
-                                     $"Invoice ID: {TelegramMessageFormatter.Code(invoice.InvoiceId.ToString())}\n" +
-                                     $"Status: {TelegramMessageFormatter.Italic(invoice.Status ?? "Unknown")}\n\n" +
-                                     "This link may expire. Please complete your payment promptly.";
-                InlineKeyboardMarkup? paymentLinkKeyboard = MarkupBuilder.CreateInlineKeyboard(new[] { InlineKeyboardButton.WithUrl($"🚀 Pay with {selectedCryptoAsset} Now", invoice.BotInvoiceUrl!) },
-                                                                             new[] { InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral) });
-                _ = await _botClient.SendMessage(chatId, paymentMessage, ParseMode.Markdown, replyMarkup: paymentLinkKeyboard, cancellationToken: cancellationToken);
-                //  می‌توانید پیام "در حال پردازش" را حذف کنید
-                // await _botClient.DeleteMessageAsync(chatId, messageIdToEdit, cancellationToken);
+                var invoice = invoiceResult.Data;
+                string paymentMessage = $"✅ Your payment invoice for {TelegramMessageFormatter.Bold(finalCryptoAmount.ToString("F8") + " " + selectedCryptoAsset, escapePlainText: false)} has been created!\n\n" +
+                                     // ... rest of the success message
+                                     $"Please use the button below or copy the link to complete your payment.\n\n" +
+                                     $"{TelegramMessageFormatter.Link("➡️ Click here to Pay ⬅️", invoice.BotInvoiceUrl!)}";
+
+                InlineKeyboardMarkup? paymentLinkKeyboard = MarkupBuilder.CreateInlineKeyboard(
+                    new[] { InlineKeyboardButton.WithUrl($"🚀 Pay with {selectedCryptoAsset} Now", invoice.BotInvoiceUrl!) },
+                    new[] { InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral) }
+                );
+
+                await _botClient.SendMessage(chatId, paymentMessage, ParseMode.Markdown, replyMarkup: paymentLinkKeyboard, cancellationToken: cancellationToken);
+                // You can now delete the "Please wait" message
+                await _botClient.DeleteMessage(chatId, messageIdToEdit, cancellationToken);
             }
             else
             {
-                _logger.LogError("Failed to create CryptoPay invoice for UserID {UserId}. Errors: {Errors}", userDto.Id, string.Join("; ", invoiceResult.Errors));
-                string failureMessage = $"⚠️ Sorry, we couldn't create your payment invoice for {TelegramMessageFormatter.Bold(selectedCryptoAsset, escapePlainText: false)}.\n" +
+                string failureMessage = $"⚠️ Sorry, we couldn't create your payment invoice for {selectedCryptoAsset}.\n" +
                                      $"Details: {string.Join("; ", invoiceResult.Errors)}\n\n" +
                                      "Please try a different payment method or contact support.";
-                _ = await _botClient.SendMessage(chatId, failureMessage, ParseMode.Markdown, cancellationToken: cancellationToken);
-                // بازگشت به منوی انتخاب پلن پس از خطا در ایجاد فاکتور
-                await ShowSubscriptionPlansAsync(chatId, messageIdToEdit, cancellationToken);
+                await _botClient.EditMessageText(chatId, messageIdToEdit, failureMessage, cancellationToken: cancellationToken);
+                // Optionally, show the plans again after a delay or with a button
             }
         }
-
-
 
         #region Private Handler Methods for Callbacks
 
 
-        // --- متدهای مربوط به نمایش اطلاعات (بدون تغییر عمده نسبت به قبل) ---
-
-
-        // --- متدهای جدید برای فرآیند اشتراک و پرداخت ---
-
-        /// <summary>
-        /// لیست پلن‌های اشتراک را به کاربر نمایش می‌دهد.
         /// </summary>
         private async Task ShowSubscriptionPlansAsync(long chatId, int messageIdToEdit, CancellationToken cancellationToken)
         {
-            _logger.LogInformation("Showing subscription plans to ChatID {ChatId}.", chatId);
+            _logger.LogInformation("Showing dynamic subscription plans to ChatID {ChatId}.", chatId);
 
-            //  اطلاعات پلن‌ها باید از یک منبع معتبر (سرویس، دیتابیس، کانفیگ) خوانده شود.
-            //  فعلاً متن و قیمت‌ها به صورت ثابت تعریف شده‌اند. 
-            string plansText = TelegramMessageFormatter.Bold("💎 Available Subscription Plans:", escapePlainText: false) + "\n\n" +
-                            $"1. {TelegramMessageFormatter.Bold("Premium Monthly")} - Access to all signals and features for 30 days. " +
-                            $"(Price: ~$10 USD)\n\n" +
-                            $"2. {TelegramMessageFormatter.Bold("Premium Quarterly")} - Same as monthly, but for 90 days with a discount! " +
-                            $"(Price: ~$25 USD)\n\n" +
-                            "Select a plan to proceed with payment options:";
+            var planTextBuilder = new StringBuilder();
+            planTextBuilder.AppendLine(TelegramMessageFormatter.Bold("💎 Available Subscription Plans", escapePlainText: false));
+            planTextBuilder.AppendLine();
 
+            // Default text in case the price API fails
+            string premiumPlanText = $"1. {TelegramMessageFormatter.Bold("Premium Plan")} - Full access for 30 days.\n" +
+                                     $"(Price: ${PremiumPlanPriceUsd:F2} USD)";
+            string bestPlanText = $"2. {TelegramMessageFormatter.Bold("Best Plan")} - Best value for 160 days of full access.\n" +
+                                  $"(Price: ${BestPlanPriceUsd:F2} USD)";
+
+            try
+            {
+                // Fetch live prices from our service
+                var prices = await _cryptoPriceService.GetPricesAsync(CryptoAssetToCoinGeckoId.Values, "usd");
+
+                if (prices != null && prices.Any())
+                {
+                    prices.TryGetValue(CryptoAssetToCoinGeckoId["BTC"], out decimal btcPrice);
+                    prices.TryGetValue(CryptoAssetToCoinGeckoId["USDT"], out decimal usdtPrice);
+                    prices.TryGetValue(CryptoAssetToCoinGeckoId["TON"], out decimal tonPrice);
+
+                    _logger.LogInformation("Live prices: BTC=${BtcPrice}, USDT=${UsdtPrice}, TON=${TonPrice}", btcPrice, usdtPrice, tonPrice);
+
+                    // --- Premium Plan ($150) Dynamic Text ---
+                    var premiumPriceDetails = new StringBuilder($"Price: ${PremiumPlanPriceUsd:F2} USD");
+                    if (usdtPrice > 0) premiumPriceDetails.Append($"\n~ {PremiumPlanPriceUsd / usdtPrice:F2} USDT");
+                    if (tonPrice > 0) premiumPriceDetails.Append($" | ~ {PremiumPlanPriceUsd / tonPrice:F2} TON");
+                    if (btcPrice > 0) premiumPriceDetails.Append($" | ~ {PremiumPlanPriceUsd / btcPrice:F6} BTC");
+                    premiumPlanText = $"1. {TelegramMessageFormatter.Bold("Premium Plan")} - Full access for 30 days.\n({premiumPriceDetails})";
+
+                    // --- Best Plan ($500) Dynamic Text ---
+                    var bestPriceDetails = new StringBuilder($"Price: ${BestPlanPriceUsd:F2} USD");
+                    if (usdtPrice > 0) bestPriceDetails.Append($"\n~ {BestPlanPriceUsd / usdtPrice:F2} USDT");
+                    if (tonPrice > 0) bestPriceDetails.Append($" | ~ {BestPlanPriceUsd / tonPrice:F2} TON");
+                    if (btcPrice > 0) bestPriceDetails.Append($" | ~ {BestPlanPriceUsd / btcPrice:F6} BTC");
+                    bestPlanText = $"2. {TelegramMessageFormatter.Bold("Best Plan")} - Best value for 90 days.\n({bestPriceDetails})";
+                }
+                else
+                {
+                    _logger.LogWarning("Crypto price API failed or returned no data. Falling back to USD prices only.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching crypto prices. Showing default plan text.");
+                // The default text defined above will be used automatically in case of any exception.
+            }
+
+            planTextBuilder.AppendLine(premiumPlanText);
+            planTextBuilder.AppendLine();
+            planTextBuilder.AppendLine(bestPlanText);
+            planTextBuilder.AppendLine();
+            planTextBuilder.Append("Select a plan to proceed:");
+
+            // Update button text to match the new plan names
             InlineKeyboardMarkup? plansKeyboard = MarkupBuilder.CreateInlineKeyboard(
-             new[] { InlineKeyboardButton.WithCallbackData("🌟 Premium Monthly", $"{SelectPlanPrefix}{PremiumMonthlyPlanId}") },
-             new[] { InlineKeyboardButton.WithCallbackData("✨ Premium Quarterly", $"{SelectPlanPrefix}{PremiumQuarterlyPlanId}") },
-             new[] { InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral) }
-         );
+                new[] { InlineKeyboardButton.WithCallbackData($"🌟 Premium Plan (${PremiumPlanPriceUsd})", $"{SelectPlanPrefix}{PremiumMonthlyPlanId}") },
+                new[] { InlineKeyboardButton.WithCallbackData($"✨ Best Plan (${BestPlanPriceUsd})", $"{SelectPlanPrefix}{PremiumQuarterlyPlanId}") },
+                new[] { InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral) }
+            );
 
-            await EditMessageOrSendNewAsync(chatId, messageIdToEdit, plansText, plansKeyboard, ParseMode.Markdown, cancellationToken);
+            await EditMessageOrSendNewAsync(chatId, messageIdToEdit, planTextBuilder.ToString(), plansKeyboard, ParseMode.Markdown, cancellationToken);
         }
-
 
         // ... (متدهای HandleViewSignalsAsync, HandleMyProfileAsync, HandleSubscribeAsync, HandleSettingsAsync بدون تغییر عمده) ...
         // فقط متن UI را بهبود می‌دهیم و از دکمه بازگشت عمومی استفاده می‌کنیم

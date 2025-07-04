@@ -14,10 +14,11 @@ namespace Application.Interfaces
         /// <param name="cancellationToken"></param>
         /// <returns>اطلاعات فاکتور ایجاد شده شامل لینک پرداخت.</returns>
         Task<Result<CryptoPayInvoiceDto>> CreateCryptoPaymentInvoiceAsync(
-            Guid userId,
-            Guid planId, // یا یک مدل Product/Plan DTO
-            string selectedCryptoAsset,
-            CancellationToken cancellationToken = default);
+              Guid userId,
+              Guid planId,
+              string selectedCryptoAsset,
+              decimal amount, // The final, calculated amount in the selected crypto
+              CancellationToken cancellationToken = default);
 
         /// <summary>
         /// وضعیت یک فاکتور CryptoPay را بررسی می‌کند.

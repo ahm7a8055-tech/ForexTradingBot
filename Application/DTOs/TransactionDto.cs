@@ -10,7 +10,7 @@
         /// Unique identifier for the transaction
         /// </summary>
         public Guid Id { get; set; }
-
+        public string? Currency { get; set; }
         /// <summary>
         /// Identifier of the user associated with the transaction
         /// </summary>

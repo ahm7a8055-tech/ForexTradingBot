@@ -1,5 +1,4 @@
-﻿// File: Infrastructure/Persistence/Configurations/TransactionConfiguration.cs
-using Domain.Entities;
+﻿using Domain.Entities;
 using Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -16,24 +15,30 @@ namespace Infrastructure.Persistence.Configurations
 
             _ = builder.Property(t => t.UserId).IsRequired();
 
+            // ✅ CRITICAL FIX: Increased precision from 4 to 8 decimal places to support cryptocurrencies like BTC.
             _ = builder.Property(t => t.Amount)
                 .IsRequired()
-                .HasColumnType("decimal(18, 4)"); // Precision for transaction amounts
+                .HasColumnType("decimal(18, 8)"); // Precision for crypto amounts
+
+            // ✅ NEW: Configuration for the new Currency property.
+            _ = builder.Property(t => t.Currency)
+                .HasMaxLength(20); // e.g., "USDT", "BTC", "TON". 20 chars is plenty.
+                                   // It is nullable by default, which is correct since we made it nullable in the entity.
 
             _ = builder.Property(t => t.Type)
                 .IsRequired()
                 .HasConversion(new EnumToStringConverter<TransactionType>());
 
             _ = builder.Property(t => t.Description)
-                .HasMaxLength(500); // Optional
+                .HasMaxLength(500);
 
-            _ = builder.Property(t => t.Timestamp) // Renamed from CreatedAt in your previous DbContext to avoid confusion with audit fields
+            _ = builder.Property(t => t.Timestamp)
                 .IsRequired()
-                .HasDefaultValueSql("NOW()"); // Keeping this as it's correct for PostgreSQL
+                .HasDefaultValueSql("NOW()");
 
-            // New fields for payment gateway integration
             _ = builder.Property(t => t.PaymentGatewayInvoiceId)
                 .HasMaxLength(100);
+
             _ = builder.Property(t => t.PaymentGatewayName)
                 .HasMaxLength(50);
 
@@ -42,19 +47,17 @@ namespace Infrastructure.Persistence.Configurations
                 .HasMaxLength(50)
                 .HasDefaultValue("Pending");
 
-            _ = builder.Property(t => t.PaidAt); // Nullable DateTime
+            _ = builder.Property(t => t.PaidAt);
 
-            // --- FIX APPLIED HERE ---
             _ = builder.Property(t => t.PaymentGatewayPayload)
-                .HasColumnType("TEXT"); // Changed from "nvarchar(max)" to "TEXT" for PostgreSQL
+                .HasColumnType("TEXT");
 
             _ = builder.Property(t => t.PaymentGatewayResponse)
-                .HasColumnType("TEXT"); // Changed from "nvarchar(max)" to "TEXT" for PostgreSQL
-            // --- END FIX ---
+                .HasColumnType("TEXT");
 
             // Indexes
             _ = builder.HasIndex(t => t.UserId);
-            _ = builder.HasIndex(t => t.PaymentGatewayInvoiceId); // Not necessarily unique if retries create new internal transactions for same gateway ID
+            _ = builder.HasIndex(t => t.PaymentGatewayInvoiceId);
             _ = builder.HasIndex(t => t.Status);
             _ = builder.HasIndex(t => t.Timestamp);
         }

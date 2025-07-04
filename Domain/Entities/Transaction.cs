@@ -21,7 +21,7 @@ namespace Domain.Entities
         /// </summary>
         // [ForeignKey(nameof(User))] // می‌تواند برای وضوح بیشتر استفاده شود
         public Guid UserId { get; set; }
-
+        public string? Currency { get; set; }
         /// <summary>
         /// نویگیشن به موجودیت کاربر (<see cref="Entities.User"/>) که این تراکنش برای او ثبت شده است.
         /// این خصوصیت توسط Entity Framework Core برای بارگذاری موجودیت مرتبط کاربر استفاده می‌شود.

@@ -36,6 +36,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
+using TelegramPanel.Application.Interfaces;
+using TelegramPanel.Infrastructure.Services;
 #endregion
 
 namespace Infrastructure.Data
@@ -196,7 +198,7 @@ namespace Infrastructure.Data
                         }
                     });
             }
-
+            _ =  services.AddHttpClient<ICryptoPriceService, CoinGeckoPriceService>();
             // This original line registers the IHangfireCleaner.
             _ = services.AddTransient<IHangfireCleaner, HangfireCleaner>();
 
