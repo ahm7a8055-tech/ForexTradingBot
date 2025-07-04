@@ -100,6 +100,8 @@ Follow these steps if you prefer to run the application directly on your machine
 
 #### Running the Application Locally
 
+For developers who prefer to run the application directly on their machine, follow these steps:
+
 1.  **Clone the repository** (if you haven't already).
 2.  **Configure `appsettings.Development.json`** with your local database connection string and other settings.
 3.  **Apply database migrations:**
@@ -111,6 +113,8 @@ Follow these steps if you prefer to run the application directly on your machine
     ```bash
     dotnet run --project WebApi
     ```
+
+For more comprehensive details and production deployment instructions, please refer to the dedicated [INSTALL.md guide](https://github.com/Opselon/ForexTradingBot/blob/master/INSTALL.md).
 
 ---
 
