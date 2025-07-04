@@ -38,18 +38,19 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         private const string ShowMainMenuCallback = "show_main_menu";
         private readonly ILoggingSanitizer _logSanitizer;
         private readonly IUserRepository _userRepository; // Add this field
-
+        private readonly IAdviceService _adviceService;
         public StartCommandHandler(
             ILoggingSanitizer logSanitizer,
             ILogger<StartCommandHandler> logger,
             ITelegramMessageSender messageSender,
             IServiceScopeFactory scopeFactory,
-            ITelegramBotClient botClient,
+            ITelegramBotClient botClient, IAdviceService adviceService, 
             IUserRepository userRepository, // <-- ADD THIS PARAMETER
             ITelegramStateMachine? stateMachine = null)
         {
             _logSanitizer = logSanitizer ?? throw new ArgumentNullException(nameof(logSanitizer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _adviceService = adviceService ?? throw new ArgumentNullException(nameof(adviceService));
             _messageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
             _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
@@ -335,10 +336,19 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private string GenerateWelcomeMessageBody(string welcomeHeader, bool isExistingUser)
         {
-            return $"{welcomeHeader}\n\nYour trusted companion for trading signals and market analysis.\n\n📊 *Available Features:*\n• 📈 Real-time alerts & signals\n• 💎 Professional trading tools\n• 📰 In-depth news analysis\n" +
-           (isExistingUser ? "• 💼 Portfolio tracking\n• 🔔 Customizable notifications\n\n" : "• 💼 Portfolio tracking\n\n") +
-           "Use the menu below or type /help for more information.";
+            // Retrieve a random piece of advice.
+            string advice = _adviceService.GetNextUniqueAdviceForChannel(); // Using the injected service
+
+            // Format the advice with an emoji and spacing.
+            string formattedAdvice = $"\n\n💡 {advice}"; // Example emoji: 💡
+
+            return $"{welcomeHeader}\n\nYour trusted companion for trading signals and market analysis." +
+                   $"{formattedAdvice}\n\n" + // Inject the advice here
+                   "📊 *Available Features:*\n• 📈 Real-time alerts & signals\n• 💎 Professional trading tools\n• 📰 In-depth news analysis\n" +
+                   (isExistingUser ? "• 💼 Portfolio tracking\n• 🔔 Customizable notifications\n\n" : "• 💼 Portfolio tracking\n\n") +
+                   "Use the menu below or type /help for more information.";
         }
+
 
         private InlineKeyboardMarkup GetMainMenuKeyboard()
         {

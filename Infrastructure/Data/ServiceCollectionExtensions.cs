@@ -137,7 +137,6 @@ namespace Infrastructure.Data
                         Log.Information("✅ Hangfire successfully configured with PostgreSQL storage and tuned intervals.");
                     });
                         break;
-                        break;
                     case "sqlserver":
                         _ = services.AddDbContext<AppDbContext>(opts =>
                             opts.UseSqlServer(connectionString, sql =>
