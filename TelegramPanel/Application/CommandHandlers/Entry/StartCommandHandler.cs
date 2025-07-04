@@ -333,14 +333,64 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
                 replyMarkup: GetMainMenuKeyboard(), // Cast to the correct type
                 cancellationToken: cancellationToken);
         }
+        private static readonly string[] _tradingEmojis = new[]
+    {
+    // --- Money & Finance ---
+    "💰", "💵", "💴", "💶", "💷", "🪙", "💳", "💸", "🤑", "🏦", "🧾", "💲", "📈", "📉", "💹",
+
+    // --- Strategy & Mindset ---
+    "🧠", "🧐", "🤔", "💡", "🧘", "🧘‍♂️", "🧘‍♀️", "🎯", "🧭", "🗺️", "♟️", "🎲", "🃏", "🤯", "🪶",
+
+    // --- Growth & Success ---
+    "🚀", "🌱", "🌳", "🌲", "🌿", "↗️", "↘️", "⬆️", "⬇️", "👑", "🏆", "🥇", "🏅", "🏁", "⭐",
+
+    // --- Tools & Knowledge ---
+    "🛠️", "🔧", "⚙️", "🔑", "🗝️", "📜", "📖", "📚", "✍️", "📝", "📎", "🔗", "💻", "🖥️", "📱",
+
+    // --- Analysis & Data ---
+    "📊", "🧮", "⚖️", "🔎", "🔍", "🔬", "🔭", "📋", "📌", "📍", "⛓️", "🌐", "📡", "🔔", "📢",
+
+    // --- Power & Action ---
+    "💪", "🔥", "⚡", "💥", "🔋", "🔌", "🏃", "🏃‍♂️", "🏃‍♀️", "🏹", "⚔️", "🛡️", "⚙️", "🚀", "🌋",
+
+    // --- Time & Patience ---
+    "⏳", "⌛", "🕰️", "⏰", "⌚", "📅", "🗓️", "🌅", "🌄", "🌇", "⏳", "⌛", "🕰️", "⏰", "⌚",
+
+    // --- Symbols & Concepts ---
+    "✨", "💫", "💯", "✅", "✔️", "👍", "👌", "💎", "🎁", "🎊", "🎉", "⭕", "❌", "➕", "➖",
+
+    // --- Market Animals (Symbolic) ---
+    "🐂", "🐻", "🦅", "🦉", "🐺", "🦁", "🐢", "🐇", "🦊", "🐝", "🦈", "🐋", "🕷️", "🐍", "🦗",
+
+    // --- Market Nature (Symbolic) ---
+    "☀️", "☁️", "🌧️", "⛈️", "🌪️", "🌈", "🌬️", "❄️", "🌊", "🏔️", "🏜️", "🏝️", "🏞️", "🏞️", "🏞️",
+
+    // --- Communication & News ---
+    "📰", "📣", "✉️", "📨", "📧", "📤", "📥", "📦", "🏷️", "🔖", "🗞️", "📻", "📺", "🎤", "🎙️",
+
+    // --- Infrastructure (Economy) ---
+    "🏗️", "🧱", "🗼", "🏭", "🏠", "🏡", "🏢", "🏨", "🏪", "🏫", "🏛️", "🏟️", "🏥", "🌁", "🌉",
+
+    // --- Transportation (Economy) --
+    "🚢", "✈️", "🚚", "🚂", "🛶", "🚤", "🛳️", "⛴️", "🛰️", "🚑", "🚒", "🚓", "🚕", "🚗", "🚙",
+
+    // --- Miscellaneous Objects ---
+    "🧰", "🧲", "⚗️", "🧪", "🧬", "💣", "🪝", "🪜", "🪞", "🪄", "🧩", "🎈", "🎀", "🧯", "🔏"
+};
+
+        // Using Random.Shared for thread-safe random number generation (.NET 6+)
+        private static readonly Random _randomEmoji = Random.Shared;
+
         [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Delete)]
         private string GenerateWelcomeMessageBody(string welcomeHeader, bool isExistingUser)
         {
             // Retrieve a random piece of advice.
-            string advice = _adviceService.GetNextUniqueAdviceForChannel(); // Using the injected service
+            string advice = _adviceService.GetNextUniqueAdviceForChannel();
 
-            // Format the advice with an emoji and spacing.
-            string formattedAdvice = $"\n\n💡 {advice}"; // Example emoji: 💡
+            // Select a random emoji from the predefined list
+            string randomEmoji = _tradingEmojis[_randomEmoji.Next(_tradingEmojis.Length)];
+            // Format the advice with the chosen random emoji and spacing.
+            string formattedAdvice = $"\n\n{randomEmoji} {advice}";
 
             return $"{welcomeHeader}\n\nYour trusted companion for trading signals and market analysis." +
                    $"{formattedAdvice}\n\n" + // Inject the advice here
