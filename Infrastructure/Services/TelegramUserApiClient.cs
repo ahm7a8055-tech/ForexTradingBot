@@ -1460,9 +1460,6 @@ namespace Infrastructure.Services
                 UpdatesBase updatesBase;
 
 
-                string finalMessage = message ?? "";
-                // --- 2. Get and format Hashtags ---
-                // --- Get and Append Hashtags ---
                 try
                 {
                     // Get exactly 3 random hashtags from our dedicated service.
@@ -1474,7 +1471,7 @@ namespace Infrastructure.Services
                         string footer = $"\n{hashtags}";
 
                         // Append the footer to the final message.
-                        finalMessage += footer;
+                        message += footer;
 
                         _logger.LogDebug("Appended random hashtag footer to the message for PeerID {PeerId}.", peerIdForLog);
                     }
