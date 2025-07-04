@@ -23,6 +23,128 @@
 ![ForexSignalBot Demo](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/lcak2Rr.gif)
 ---
 
+## 🚀 Getting Started
+
+You can run this project in two ways: with Docker (recommended for quick setup) or by setting up a local environment manually.
+
+### Option 1: Quick Start with Docker (Recommended)
+
+Get the entire application stack—API, PostgreSQL database, and Redis cache—running in minutes with Docker. **This is the fastest and easiest way to start.**
+
+#### Prerequisites
+
+*   **Docker Desktop**: Make sure it's installed and running on your system. [Download it here](https://www.docker.com/products/docker-desktop/).
+
+#### Step 1: Clone the Repository
+
+Open your terminal and clone the project source code.
+```bash
+git clone https://github.com/Opselon/ForexTradingBot.git
+cd ForexTradingBot
+```
+
+#### Step 2: Configure Your Secrets
+
+The application requires API keys and passwords. We use a `.env` file for this, which is kept private.
+
+1.  **Create the environment file:**
+    ```bash
+    cp .env.example .env
+    ```
+
+2.  **Edit the `.env` file:** Open the new `.env` file and fill in your actual secret values.
+    *   `TELEGRAM_BOT_TOKEN`: Get this from `@BotFather` on Telegram.
+    *   `POSTGRES_PASSWORD`: Create a strong, secure password for your database.
+
+#### Step 3: Run the Application! 🔥
+
+With Docker running, execute a single command from the project's root directory:
+```bash
+docker-compose up --build -d
+```
+This command builds and starts the API, PostgreSQL, and Redis containers. The API is configured to **automatically apply database migrations on startup**.
+
+#### Step 4: Seed the Database
+The bot needs an initial list of RSS feeds. Connect to the database using a client like DBeaver or DataGrip and run the `Populate_RssSources_Categories.sql` script.
+*   **Host:** `localhost`
+*   **Port:** `5432`
+*   **Database:** `forexsignalbot_db`
+*   **User:** `postgres`
+*   **Password:** The `POSTGRES_PASSWORD` you set in `.env`.
+
+**🎉 That's it! Your bot is now running inside Docker.**
+
+---
+
+### Option 2: Local Development Setup (Without Docker)
+
+Follow these steps if you prefer to run the application directly on your machine.
+
+#### Prerequisites
+
+1.  **.NET 9 SDK:**
+    *   Install the **.NET 9 SDK (v9.0.107 or later)**.
+    *   **Download Page:** [https://dotnet.microsoft.com/en-us/download/dotnet/9.0](https://dotnet.microsoft.com/en-us/download/dotnet/9.0)
+    *   Verify your installation by running `dotnet --version`.
+
+2.  **PostgreSQL Database:**
+    *   Install and run a local PostgreSQL server.
+    *   Create a database and a user.
+    *   Update your connection string in the `appsettings.Development.json` file.
+
+3.  **Redis Server:**
+    *   Redis is used for caching and background job processing.
+    *   **For Windows:** Install a Redis-compatible server like **Memurai**.
+        *   **Installation Guide:** [https://docs.memurai.com/en/installation.html](https://docs.memurai.com/en/installation.html)
+    *   **For macOS/Linux:** Install via a package manager (e.g., `brew install redis` or `sudo apt-get install redis-server`).
+
+#### Running the Application Locally
+
+1.  **Clone the repository** (if you haven't already).
+2.  **Configure `appsettings.Development.json`** with your local database connection string and other settings.
+3.  **Apply database migrations:**
+    ```bash
+    dotnet ef database update --startup-project WebApi --project Infrastructure
+    ```
+4.  **Seed the database** by running the `Populate_RssSources_Categories.sql` script against your local database.
+5.  **Run the API:**
+    ```bash
+    dotnet run --project WebApi
+    ```
+
+---
+
+## 🛠️ Developer Guide
+
+This section contains common commands for development.
+
+### Managing Database Migrations
+
+Before running these commands, ensure you have the EF Core tools installed: `dotnet tool install --global dotnet-ef`
+
+*   **Add a New Migration:** When you change a domain model, create a new migration.
+    ```bash
+    dotnet ef migrations add YourMigrationName --startup-project WebApi --project Infrastructure
+    ```
+    *(Replace `YourMigrationName` with a descriptive name, e.g., `AddSignalStatus`)*
+
+*   **Apply Migrations:** To manually update the database schema.
+    ```bash
+    dotnet ef database update --startup-project WebApi --project Infrastructure
+    ```
+
+### Creating a Production Build
+
+To compile the application into a self-contained executable for deployment:
+
+```bash
+# Example for a self-contained Windows x64 build
+dotnet publish --configuration Release --runtime win-x64 --self-contained true --project WebApi
+```
+*   The output will be in the `WebApi/bin/Release/net9.0/win-x64/publish` folder.
+
+---
+
 
 ## 📖 Table of Contents 📚
 
