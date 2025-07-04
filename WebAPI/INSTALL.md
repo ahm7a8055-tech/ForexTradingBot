@@ -132,8 +132,8 @@ VALUES
 (
     'ForwardVipSignalsToPublic', -- A unique name for our rule
     true,                        -- This rule is active
-    -1001234567890,              -- The private source channel ID (must be negative)
-    '[-1009876543210]',          -- The public target channel ID (in a JSON array, also negative)
+    1234567890,              -- The private source channel ID (must remove -100)
+    '[9876543210]',          -- The public target channel ID (in a JSON array, must remove -100)
     -- Edit Options
     NULL,                               -- No text to prepend
     NULL,                               -- No text to append
