@@ -375,75 +375,147 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
 
         #region Private Handler Methods for Callbacks
 
+        // Helper method to format crypto prices
+        // Helper method to format crypto prices
+        private string FormatCryptoPrices(decimal usdAmount, decimal btcPrice, decimal usdtPrice, decimal tonPrice)
+        {
+            var priceBuilder = new StringBuilder();
+            priceBuilder.Append($"💰 Your Investment: {TelegramMessageFormatter.Bold($"${usdAmount:F2} USD", escapePlainText: false)}");
 
-        /// </summary>
+            if (usdtPrice > 0) priceBuilder.Append($"\n    ~ {usdAmount / usdtPrice:F2} USDT");
+            if (tonPrice > 0) priceBuilder.Append($" | ~ {usdAmount / tonPrice:F2} TON");
+            if (btcPrice > 0) priceBuilder.Append($" | ~ {usdAmount / btcPrice:F6} BTC");
+
+            return priceBuilder.ToString();
+        }
+
         private async Task ShowSubscriptionPlansAsync(long chatId, int messageIdToEdit, CancellationToken cancellationToken)
         {
-            _logger.LogInformation("Showing dynamic subscription plans to ChatID {ChatId}.", chatId);
+            _logger.LogInformation("Showing visually enhanced subscription plans to ChatID {ChatId}.", chatId);
 
             var planTextBuilder = new StringBuilder();
-            planTextBuilder.AppendLine(TelegramMessageFormatter.Bold("💎 Available Subscription Plans", escapePlainText: false));
+            planTextBuilder.AppendLine(TelegramMessageFormatter.Bold("🚀 Ready to Transform Your Trading? 🚀", escapePlainText: false));
+            planTextBuilder.AppendLine("Unlock a new level of market intelligence and profitability with our carefully crafted plans.");
+            planTextBuilder.AppendLine("Join a community driven by success!");
             planTextBuilder.AppendLine();
 
-            // Default text in case the price API fails
-            string premiumPlanText = $"1. {TelegramMessageFormatter.Bold("Premium Plan")} - Full access for 30 days.\n" +
-                                     $"(Price: ${PremiumPlanPriceUsd:F2} USD)";
-            string bestPlanText = $"2. {TelegramMessageFormatter.Bold("Best Plan")} - Best value for 160 days of full access.\n" +
-                                  $"(Price: ${BestPlanPriceUsd:F2} USD)";
+            // --- Plan 1: Premium Plan ---
+            string premiumPlanDisplay =
+                $"1️⃣ {TelegramMessageFormatter.Bold("Premium Plan")} | 30 Days Access\n" +
+                "────────────────────\n" +
+                "✅ **Perfect for:** Emerging traders aiming to refine their strategy and gain a solid market understanding.\n\n" +
+                "🌟 **Unlock Your Potential:**\n" +
+                "    • 📈 **Precision Trading Signals:** Benefit from our proprietary algorithms delivering clear, actionable signals across diverse assets.\n" +
+                "    • 🧠 **Instinctive Market Sentiment:** Tap into real-time sentiment data to anticipate market shifts and make informed decisions.\n" +
+                "    • ⚡ **Immediate Action Alerts:** Stay ahead with instant notifications on market moves, so you never miss an opportunity.\n" +
+                "    • 💬 **Dedicated Telegram Support:** Our expert team is ready to assist you, ensuring a smooth and productive experience.\n" +
+                "    • 📚 **Foundational Trading Guides:** Build a strong knowledge base with practical resources designed for growth.\n" +
+                "    • 📊 **Essential Market Overview:** Keep track of key price movements with our accessible charting tools.\n"; // Subtle mention
+
+            // --- Plan 2: Best Plan ---
+            string bestPlanDisplay =
+                $"2️⃣ {TelegramMessageFormatter.Bold("Best Plan")} | 90 Days Access (Exceptional Value!)\n" +
+                "────────────────────\n" +
+                "✅ **Ideal for:** Serious traders and investors who demand a significant, consistent edge and accelerated growth.\n\n" +
+                "🌟 **Achieve Peak Performance (All Premium Features PLUS):**\n" +
+                "    • 🚀 **Elevated Trading Advantage:** All the power of Premium, supercharged.\n" +
+                "    • 📊 **Deep-Dive Interactive Charting:** Explore markets with advanced charting, comprehensive technical indicators, and rich historical data. Visualize your success!\n" + // More descriptive of charting
+                "    • 📰 **Exclusive Market Intelligence:** Gain access to our cutting-edge research reports and expert analysis for strategic advantage.\n" +
+                "    • 🔔 **Intelligent Alert Customization:** Fine-tune your notifications precisely to your trading style and priorities.\n" +
+                "    • 🏆 **Elite VIP Community Access:** Connect and collaborate with a network of high-caliber traders in our private Telegram group.\n" +
+                "    • 🎁 **Generous Loyalty Rewards:** Your activity earns you points for exclusive discounts and premium access. We value your commitment!\n" + // Frame rewards as valuing commitment
+                "    • 💡 **Curated Investment Opportunities:** Discover unique investment ideas and gain potential insights into portfolio optimization.\n" + // Sound exclusive
+                "    • 💰 **Unlock ~10% Savings:** Lock in the best value by choosing our 90-day plan!"; // Stronger saving message
+
+            string planSelectionPrompt = "Select the plan that propels your trading journey:";
+
+            // Fetch live prices to make the display dynamic
+            decimal btcPrice = 0, usdtPrice = 0, tonPrice = 0;
+            bool pricesFetched = false;
 
             try
             {
-                // Fetch live prices from our service
                 var prices = await _cryptoPriceService.GetPricesAsync(CryptoAssetToCoinGeckoId.Values, "usd");
 
                 if (prices != null && prices.Any())
                 {
-                    prices.TryGetValue(CryptoAssetToCoinGeckoId["BTC"], out decimal btcPrice);
-                    prices.TryGetValue(CryptoAssetToCoinGeckoId["USDT"], out decimal usdtPrice);
-                    prices.TryGetValue(CryptoAssetToCoinGeckoId["TON"], out decimal tonPrice);
+                    prices.TryGetValue(CryptoAssetToCoinGeckoId["BTC"], out btcPrice);
+                    prices.TryGetValue(CryptoAssetToCoinGeckoId["USDT"], out usdtPrice);
+                    prices.TryGetValue(CryptoAssetToCoinGeckoId["TON"], out tonPrice);
+                    pricesFetched = true;
 
                     _logger.LogInformation("Live prices: BTC=${BtcPrice}, USDT=${UsdtPrice}, TON=${TonPrice}", btcPrice, usdtPrice, tonPrice);
 
-                    // --- Premium Plan ($150) Dynamic Text ---
-                    var premiumPriceDetails = new StringBuilder($"Price: ${PremiumPlanPriceUsd:F2} USD");
-                    if (usdtPrice > 0) premiumPriceDetails.Append($"\n~ {PremiumPlanPriceUsd / usdtPrice:F2} USDT");
-                    if (tonPrice > 0) premiumPriceDetails.Append($" | ~ {PremiumPlanPriceUsd / tonPrice:F2} TON");
-                    if (btcPrice > 0) premiumPriceDetails.Append($" | ~ {PremiumPlanPriceUsd / btcPrice:F6} BTC");
-                    premiumPlanText = $"1. {TelegramMessageFormatter.Bold("Premium Plan")} - Full access for 30 days.\n({premiumPriceDetails})";
+                    // --- Update Premium Plan details with dynamic pricing ---
+                    premiumPlanDisplay =
+                        $"1️⃣ {TelegramMessageFormatter.Bold("Premium Plan")} | 30 Days Access\n" +
+                        "────────────────────\n" +
+                        "✅ **Perfect for:** Emerging traders aiming to refine their strategy and gain a solid market understanding.\n\n" +
+                        "🌟 **Unlock Your Potential:**\n" +
+                        "    • 📈 **Precision Trading Signals:** Benefit from our proprietary algorithms delivering clear, actionable signals across diverse assets.\n" +
+                        "    • 🧠 **Instinctive Market Sentiment:** Tap into real-time sentiment data to anticipate market shifts and make informed decisions.\n" +
+                        "    • ⚡ **Immediate Action Alerts:** Stay ahead with instant notifications on market moves, so you never miss an opportunity.\n" +
+                        "    • 💬 **Dedicated Telegram Support:** Our expert team is ready to assist you, ensuring a smooth and productive experience.\n" +
+                        "    • 📚 **Foundational Trading Guides:** Build a strong knowledge base with practical resources designed for growth.\n" +
+                        "    • 📊 **Essential Market Overview:** Keep track of key price movements with our accessible charting tools.\n" +
+                        $"({FormatCryptoPrices(PremiumPlanPriceUsd, btcPrice, usdtPrice, tonPrice)})";
 
-                    // --- Best Plan ($500) Dynamic Text ---
-                    var bestPriceDetails = new StringBuilder($"Price: ${BestPlanPriceUsd:F2} USD");
-                    if (usdtPrice > 0) bestPriceDetails.Append($"\n~ {BestPlanPriceUsd / usdtPrice:F2} USDT");
-                    if (tonPrice > 0) bestPriceDetails.Append($" | ~ {BestPlanPriceUsd / tonPrice:F2} TON");
-                    if (btcPrice > 0) bestPriceDetails.Append($" | ~ {BestPlanPriceUsd / btcPrice:F6} BTC");
-                    bestPlanText = $"2. {TelegramMessageFormatter.Bold("Best Plan")} - Best value for 90 days.\n({bestPriceDetails})";
+                    // --- Update Best Plan details with dynamic pricing ---
+                    bestPlanDisplay =
+                        $"2️⃣ {TelegramMessageFormatter.Bold("Best Plan")} | 90 Days Access (Exceptional Value!)\n" +
+                        "────────────────────\n" +
+                        "✅ **Ideal for:** Active traders, serious investors, and those seeking a significant, consistent edge and accelerated growth.\n\n" +
+                        "🌟 **Achieve Peak Performance (All Premium Features PLUS):**\n" +
+                        "    • 🚀 **Elevated Trading Advantage:** All the power of Premium, supercharged.\n" +
+                        "    • 📊 **Deep-Dive Interactive Charting:** Explore markets with advanced charting, comprehensive technical indicators, and rich historical data. Visualize your success!\n" +
+                        "    • 📰 **Exclusive Market Intelligence:** Gain access to our cutting-edge research reports and expert analysis for strategic advantage.\n" +
+                        "    • 🔔 **Intelligent Alert Customization:** Fine-tune your notifications precisely to your trading style and priorities.\n" +
+                        "    • 🏆 **Elite VIP Community Access:** Connect and collaborate with a network of high-caliber traders in our private Telegram group.\n" +
+                        "    • 🎁 **Generous Loyalty Rewards:** Your activity earns you points for exclusive discounts and premium access. We value your commitment!\n" +
+                        "    • 💡 **Curated Investment Opportunities:** Discover unique investment ideas and gain potential insights into portfolio optimization.\n" +
+                        "    • 💰 **Unlock ~10% Savings:** Lock in the best value by choosing our 90-day plan!\n" +
+                        $"({FormatCryptoPrices(BestPlanPriceUsd, btcPrice, usdtPrice, tonPrice)})";
                 }
                 else
                 {
-                    _logger.LogWarning("Crypto price API failed or returned no data. Falling back to USD prices only.");
+                    _logger.LogWarning("Crypto price API failed or returned no data. Displaying USD prices only.");
+                    planSelectionPrompt = "Choose your subscription plan (Prices shown in USD):";
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching crypto prices. Showing default plan text.");
-                // The default text defined above will be used automatically in case of any exception.
+                // Default text will be used automatically in case of any exception.
             }
 
-            planTextBuilder.AppendLine(premiumPlanText);
+            planTextBuilder.AppendLine(premiumPlanDisplay);
             planTextBuilder.AppendLine();
-            planTextBuilder.AppendLine(bestPlanText);
+            planTextBuilder.AppendLine(bestPlanDisplay);
             planTextBuilder.AppendLine();
-            planTextBuilder.Append("Select a plan to proceed:");
+            planTextBuilder.Append(TelegramMessageFormatter.Bold(planSelectionPrompt, escapePlainText: false));
 
-            // Update button text to match the new plan names
+            // Construct the inline keyboard
             InlineKeyboardMarkup? plansKeyboard = MarkupBuilder.CreateInlineKeyboard(
-                new[] { InlineKeyboardButton.WithCallbackData($"🌟 Premium Plan (${PremiumPlanPriceUsd})", $"{SelectPlanPrefix}{PremiumMonthlyPlanId}") },
-                new[] { InlineKeyboardButton.WithCallbackData($"✨ Best Plan (${BestPlanPriceUsd})", $"{SelectPlanPrefix}{PremiumQuarterlyPlanId}") },
-                new[] { InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral) }
+                new[] {
+            InlineKeyboardButton.WithCallbackData(
+                pricesFetched ? $"🌟 Premium Plan (${PremiumPlanPriceUsd:F2})" : $"🌟 Premium Plan",
+                $"{SelectPlanPrefix}{PremiumMonthlyPlanId}"
+            )
+                },
+                new[] {
+            InlineKeyboardButton.WithCallbackData(
+                pricesFetched ? $"✨ Best Plan (${BestPlanPriceUsd:F2})" : $"✨ Best Plan",
+                $"{SelectPlanPrefix}{PremiumQuarterlyPlanId}"
+            )
+                },
+                new[] {
+            InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral)
+                }
             );
 
             await EditMessageOrSendNewAsync(chatId, messageIdToEdit, planTextBuilder.ToString(), plansKeyboard, ParseMode.Markdown, cancellationToken);
         }
+
 
         // ... (متدهای HandleViewSignalsAsync, HandleMyProfileAsync, HandleSubscribeAsync, HandleSettingsAsync بدون تغییر عمده) ...
         // فقط متن UI را بهبود می‌دهیم و از دکمه بازگشت عمومی استفاده می‌کنیم
