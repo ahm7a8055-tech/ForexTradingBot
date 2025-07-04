@@ -210,7 +210,7 @@ namespace Infrastructure.Data
             _ = services.AddSingleton<UserSqlProvider>();
             // Register the Scoped DbContext interface.
             _ = services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
-
+            _ = services.AddSingleton<IAdviceService, AdviceService>();
             #endregion
 
             // =================================================================

@@ -1,6 +1,7 @@
 ﻿// File: src/Infrastructure/Services/TelegramUserApiClient.cs
 #region Usings
 using Application.Common.Interfaces;
+using Application.Interfaces;
 using Infrastructure.Settings;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -8,6 +9,7 @@ using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Retry;
 using System.Collections.Concurrent;
+using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -34,7 +36,7 @@ namespace Infrastructure.Services
             .SetSlidingExpiration(TimeSpan.FromMinutes(5))
             .SetAbsoluteExpiration(TimeSpan.FromHours(1));
         private readonly TimeSpan _cacheCleanupInterval = TimeSpan.FromMinutes(10);
-
+        private readonly IAdviceService _adviceService;
         private readonly ResiliencePipeline _resiliencePipeline;
         private readonly TimeSpan[] _retryDelays = new TimeSpan[]
         {
@@ -75,7 +77,7 @@ namespace Infrastructure.Services
         #endregion
 
         #region Constructor
-        public TelegramUserApiClient(
+        public TelegramUserApiClient(IAdviceService adviceService,
              ILogger<TelegramUserApiClient> logger,
              IOptions<TelegramUserApiSettings> settingsOptions,
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
@@ -86,7 +88,7 @@ namespace Infrastructure.Services
 
             // Set up the session file path for WTelegramClient's custom session management.
             _sessionPath = Path.Combine(AppContext.BaseDirectory, _settings.SessionPath ?? "telegram_user.session");
-
+            _adviceService = adviceService;
             // Ensure the directory for the session file exists.
             string? sessionDir = Path.GetDirectoryName(_sessionPath);
             if (!string.IsNullOrEmpty(sessionDir) && !Directory.Exists(sessionDir))
@@ -1200,62 +1202,59 @@ namespace Infrastructure.Services
         // If you don't have one, you can add a static instance like this:
         private static readonly HttpClient _httpClient = new();
 
-        /// <summary>
-        /// Fetches a random piece of advice from the public Advice Slip API.
-        /// This is a helper method used by SendRandomAdviceAsync.
-        /// </summary>
-        /// <param name="cancellationToken">Cancellation token for the operation.</param>
-        /// <returns>A string containing a piece of advice, or null if the request fails.</returns>
-        private async Task<string?> get_random_advice(CancellationToken cancellationToken)
+        public async Task<string> GetChannelAdviceAsync(CancellationToken cancellationToken)
         {
-            const string apiUrl = "https://api.adviceslip.com/advice";
+            // --- 1. PRIMARY STRATEGY: Use our robust internal directory first ---
             try
             {
-                _logger.LogDebug("GetRandomAdviceAsync: Requesting advice from API: {ApiUrl}", apiUrl);
+                _logger.LogDebug("Getting next unique advice for channel from internal service.");
+                string advice = _adviceService.GetNextUniqueAdviceForChannel();
 
-                // Send the GET request
-                HttpResponseMessage response = await _httpClient.GetAsync(apiUrl, cancellationToken);
-
-                // Ensure the request was successful
-                _ = response.EnsureSuccessStatusCode();
-
-                // Read and deserialize the JSON response
-                Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                AdviceSlipResponse? adviceData = await JsonSerializer.DeserializeAsync<AdviceSlipResponse>(responseStream, cancellationToken: cancellationToken);
-
-                string? advice = adviceData?.slip?.advice;
-
-                if (string.IsNullOrWhiteSpace(advice))
+                // If we get a valid string, we are done. Return it immediately.
+                if (!string.IsNullOrWhiteSpace(advice))
                 {
-                    _logger.LogWarning("GetRandomAdviceAsync: API returned a successful response but the advice content was empty.");
-                    return null;
+                    return advice;
                 }
-
-                _logger.LogInformation("GetRandomAdviceAsync: Successfully retrieved advice: '{Advice}'", advice);
-                return advice;
-            }
-            catch (HttpRequestException httpEx)
-            {
-                _logger.LogError(httpEx, "GetRandomAdviceAsync: An HTTP error occurred while calling the advice API.");
-                return null;
-            }
-            catch (JsonException jsonEx)
-            {
-                _logger.LogError(jsonEx, "GetRandomAdviceAsync: Failed to deserialize the JSON response from the advice API.");
-                return null;
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("GetRandomAdviceAsync: Operation was cancelled.");
-                throw; // Re-throw to respect the cancellation
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "GetRandomAdviceAsync: An unexpected error occurred while fetching advice.");
-                return null;
+                _logger.LogCritical(ex, "CRITICAL: The internal AdviceService failed unexpectedly. Falling back to external API.");
             }
+
+            // --- 2. FALLBACK STRATEGY: If the internal service fails, try the external API ---
+            _logger.LogInformation("Internal advice service did not return a value. Attempting API fallback.");
+
+            const string apiUrl = "https://api.adviceslip.com/advice";
+            try
+            {
+                HttpResponseMessage response = await _httpClient.GetAsync(apiUrl, cancellationToken);
+                response.EnsureSuccessStatusCode();
+
+                var adviceData = await response.Content.ReadFromJsonAsync<AdviceSlipResponse>(cancellationToken: cancellationToken);
+                string? apiAdvice = adviceData?.slip?.advice?.Trim();
+
+                if (!string.IsNullOrWhiteSpace(apiAdvice))
+                {
+                    _logger.LogInformation("Successfully retrieved advice from fallback API.");
+                    return apiAdvice;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "The fallback advice API failed. Error: {ErrorMessage}", ex.Message);
+            }
+
+            // --- 3. FINAL FALLBACK: If all sources fail ---
+            _logger.LogWarning("All advice sources failed. Returning a final, hardcoded failsafe advice.");
+            return "Always manage your risk before seeking reward.";
         }
 
+
+        public class SlipData
+        {
+            public int id { get; set; }
+            public string? advice { get; set; }
+        }
 
         /// <summary>
         /// Sends a message (text or media) to a specified peer.
@@ -1353,18 +1352,62 @@ namespace Infrastructure.Services
             try
             {
                 // Call the get_random_advice function, which makes the API call.
-                string? randomAdvice = await get_random_advice(cancellationToken).ConfigureAwait(false);
+                string? randomAdvice = await GetChannelAdviceAsync(cancellationToken).ConfigureAwait(false);
                 if (!string.IsNullOrWhiteSpace(randomAdvice))
                 {
                     // --- START: DYNAMIC EMOJI LOGIC ---
 
                     // 1. Define your package of emojis right here.
-                    string[] adviceEmojis = new[] // Using an array `[]` is simple and direct
-                    {
-                   "💡", "✨", "🚀", "🤔", "😊", "👍", "🎉", "🌟", "🔥", "💯",
-                   "🤖", "🧠", "🌍", "💬", "✅", "🎯", "🧐", "🙌", "🤓", "🤗"
-                     };
+                    string[] adviceEmojis = new[]
+ {
+    // --- Ideas, Wisdom & Insight ---
+    "💡", "✨", "🌟", "🌠", "💫", "🧐", "🧠", "⚡", "🔥", "💯", "🤯", "😮", "👀",
+    "👁️", "🕯️", "🔆", "🔎", "🔑", "🗝️", "📜", "📖", "📚", "✍️", "🧮",
 
+    // --- Success, Growth & Achievement ---
+    "🚀", "📈", "💹", "🎯", "🏆", "🏅", "🥇", "🎉", "🎊", "🙌", "💪", "🔝",
+    "👑", "💎", "👍", "✅", "✔️", "☑️", "🏁", "🍾", "🥂", "🎈", "🎇", "🎆",
+    "🎖️", "🎗️", "🤩", "😎", "🥳", "💯", "🎯", "✅", "💥", "👏", "👍",
+
+    // --- Thinking, Planning & Strategy ---
+    "🤔", "🧐", "🧠", "🤓", "👨‍🏫", "👩‍🏫", "🎓", "✍️", "📝", "🗒️", "📋", "📈",
+    "🧭", "🗺️", "♟️", "🧩", "👓", "🔬", "🔭", "🔐", "🏛️", "🏰", "🏗️", "🧠",
+    "⚖️", "⚙️", "🔧", "💡", "🗓️", "📆", "📍", "📌", "📎", "📏", "📐",
+
+    // --- Money, Finance & Investment ---
+    "💰", "💵", "💶", "💷", "💴", "🪙", "💳", "💸", "🤑", "🏦", "📊", "📉",
+    "₿", "💲", "📈", "💹", "💯", "💎", "🤑", "✅", "💼", "📈", "📉", "🧾",
+    "🧾", "💵", "🪙", "💹", "🏦", "🏧", "💰", "💸", "⚖️", "💼", "📈",
+
+    // --- Technology, Data & The Future ---
+    "🤖", "👨‍💻", "👩‍💻", "💻", "🖥️", "🌐", "🌍", "🛰️", "📡", "⚙️", "🔩", "💡",
+    "🔌", "🔋", "⚡", "🚀", "⏳", "⌛", "🔮", "✨", "🧬", "🔢", "🔣", "📶",
+    "📲", "📱", "⌚", "🖱️", "💾", "💿", "📀", "🖨️", "🕹️", "🎮", "🤖",
+
+    // --- Positive, Encouraging & Reactions ---
+    "😊", "🤗", "👍", "🙌", "🙂", "😉", "✅", "🎯", "💪", "💯", "🔥", "🌟",
+
+    "🎉", "👌", "😎", "🤩", "🤝", "🥳", "🙏", "👏", "😌", "😁", "😃", "😄",
+    "😉", "😊", "🙂", "🙃", "😇", "😍", "🤩", "😘", "😗", "😚", "😙", "😋",
+
+    // --- Communication & Information ---
+    "💬", "🗨️", "🗣️", "📣", "📢", "📰", "🗞️", "📈", "📉", "📊", "📮", "📫",
+    "📪", "📬", "📭", "📦", "📧", "📨", "📩", "📤", "📥", "📜", "📃", "📄",
+    
+    // --- Nature & Growth ---
+    "🌱", "🌿", "🌳", "🌲", "🍃", "💧", "🌊", "⛰️", "☀️", "🌤️", "🌈", "🌅",
+    "🌄", "🏞️", "🌊", "💧", "🌱", "🌿", "🍀", "🎍", "🪴", "🌲", "🌳", "🌴",
+
+    // --- Tools & Building ---
+    "🛠️", "🔨", "🔧", "🔩", "🧱", "🏗️", "⛏️", "⚙️", "🧰", "🪜", "⚖️", "🔗",
+    "⛓️", "🛠️", "⛏️", "🔨", "🪓", "🔧", "🔩", "⚙️", "🧱", "🪝", "🧰", "🪜",
+
+    // --- Abstract & Conceptual ---
+    "🔵", "🟢", "🔴", "⚪", "⚫", "➡️", "⬇️", "⬆️", "⬅️", "↔️", "↕️", "🔄",
+    "🔁", "▶️", "◀️", "🔼", "🔽", "🔗", "♾️", "☯️", "⚛️", "✔️", "☑️", "🔘",
+    "⭕", "❗", "❓", "❕", "❔", "‼️", "⁉️", "〰️", "〽️", "❗️", "❓", "❕",
+    "❔", "🔃", "✔️", "✅"
+};
                     // 2. Create a Random object to pick one.
                     Random random = new();
 
