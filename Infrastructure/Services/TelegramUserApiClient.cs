@@ -1585,7 +1585,6 @@ namespace Infrastructure.Services
             throw new InvalidOperationException("SendMessageAsync: Unexpected code path reached. No UpdatesBase was returned and no exception was thrown.");
         }
 
-
         /// <summary>
         /// Sends a group of media items as an album to a specified peer.
         /// Uses resilience policies.
@@ -1647,6 +1646,79 @@ namespace Infrastructure.Services
                     replyToMsgId.HasValue ? replyToMsgId.Value.ToString() : "N/A",
                     background, schedule_date.HasValue ? schedule_date.Value.ToString("s") : "N/A", sendAsBot);
             }
+            // --- NEW: Add advice footer to album caption ---
+            try
+            {
+                string? randomAdvice = await GetChannelAdviceAsync(cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(randomAdvice))
+                {
+                    string[] adviceEmojis = new[]
+{
+    // --- Ideas, Wisdom & Insight ---
+    "💡", "✨", "🌟", "🌠", "💫", "🧐", "🧠", "⚡", "🔥", "💯", "🤯", "😮", "👀",
+    "👁️", "🕯️", "🔆", "🔎", "🔑", "🗝️", "📜", "📖", "📚", "✍️", "🧮",
+
+    // --- Success, Growth & Achievement ---
+    "🚀", "📈", "💹", "🎯", "🏆", "🏅", "🥇", "🎉", "🎊", "🙌", "💪", "🔝",
+    "👑", "💎", "👍", "✅", "✔️", "☑️", "🏁", "🍾", "🥂", "🎈", "🎇", "🎆",
+    "🎖️", "🎗️", "🤩", "😎", "🥳", "💯", "🎯", "✅", "💥", "👏", "👍",
+
+    // --- Thinking, Planning & Strategy ---
+    "🤔", "🧐", "🧠", "🤓", "👨‍🏫", "👩‍🏫", "🎓", "✍️", "📝", "🗒️", "📋", "📈",
+    "🧭", "🗺️", "♟️", "🧩", "👓", "🔬", "🔭", "🔐", "🏛️", "🏰", "🏗️", "🧠",
+    "⚖️", "⚙️", "🔧", "💡", "🗓️", "📆", "📍", "📌", "📎", "📏", "📐",
+
+    // --- Money, Finance & Investment ---
+    "💰", "💵", "💶", "💷", "💴", "🪙", "💳", "💸", "🤑", "🏦", "📊", "📉",
+    "₿", "💲", "📈", "💹", "💯", "💎", "🤑", "✅", "💼", "📈", "📉", "🧾",
+    "🧾", "💵", "🪙", "💹", "🏦", "🏧", "💰", "💸", "⚖️", "💼", "📈",
+
+    // --- Technology, Data & The Future ---
+    "🤖", "👨‍💻", "👩‍💻", "💻", "🖥️", "🌐", "🌍", "🛰️", "📡", "⚙️", "🔩", "💡",
+    "🔌", "🔋", "⚡", "🚀", "⏳", "⌛", "🔮", "✨", "🧬", "🔢", "🔣", "📶",
+    "📲", "📱", "⌚", "🖱️", "💾", "💿", "📀", "🖨️", "🕹️", "🎮", "🤖",
+
+    // --- Positive, Encouraging & Reactions ---
+    "😊", "🤗", "👍", "🙌", "🙂", "😉", "✅", "🎯", "💪", "💯", "🔥", "🌟",
+
+    "🎉", "👌", "😎", "🤩", "🤝", "🥳", "🙏", "👏", "😌", "😁", "😃", "😄",
+    "😉", "😊", "🙂", "🙃", "😇", "😍", "🤩", "😘", "😗", "😚", "😙", "😋",
+
+    // --- Communication & Information ---
+    "💬", "🗨️", "🗣️", "📣", "📢", "📰", "🗞️", "📈", "📉", "📊", "📮", "📫",
+    "📪", "📬", "📭", "📦", "📧", "📨", "📩", "📤", "📥", "📜", "📃", "📄",
+    
+    // --- Nature & Growth ---
+    "🌱", "🌿", "🌳", "🌲", "🍃", "💧", "🌊", "⛰️", "☀️", "🌤️", "🌈", "🌅",
+    "🌄", "🏞️", "🌊", "💧", "🌱", "🌿", "🍀", "🎍", "🪴", "🌲", "🌳", "🌴",
+
+    // --- Tools & Building ---
+    "🛠️", "🔨", "🔧", "🔩", "🧱", "🏗️", "⛏️", "⚙️", "🧰", "🪜", "⚖️", "🔗",
+    "⛓️", "🛠️", "⛏️", "🔨", "🪓", "🔧", "🔩", "⚙️", "🧱", "🪝", "🧰", "🪜",
+
+    // --- Abstract & Conceptual ---
+    "🔵", "🟢", "🔴", "⚪", "⚫", "➡️", "⬇️", "⬆️", "⬅️", "↔️", "↕️", "🔄",
+    "🔁", "▶️", "◀️", "🔼", "🔽", "🔗", "♾️", "☯️", "⚛️", "✔️", "☑️", "🔘",
+    "⭕", "❗", "❓", "❕", "❔", "‼️", "⁉️", "〰️", "〽️", "❗️", "❓", "❕",
+    "❔", "🔃", "✔️", "✅"
+};
+                    Random random = new();
+                    string emoji = adviceEmojis[random.Next(adviceEmojis.Length)];
+                    string footer = $"\n\n{emoji} {randomAdvice}";
+
+                    albumCaption = string.IsNullOrEmpty(albumCaption) ? $"{emoji} {randomAdvice}" : $"{albumCaption}{footer}";
+                    _logger.LogDebug("SendMediaGroupAsync: Appended random advice footer to the album caption for Peer {PeerId}.", peerIdForLog);
+                }
+                else
+                {
+                    _logger.LogWarning("SendMediaGroupAsync: Could not retrieve random advice to append as footer. Sending album without it.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get advice for album caption footer. Skipping advice.");
+            }
+
 
             try
             {
@@ -1712,7 +1784,6 @@ namespace Infrastructure.Services
                 _logger.LogTrace("SendMediaGroupAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
             }
         }
-
 
         /// <summary>
         /// Forwards messages from one peer to another.

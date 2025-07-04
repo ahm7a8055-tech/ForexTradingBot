@@ -88,6 +88,8 @@ namespace Infrastructure.Services
     // Major US Indices
     "#SP500", "#SPX", "$SPX", "#DowJones", "#DJIA", "$DJI", "#NASDAQ", "#NDX", "$NDX", "#Russell2000", "#RUT",
     // Major Global Indices
+     "#ForexAlgorithmic",            // Algorithmic strategies specifically for Forex
+    "#CryptoAlgorithmic",           // Algorithmic strategies specifically for Crypto
     "#FTSE100", "#DAX40", "#CAC40", "#Nikkei225", "#HangSeng", "#HSI", "#ASX200", "#EuroStoxx50",
     "#SENSEX", "#NIFTY50", "#KOSPI", "#IBOVESPA", "#TSX", "#MOEX", "#ShanghaiComposite", "#CSI300",
     // Major Company Tickers (Examples)
@@ -101,7 +103,16 @@ namespace Infrastructure.Services
     "#EV", "#ArtificialIntelligence", "#AI", "#CloudComputing", "#Semiconductors", "#Biotech", "#Pharma",
     "#Defense", "#Aerospace", "#Retail", "#Ecommerce", "#Gaming", "#Streaming", "#Airlines", "#Automotive",
     "#Banking", "#Insurance", "#BigOil",
-
+     "#Forex",                 // The primary focus for currency trading
+    "#Crypto",                // The primary focus for digital asset trading
+    "#Stocks",                // Essential for understanding broader market context
+    "#Commodities",           // Key drivers of inflation and macro trends
+    "#InterestRates",         // Major influence on all financial markets
+     "#Volatility",            // The engine of profit and loss
+    "#Liquidity",
+     "#RiskManagement",        // The absolute foundation of all trading
+    "#TradingPsychology",     // Mastery of self is key to consistency
+    "#PriceAction",           // The purest form of market analysis
     // --- Economic Indicators & Events ---
     "#Economy", "#EconomicData", "#Inflation", "#CPI", "#CoreCPI", "#PPI", "#CorePPI", "#Stagflation", "#Deflation",
     "#Recession", "#GDP", "#GDPGrowth", "#InterestRates", "#NFP", "#NonFarmPayrolls", "#Unemployment",

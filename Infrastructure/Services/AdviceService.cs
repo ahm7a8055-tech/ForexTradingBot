@@ -1,9 +1,5 @@
 ﻿using Application.Interfaces;
-using Microsoft.EntityFrameworkCore.Metadata.Internal;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace Infrastructure.Services
 {
