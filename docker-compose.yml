@@ -12,60 +12,146 @@ services:
     ports:
       - "8080:80"
     environment:
-      # --- Database Connection ---
-      # The hostname 'db' matches the service name of the SQL Server container
-      - ConnectionStrings__DefaultConnection=Server=db,1433;Database=${DB_DATABASE_NAME};User Id=sa;Password=${DB_SA_PASSWORD};TrustServerCertificate=True
-   #   - ConnectionStrings__PostgresConnection=Server=postgres-db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
-   #   - ConnectionStrings__Redis=redis:6379,abortConnect=false
+      # --- Database Connection (Using PostgreSQL) ---
+      - ConnectionStrings__DefaultConnection=Host=postgres-db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD};Include Error Detail=true
+      # - ConnectionStrings__DefaultConnection_SQLSERVER=Server=db,1433;Database=${DB_DATABASE_NAME};User Id=sa;Password=${DB_SA_PASSWORD};TrustServerCertificate=True
 
-      # --- ✅✅ NEW: REDIS CONNECTION STRING ✅✅ ---
-      # The hostname 'redis' matches the service name of the new Redis container
+      # --- Redis Connection ---
       - ConnectionStrings__Redis=redis:6379,abortConnect=false
 
-      # --- Telegram Panel ---
+      # --- Settings relevant for WebAPI, TelegramPanel, BackgroundTasks ---
+      # --- Telegram Panel specific settings are primarily for TelegramPanel service ---
       - TelegramPanel__BotToken=${TELEGRAM_BOT_TOKEN}
       - TelegramPanel__AdminUserIds=${TELEGRAM_ADMIN_IDS}
 
-      # --- Telegram User API ---
+      # --- Telegram User API (used by ApiUserClient, potentially in multiple services) ---
       - TelegramUserApi__ApiId=${TELEGRAM_API_ID}
       - TelegramUserApi__ApiHash=${TELEGRAM_API_HASH}
       - TelegramUserApi__PhoneNumber=${TELEGRAM_PHONE_NUMBER}
-      - TelegramUserApi__SessionPath=/app/sessions/telegram_user.session
+      # Session path for ApiUserClient, ensure this volume is mapped if used by multiple services or make path unique per service
+      - TelegramUserApi__SessionPath=/app/sessions/telegram_user_webapi.session
 
       # --- CryptoPay ---
       - CryptoPay__ApiToken=${CRYPTO_PAY_API_TOKEN}
 
-      # --- Other Settings ---
+      # --- General Settings ---
       - ASPNETCORE_ENVIRONMENT=Production
+      - DOTNET_ENVIRONMENT=Production # General .NET environment variable
 
     volumes:
-      - telegram_session_data:/app/sessions
-      - log_data:/app/logs
+      - telegram_session_data:/app/sessions # For ApiUserClient session files
+      - log_data_webapi:/app/logs # Specific logs for WebAPI
     depends_on:
-      - db
-      - redis  # ✅ Your app now depends on Redis starting first
+      postgres-db:
+        condition: service_healthy # Wait for postgres to be healthy
+      redis:
+        condition: service_started # Redis doesn't have a healthcheck in this config, so wait for start
+    restart: unless-stopped
+    networks:
+      - forex-bot-network
+
+  ################################################
+  # TelegramPanel Service (Bot Interaction Logic)
+  ################################################
+  telegram-panel:
+    build:
+      context: .
+      dockerfile: TelegramPanel/Dockerfile
+    container_name: telegram-panel-service
+    environment:
+      # --- Database Connection (Using PostgreSQL) ---
+      - ConnectionStrings__DefaultConnection=Host=postgres-db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD};Include Error Detail=true
+      # --- Redis Connection ---
+      - ConnectionStrings__Redis=redis:6379,abortConnect=false
+
+      # --- Telegram Panel Specific Settings ---
+      - TelegramPanel__BotToken=${TELEGRAM_BOT_TOKEN} # Crucial for the bot to operate
+      - TelegramPanel__AdminUserIds=${TELEGRAM_ADMIN_IDS}
+      # Add any other specific settings TelegramPanel needs from appsettings or .env
+
+      # --- Telegram User API (if ApiUserClient is used directly by TelegramPanel) ---
+      - TelegramUserApi__ApiId=${TELEGRAM_API_ID}
+      - TelegramUserApi__ApiHash=${TELEGRAM_API_HASH}
+      - TelegramUserApi__PhoneNumber=${TELEGRAM_PHONE_NUMBER}
+      - TelegramUserApi__SessionPath=/app/sessions/telegram_user_panel.session # Unique session path
+
+      # --- General Settings ---
+      - ASPNETCORE_ENVIRONMENT=Production # If it's an ASP.NET Core app for webhooks
+      - DOTNET_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:80 # If it hosts a webhook endpoint
+
+    volumes:
+      - telegram_session_data:/app/sessions # Shared or unique path for ApiUserClient session
+      - log_data_telegrampanel:/app/logs # Specific logs for TelegramPanel
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      forex-trading-bot-app: # May depend on WebAPI for certain functionalities
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - forex-bot-network
+    # Ports: If TelegramPanel uses webhooks, it needs a port exposed.
+    # Example: - "8081:80" # Ensure this doesn't conflict with other services if mapped to host
+
+  ####################################################
+  # BackgroundTasks Service (Scheduled/Worker Tasks)
+  ####################################################
+  background-tasks:
+    build:
+      context: .
+      dockerfile: BackgroundTasks/Dockerfile
+    container_name: background-tasks-service
+    environment:
+      # --- Database Connection (Using PostgreSQL) ---
+      - ConnectionStrings__DefaultConnection=Host=postgres-db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD};Include Error Detail=true
+      # --- Redis Connection (e.g., for Hangfire if it uses Redis) ---
+      - ConnectionStrings__Redis=redis:6379,abortConnect=false
+
+      # --- Telegram Settings (if it needs to send notifications or use ApiUserClient) ---
+      - TelegramPanel__BotToken=${TELEGRAM_BOT_TOKEN}
+      - TelegramUserApi__ApiId=${TELEGRAM_API_ID}
+      - TelegramUserApi__ApiHash=${TELEGRAM_API_HASH}
+      - TelegramUserApi__PhoneNumber=${TELEGRAM_PHONE_NUMBER}
+      - TelegramUserApi__SessionPath=/app/sessions/telegram_user_background.session # Unique session path
+
+      # --- General Settings ---
+      - DOTNET_ENVIRONMENT=Production
+      # ASPNETCORE_ENVIRONMENT might not be relevant if not an ASP.NET host
+
+    volumes:
+      - telegram_session_data:/app/sessions # Shared or unique path for ApiUserClient session
+      - log_data_backgroundtasks:/app/logs # Specific logs for BackgroundTasks
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      forex-trading-bot-app: # May depend on WebAPI for data or coordination
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - forex-bot-network
 
   ###################################
-  # The SQL Server Database Service
+  # SQL Server Database Service (Commented out - Replaced by PostgreSQL)
   ###################################
-  db:
-    image: "mcr.microsoft.com/mssql/server:2022-latest"
-    container_name: sql-server-db
-    environment:
-      - ACCEPT_EULA=Y
-      - SA_PASSWORD=${DB_SA_PASSWORD}
-    volumes:
-      - sqlserver_data:/var/opt/mssql
-    networks:
-      - forex-bot-network
+  # db:
+  #   image: "mcr.microsoft.com/mssql/server:2022-latest"
+  #   container_name: sql-server-db
+  #   environment:
+  #     - ACCEPT_EULA=Y
+  #     - SA_PASSWORD=${DB_SA_PASSWORD}
+  #   volumes:
+  #     - sqlserver_data:/var/opt/mssql
+  #   networks:
+  #     - forex-bot-network
 
   ###################################
-  # ✅✅ NEW: REDIS CACHE SERVICE ✅✅
+  # Redis Cache Service
   ###################################
-  # ... other services ...
   redis:
     image: redis:7-alpine
     container_name: redis-cache
@@ -112,8 +198,10 @@ networks:
 
 # --- Docker Volumes ---
 volumes:
-  sqlserver_data:
-  telegram_session_data:
-  postgres_data: 
-  log_data:
-  redis_data: # ✅ Define the volume for Redis data persistence
+  # sqlserver_data: # SQL Server volume, commented out as the service is.
+  telegram_session_data: # For ApiUserClient session files, shared or mounted per service
+  postgres_data: # For PostgreSQL data persistence
+  log_data_webapi: # Logs for WebAPI service
+  log_data_telegrampanel: # Logs for TelegramPanel service
+  log_data_backgroundtasks: # Logs for BackgroundTasks service
+  redis_data: # For Redis data persistence
