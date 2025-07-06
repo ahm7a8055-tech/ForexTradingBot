@@ -32,7 +32,8 @@ namespace Infrastructure.Services
 
         public async Task<ForceJoinSettingsDto> GetForceJoinSettingsAsync(CancellationToken cancellationToken = default)
         {
-            ForceJoinSettingsDto? cachedSettings = await _cacheService.GetAsync<ForceJoinSettingsDto>(ForceJoinSettingsKey, cancellationToken);
+            // Corrected: GetAsync takes 1 argument
+            ForceJoinSettingsDto? cachedSettings = await _cacheService.GetAsync<ForceJoinSettingsDto>(ForceJoinSettingsKey);
             if (cachedSettings is not null)
             {
                 _logger.LogTrace("Force join settings retrieved from cache with key {CacheKey}.", ForceJoinSettingsKey);
@@ -43,7 +44,8 @@ namespace Infrastructure.Services
 
             ForceJoinSettingsDto settings = await GetSettingFromDbAsync<ForceJoinSettingsDto>(ForceJoinSettingsKey, () => new ForceJoinSettingsDto { IsEnabled = false }, cancellationToken);
 
-            await _cacheService.SetAsync(ForceJoinSettingsKey, settings, _defaultCacheDuration, cancellationToken);
+            // Corrected: SetAsync takes 3 arguments (key, value, expiry)
+            await _cacheService.SetAsync(ForceJoinSettingsKey, settings, _defaultCacheDuration);
             _logger.LogInformation("Force join settings stored in cache with key {CacheKey}.", ForceJoinSettingsKey);
 
             return settings;
@@ -51,7 +53,8 @@ namespace Infrastructure.Services
 
         public async Task<TelegramBotSettingsDto> GetTelegramBotSettingsAsync(CancellationToken cancellationToken = default)
         {
-            TelegramBotSettingsDto? cachedSettings = await _cacheService.GetAsync<TelegramBotSettingsDto>(TelegramBotSettingsKey, cancellationToken);
+            // Corrected: GetAsync takes 1 argument
+            TelegramBotSettingsDto? cachedSettings = await _cacheService.GetAsync<TelegramBotSettingsDto>(TelegramBotSettingsKey);
             if (cachedSettings is not null)
             {
                 _logger.LogTrace("Telegram bot settings retrieved from cache with key {CacheKey}.", TelegramBotSettingsKey);
@@ -62,7 +65,8 @@ namespace Infrastructure.Services
 
             TelegramBotSettingsDto settings = await GetSettingFromDbAsync<TelegramBotSettingsDto>(TelegramBotSettingsKey, () => new TelegramBotSettingsDto(), cancellationToken);
 
-            await _cacheService.SetAsync(TelegramBotSettingsKey, settings, _defaultCacheDuration, cancellationToken);
+            // Corrected: SetAsync takes 3 arguments
+            await _cacheService.SetAsync(TelegramBotSettingsKey, settings, _defaultCacheDuration);
             _logger.LogInformation("Telegram bot settings stored in cache with key {CacheKey}.", TelegramBotSettingsKey);
 
             return settings;
@@ -74,13 +78,15 @@ namespace Infrastructure.Services
 
             await UpdateSettingInDbAsync(TelegramBotSettingsKey, settings, cancellationToken);
 
-            await _cacheService.SetAsync(TelegramBotSettingsKey, settings, _defaultCacheDuration, cancellationToken); // Update cache
+            // Corrected: SetAsync takes 3 arguments
+            await _cacheService.SetAsync(TelegramBotSettingsKey, settings, _defaultCacheDuration);
             _logger.LogInformation("Telegram bot settings updated in database and cache with key {CacheKey}.", TelegramBotSettingsKey);
         }
 
         public async Task<TelegramClientSettingsDto> GetTelegramClientSettingsAsync(CancellationToken cancellationToken = default)
         {
-            TelegramClientSettingsDto? cachedSettings = await _cacheService.GetAsync<TelegramClientSettingsDto>(TelegramClientSettingsKey, cancellationToken);
+            // Corrected: GetAsync takes 1 argument
+            TelegramClientSettingsDto? cachedSettings = await _cacheService.GetAsync<TelegramClientSettingsDto>(TelegramClientSettingsKey);
             if (cachedSettings is not null)
             {
                 _logger.LogTrace("Telegram client settings retrieved from cache with key {CacheKey}.", TelegramClientSettingsKey);
@@ -91,7 +97,8 @@ namespace Infrastructure.Services
 
             TelegramClientSettingsDto settings = await GetSettingFromDbAsync<TelegramClientSettingsDto>(TelegramClientSettingsKey, () => new TelegramClientSettingsDto(), cancellationToken);
 
-            await _cacheService.SetAsync(TelegramClientSettingsKey, settings, _defaultCacheDuration, cancellationToken);
+            // Corrected: SetAsync takes 3 arguments
+            await _cacheService.SetAsync(TelegramClientSettingsKey, settings, _defaultCacheDuration);
             _logger.LogInformation("Telegram client settings stored in cache with key {CacheKey}.", TelegramClientSettingsKey);
 
             return settings;
@@ -103,7 +110,8 @@ namespace Infrastructure.Services
 
             await UpdateSettingInDbAsync(TelegramClientSettingsKey, settings, cancellationToken);
 
-            await _cacheService.SetAsync(TelegramClientSettingsKey, settings, _defaultCacheDuration, cancellationToken); // Update cache
+            // Corrected: SetAsync takes 3 arguments
+            await _cacheService.SetAsync(TelegramClientSettingsKey, settings, _defaultCacheDuration);
             _logger.LogInformation("Telegram client settings updated in database and cache with key {CacheKey}.", TelegramClientSettingsKey);
         }
 
