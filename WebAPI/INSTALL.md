@@ -25,6 +25,18 @@ Before you begin, ensure your server has the following software installed:
     *   **.NET 9 SDK (or later):** [Download .NET 9](https://dotnet.microsoft.com/en-us/download/dotnet/9.0)
     *   **PostgreSQL Server:** A running instance of PostgreSQL with the `pg_trgm` extension enabled (`CREATE EXTENSION pg_trgm;`).
     *   **Redis Server:** A running instance of Redis.
+*   **Admin Dashboard (Optional but Recommended):** For managing dynamic settings, an instance of the `admin-dashboard` project should be running and configured to point to this WebAPI.
+
+---
+
+## DatabaseProvider Configuration
+Ensure your `appsettings.json` (or environment-specific version) includes a `DatabaseProvider` key. This informs the application about the type of database being used (e.g., "PostgreSQL", "SQLite"). This is used by diagnostic services and potentially other parts of the application.
+Example in `appsettings.json`:
+```json
+{
+  "DatabaseProvider": "PostgreSQL"
+}
+```
 
 ---
 
@@ -66,8 +78,33 @@ Your bot is now fully deployed and operational!
 
 ---
 
-## 4. Configuration (`appsettings.production.json`) Explained
-*(Instructions for `appsettings.production.json` can be found in the project's README or previous documentation versions.)*
+## 4. Core Configuration (`appsettings.production.json` / Environment Variables) Explained
+*(Instructions for `appsettings.production.json` can be found in the project's README or previous documentation versions related to static file-based config.)*
+
+While many core connection strings and essential parameters are set in `appsettings.production.json` (or via environment variables mapped by Docker Compose in the `.env` file), several operational settings are managed dynamically through the database. These settings are typically configured via the **Admin Dashboard**.
+
+### Dynamic Settings (Managed via Admin Dashboard / Database `Settings` Table)
+
+The following settings are stored in the `public."Settings"` table in your PostgreSQL database as JSON objects and are managed by the `SettingsService`. They can be initially empty or pre-populated if necessary, but the Admin Dashboard provides a UI for them:
+
+*   **Telegram Bot Settings (Key: `settings:telegram_bot`)**:
+    *   `BotToken`: Your Telegram Bot Token.
+    *   `AdminUserIds`: A list of Telegram User IDs who have admin privileges within the bot.
+    *   `ChatIdForLogs`: (Optional) A Telegram Chat ID where the bot can send operational logs.
+*   **Telegram Client Settings (Key: `settings:telegram_client`)**:
+    *   `ApiId`: Your Telegram Core API ID.
+    *   `ApiHash`: Your Telegram Core API Hash.
+*   **Force Join Settings (Key: `settings:force_join`)**:
+    *   Configuration for the force-join feature (e.g., channel ID to join, enabled status).
+
+**Note:** If setting these manually in the database, the `Value` column for these keys should contain a valid JSON string representing the structure of the corresponding DTO (e.g., `TelegramBotSettingsDto`, `TelegramClientSettingsDto`, `ForceJoinSettingsDto`). For example, for `settings:telegram_bot`:
+```json
+{
+  "BotToken": "YOUR_BOT_TOKEN_HERE",
+  "AdminUserIds": [123456789, 987654321],
+  "ChatIdForLogs": -1001234567890
+}
+```
 
 ---
 
