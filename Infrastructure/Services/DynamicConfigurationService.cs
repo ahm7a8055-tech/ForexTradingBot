@@ -4,6 +4,7 @@ using Domain.Entities;
 using Infrastructure.Data; // For AppDbContext
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection; // For IServiceScopeFactory
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -15,7 +16,7 @@ namespace Infrastructure.Services
 {
     public class DynamicConfigurationService : IDynamicConfigurationService
     {
-        private readonly AppDbContext _dbContext;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly ISettingsProtectionService _protectionService;
         private readonly IConfiguration _configuration; // To check environment variables and appsettings.json
         private readonly ILogger<DynamicConfigurationService> _logger;
@@ -26,12 +27,12 @@ namespace Infrastructure.Services
         private record SettingDefinition(string Key, string? DefaultValueFromConfig, bool IsSensitive, string? Description);
 
         public DynamicConfigurationService(
-            AppDbContext dbContext,
+            IServiceScopeFactory serviceScopeFactory,
             ISettingsProtectionService protectionService,
             IConfiguration configuration,
             ILogger<DynamicConfigurationService> logger)
         {
-            _dbContext = dbContext;
+            _serviceScopeFactory = serviceScopeFactory;
             _protectionService = protectionService;
             _configuration = configuration;
             _logger = logger;
@@ -64,9 +65,14 @@ namespace Infrastructure.Services
             string? envVarValue = _configuration[key.Replace(":", "__")]; // Env vars use __ for :
             bool isOverriddenByEnv = !string.IsNullOrEmpty(envVarValue);
 
-            ApplicationSetting? dbSetting = await _dbContext.ApplicationSettings
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+            ApplicationSetting? dbSetting = null;
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                dbSetting = await dbContext.ApplicationSettings
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+            }
 
             string? currentValueInDb = dbSetting?.SettingValue;
             string? effectiveValue; // This is the raw value (possibly encrypted) the app would use or has from DB/Config
@@ -129,9 +135,14 @@ namespace Infrastructure.Services
                 return envVarValue; // Environment variables are king and assumed plaintext
             }
 
-            ApplicationSetting? dbSetting = await _dbContext.ApplicationSettings
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+            ApplicationSetting? dbSetting = null;
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                dbSetting = await dbContext.ApplicationSettings
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+            }
 
             if (dbSetting?.SettingValue != null)
             {
@@ -159,9 +170,15 @@ namespace Infrastructure.Services
         public async Task<IEnumerable<IDynamicSetting>> GetAllSettingsAsync(CancellationToken cancellationToken = default)
         {
             var allSettings = new List<IDynamicSetting>();
-            var dbSettings = await _dbContext.ApplicationSettings
-                .AsNoTracking()
-                .ToDictionaryAsync(s => s.SettingKey, s => s, cancellationToken);
+            Dictionary<string, ApplicationSetting> dbSettings;
+
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                dbSettings = await dbContext.ApplicationSettings
+                    .AsNoTracking()
+                    .ToDictionaryAsync(s => s.SettingKey, s => s, cancellationToken);
+            }
 
             foreach (var key in _definedSettings.Keys.OrderBy(k => k))
             {
@@ -212,7 +229,10 @@ namespace Infrastructure.Services
         {
             if (settingsToUpdate == null) throw new ArgumentNullException(nameof(settingsToUpdate));
 
-            using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            using var scope = _serviceScopeFactory.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
             try
             {
                 foreach (var kvp in settingsToUpdate)
@@ -226,7 +246,7 @@ namespace Infrastructure.Services
                         continue; // Or throw, based on strictness
                     }
 
-                    ApplicationSetting? dbSetting = await _dbContext.ApplicationSettings
+                    ApplicationSetting? dbSetting = await dbContext.ApplicationSettings
                         .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
 
                     if (dbSetting == null)
@@ -237,7 +257,7 @@ namespace Infrastructure.Services
                             Description = definition.Description,
                             IsEncrypted = definition.IsSensitive
                         };
-                        _dbContext.ApplicationSettings.Add(dbSetting);
+                        dbContext.ApplicationSettings.Add(dbSetting);
                     }
 
                     dbSetting.IsEncrypted = definition.IsSensitive; // Ensure this flag is correctly set based on definition
@@ -253,7 +273,7 @@ namespace Infrastructure.Services
                     _logger.LogInformation("Setting '{SettingKey}' updated in database (value {IsSensitive}).", key, definition.IsSensitive ? "is sensitive and was encrypted" : "is not sensitive");
                 }
 
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                await dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 _logger.LogInformation("{Count} settings updated successfully in the database.", settingsToUpdate.Count);
 
