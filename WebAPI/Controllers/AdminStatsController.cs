@@ -10,6 +10,9 @@ using System.Threading.Tasks;
 
 namespace WebAPI.Controllers
 {
+    /// <summary>
+    /// Provides administrative statistics for the dashboard.
+    /// </summary>
     [ApiController]
     [Route("api/admin")]
     [Authorize(Roles = "Admin")]
@@ -24,22 +27,37 @@ namespace WebAPI.Controllers
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
+        /// <summary>
+        /// Retrieves key statistics for the admin dashboard.
+        /// </summary>
+        /// <remarks>
+        /// This endpoint provides a consolidated view of metrics like total users,
+        /// signals sent today, and other high-level operational data.
+        /// </remarks>
+        /// <param name="cancellationToken">A token to cancel the operation if the request is aborted.</param>
+        /// <returns>An object containing dashboard statistics.</returns>
         [HttpGet("stats")]
         [ProducesResponseType(typeof(AdminDashboardStatsDto), StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status403Forbidden)]
+        [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> GetAdminStats(CancellationToken cancellationToken)
         {
-            _logger.LogInformation("Attempting to retrieve admin dashboard statistics.");
+            _logger.LogInformation("API Request: Attempting to retrieve admin dashboard statistics.");
             try
             {
                 var stats = await _adminService.GetAdminDashboardStatsAsync(cancellationToken);
-                _logger.LogInformation("Admin dashboard statistics retrieved successfully.");
+                _logger.LogInformation("API Success: Admin dashboard statistics retrieved successfully.");
                 return Ok(stats);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving admin dashboard statistics.");
-                return StatusCode(StatusCodes.Status500InternalServerError, "An error occurred while retrieving admin dashboard statistics.");
+                _logger.LogError(ex, "API Error: An unexpected error occurred while retrieving admin dashboard statistics.");
+                return StatusCode(StatusCodes.Status500InternalServerError, new ProblemDetails
+                {
+                    Title = "Internal Server Error",
+                    Detail = "An unexpected error occurred on the server while processing your request."
+                });
             }
         }
     }

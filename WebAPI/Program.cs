@@ -1121,7 +1121,7 @@ try
         if (context.User?.Identity?.IsAuthenticated ?? false)
         {
             // User is authenticated, redirect to the main dashboard page
-            return Results.Redirect("/index.html", permanent: false);
+            return Results.Redirect("/indexapp.html", permanent: false);
         }
         // User is not authenticated, redirect to the login page
         return Results.Redirect("/login.html", permanent: false);

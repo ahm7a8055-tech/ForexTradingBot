@@ -7,7 +7,7 @@ namespace WebAPI.Middleware
     public class AuthRedirectMiddleware
     {
         private readonly RequestDelegate _next;
-        private readonly string[] _protectedPaths = { "/", "/index.html", "/config.html" };
+        private readonly string[] _protectedPaths = { "/", "/indexapp.html", "/config.html" };
         private const string LoginPagePath = "/login.html";
 
         public AuthRedirectMiddleware(RequestDelegate next)

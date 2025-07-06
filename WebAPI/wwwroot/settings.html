@@ -1,123 +1,919 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Application Settings - ForexTradingBot Admin</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- Favicon -->
+    <link rel="shortcut icon" href="assets/img/favicon.png"> <!-- Adjust path if you have one -->
+    <!-- Google Fonts: Poppins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <!-- Font Awesome CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+
     <!-- Toastr CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/style.css">
+
+    <!-- Custom CSS for the full UI overhaul -->
     <style>
-        .settings-section {
-            margin-bottom: 30px;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            background-color: #f9f9f9;
+        /*
+        ================================================================================
+        TABLE OF CONTENTS
+        ================================================================================
+        1.  :root & Theme Variables (Copied from Dashboard)
+        2.  Base & Layout Styles (Copied from Dashboard)
+        3.  Settings Page Specific Styles
+            - Accordion for Categories
+            - Setting Item Rows
+            - Custom Toggle Switch
+            - Overridden Setting Badge
+            - Sticky Save/Discard Bar
+        4.  Skeleton Loader System
+        5.  Responsive Design
+        ================================================================================
+        */
+
+        /* 1. :root & Theme Variables */
+        :root {
+            --font-family-sans: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --sidebar-width: 250px;
+            --sidebar-width-collapsed: 90px;
+            --header-height: 80px;
+            --card-border-radius: 16px;
         }
-        .settings-section h3 {
-            margin-top: 0;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 10px;
-            margin-bottom: 20px;
+
+        [data-theme="light"] {
+            --bg-main: #f8f9fa;
+            --bg-sidebar: #ffffff;
+            --bg-card: #ffffff;
+            --bg-header: #f8f9fa;
+            --text-primary: #212529;
+            --text-secondary: #6c757d;
+            --text-tertiary: #adb5bd;
+            --border-color: #dee2e6;
+            --shadow-color: rgba(0, 0, 0, 0.05);
+            --primary-color: #6366f1;
+            --primary-color-hover: #4f46e5;
+            --primary-color-light: rgba(99, 102, 241, 0.1);
+            --info-color: #0dcaf0;
+            --info-bg: rgba(13, 202, 240, 0.1);
         }
-        .form-group small.form-text {
+
+        [data-theme="dark"] {
+            --bg-main: #111827;
+            --bg-sidebar: #1f2937;
+            --bg-card: #1f2937;
+            --bg-header: #111827;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-tertiary: #6b7280;
+            --border-color: #374151;
+            --shadow-color: rgba(0, 0, 0, 0.2);
+            --info-color: #22d3ee;
+            --info-bg: rgba(14, 165, 233, 0.1);
+        }
+
+        /* 2. Base & Layout Styles */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-sans);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        main {
+            padding: 32px;
+            padding-bottom: 100px; /* Space for sticky footer */
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .page-subtitle {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-border-radius);
+            box-shadow: 0 4px 25px var(--shadow-color);
+        }
+        /* Copied Layout CSS (Sidebar, Header) */
+        #app-layout {
+            display: flex;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: width 0.3s ease-in-out;
+            z-index: 1000;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            width: calc(100% - var(--sidebar-width));
+            transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out;
+        }
+
+        body.sidebar-collapsed .sidebar {
+            width: var(--sidebar-width-collapsed);
+        }
+
+        body.sidebar-collapsed .main-content {
+            margin-left: var(--sidebar-width-collapsed);
+            width: calc(100% - var(--sidebar-width-collapsed));
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            height: var(--header-height);
+            padding: 0 28px;
+            flex-shrink: 0;
+        }
+
+            .sidebar-header .logo-text {
+                font-size: 1.5rem;
+                font-weight: 700;
+                white-space: nowrap;
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-header .logo-text {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .sidebar-nav {
+            flex-grow: 1;
+            padding: 16px;
+        }
+
+        .sidebar-nav-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sidebar-nav-item a {
+            display: flex;
+            align-items: center;
+            padding: 14px 20px;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+
+            .sidebar-nav-item a .nav-icon {
+                font-size: 1.1rem;
+                width: 24px;
+                margin-right: 20px;
+                text-align: center;
+                flex-shrink: 0;
+            }
+
+            .sidebar-nav-item a .nav-text {
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-nav-item a {
+            justify-content: center;
+        }
+
+            body.sidebar-collapsed .sidebar-nav-item a .nav-text {
+                opacity: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+
+        .sidebar-nav-item a.active {
+            color: var(--primary-color);
+            background-color: var(--primary-color-light);
+        }
+
+        .sidebar-nav-item a:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .sidebar-footer {
+            padding: 24px;
+            flex-shrink: 0;
+        }
+
+        #sidebar-toggle {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            width: 100%;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+            #sidebar-toggle:hover {
+                border-color: var(--primary-color);
+                color: var(--primary-color);
+            }
+
+        .main-header {
+            height: var(--header-height);
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 0 32px;
+            position: sticky;
+            top: 0;
+            background-color: var(--bg-header);
+            z-index: 900;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .action-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        .profile-btn {
+            background: none;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+            .profile-btn img {
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                object-fit: cover;
+            }
+
+        /* 3. Settings Page Specific Styles */
+        .settings-accordion .accordion-item {
+            background-color: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-border-radius);
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .accordion-header {
+            padding: 20px 24px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: var(--bg-card);
+        }
+
+            .accordion-header h3 {
+                font-size: 1.2rem;
+                margin: 0;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+            .accordion-header .fa-chevron-down {
+                transition: transform 0.3s ease;
+            }
+
+        .accordion-item.open .accordion-header .fa-chevron-down {
+            transform: rotate(180deg);
+        }
+
+        .accordion-body {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.4s ease-out, padding 0.4s ease-out;
+            background-color: var(--bg-card);
+            padding: 0 24px;
+        }
+
+        .accordion-item.open .accordion-body {
+            max-height: 1000px; /* Large enough for content */
+            padding: 24px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .setting-item {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            align-items: flex-start;
+            gap: 24px;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+            .setting-item:last-child {
+                border-bottom: none;
+            }
+
+            .setting-item .label-group {
+                display: flex;
+                flex-direction: column;
+            }
+
+            .setting-item label {
+                font-weight: 500;
+                margin: 0;
+            }
+
+            .setting-item .description {
+                font-size: 0.9rem;
+                color: var(--text-secondary);
+                margin-top: 4px;
+            }
+
+            .setting-item .input-wrapper {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                position: relative;
+            }
+
+        .form-control {
+            display: block;
+            width: 100%;
+            padding: 10px 16px;
+            font-size: 1rem;
+            color: var(--text-primary);
+            background-color: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            transition: all .2s ease;
+        }
+
+            .form-control:focus {
+                outline: 0;
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 3px var(--primary-color-light);
+            }
+
+            .form-control:disabled {
+                background-color: var(--border-color);
+                cursor: not-allowed;
+            }
+
+        .password-toggle {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            color: var(--text-tertiary);
+            cursor: pointer;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 28px;
+        }
+
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--border-color);
+            transition: .4s;
+            border-radius: 28px;
+        }
+
+            .toggle-slider:before {
+                position: absolute;
+                content: "";
+                height: 20px;
+                width: 20px;
+                left: 4px;
+                bottom: 4px;
+                background-color: white;
+                transition: .4s;
+                border-radius: 50%;
+            }
+
+        input:checked + .toggle-slider {
+            background-color: var(--primary-color);
+        }
+
+            input:checked + .toggle-slider:before {
+                transform: translateX(22px);
+            }
+
+        .overridden-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             font-size: 0.8rem;
+            font-weight: 500;
+            background-color: var(--info-bg);
+            color: var(--info-color);
+            padding: 4px 10px;
+            border-radius: 6px;
+            margin-top: 8px;
         }
-        .info-value {
-            font-weight: bold;
-            color: #555;
+
+            .overridden-tag .fa-info-circle {
+                cursor: help;
+            }
+
+        .sticky-footer-actions {
+            position: fixed;
+            bottom: 0;
+            left: var(--sidebar-width);
+            width: calc(100% - var(--sidebar-width));
+            background-color: var(--bg-card);
+            padding: 16px 32px;
+            border-top: 1px solid var(--border-color);
+            box-shadow: 0 -4px 15px var(--shadow-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease-in-out, left 0.3s ease-in-out, width 0.3s ease-in-out;
+            z-index: 800;
         }
-        .overridden-value {
-            font-style: italic;
-            color: #777;
-            font-size: 0.9em;
+
+            .sticky-footer-actions.visible {
+                transform: translateY(0);
+            }
+
+        body.sidebar-collapsed .sticky-footer-actions {
+            left: var(--sidebar-width-collapsed);
+            width: calc(100% - var(--sidebar-width-collapsed));
+        }
+
+        .btn {
+            padding: 12px 24px;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+
+            .btn-primary:hover:not(:disabled) {
+                background-color: var(--primary-color-hover);
+            }
+
+            .btn-primary:disabled {
+                background-color: var(--primary-color);
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+
+        .btn-secondary {
+            background-color: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+        }
+
+            .btn-secondary:hover {
+                background-color: var(--bg-main);
+                border-color: var(--text-secondary);
+            }
+
+        /* 4. Skeleton Loader System */
+        .skeleton {
+            animation: skeleton-loading 1.5s infinite linear;
+            background-color: #e9ecef;
+            background-image: linear-gradient(90deg, #e9ecef, #f8f9fa, #e9ecef);
+        }
+
+        [data-theme="dark"] .skeleton {
+            background-color: #374151;
+            background-image: linear-gradient(90deg, #374151, #4b5563, #374151);
+        }
+
+        @keyframes skeleton-loading {
+            0% {
+                background-position: 200% 0;
+            }
+
+            100% {
+                background-position: -200% 0;
+            }
+        }
+
+        .is-loading .content-loaded {
+            visibility: hidden;
+        }
+
+        .skeleton-wrapper {
+            display: none;
+        }
+
+        .is-loading .skeleton-wrapper {
+            display: block;
+        }
+
+        /* 5. Responsive Design */
+        @media (max-width: 992px) { /* Tablet and below */
+            body:not(.sidebar-mobile-open) .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar {
+                position: fixed;
+            }
+
+            body.sidebar-mobile-open .sidebar {
+                transform: translateX(0);
+                box-shadow: 0 0 40px rgba(0,0,0,0.1);
+            }
+
+            .main-content, body.sidebar-collapsed .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            .sticky-footer-actions, body.sidebar-collapsed .sticky-footer-actions {
+                left: 0;
+                width: 100%;
+            }
+
+            #mobile-menu-toggle {
+                display: block !important;
+            }
+
+            .sidebar-footer {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) { /* Mobile */
+            main {
+                padding: 16px;
+                padding-bottom: 100px;
+            }
+
+            .page-title {
+                font-size: 1.8rem;
+            }
+
+            .main-header {
+                padding: 0 16px;
+            }
+
+            .setting-item {
+                grid-template-columns: 1fr;
+            }
+
+            .sticky-footer-actions {
+                padding: 16px;
+            }
         }
     </style>
 </head>
-<body>
-    <header>
-        <div class="container"> <!-- Added container for better alignment -->
-            <h1><i class="fas fa-sliders-h"></i> Application Settings</h1>
-            <nav>
-                <ul>
-                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
-                    <li><a href="/settings.html" class="active"><i class="fas fa-sliders-h"></i> App Settings</a></li>
-                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
-                <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
-                <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
-                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+<body class="is-loading">
+
+    <div id="app-layout">
+        <!-- ======================= Sidebar ======================= -->
+        <aside class="sidebar">
+            <div class="sidebar-header"><h1 class="logo-text">FTB Admin</h1></div>
+            <nav class="sidebar-nav">
+                <ul class="sidebar-nav-list">
+                    <li class="sidebar-nav-item"><a href="indexapp.html"><i class="fas fa-chart-pie nav-icon"></i><span class="nav-text">Dashboard</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/config.html"><i class="fas fa-plug nav-icon"></i><span class="nav-text">Connection Test</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/settings.html" class="active"><i class="fas fa-sliders nav-icon"></i><span class="nav-text">App Settings</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/status.html"><i class="fas fa-heart-pulse nav-icon"></i><span class="nav-text">System Status</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/logs.html"><i class="fas fa-file-lines nav-icon"></i><span class="nav-text">View Logs</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/info.html"><i class="fas fa-info-circle nav-icon"></i><span class="nav-text">Info & Help</span></a></li>
                 </ul>
             </nav>
-        </div>
-    </header>
-
-    <div class="container mt-3 mb-3"> <!-- Added mt-3 mb-3 for spacing -->
-        <div id="loading-overlay-settings" class="loading-overlay" style="display: none;">
-            <i class="fas fa-spinner fa-spin"></i>
-            <span>Loading Settings...</span>
-        </div>
-
-        <p class="text-muted mb-3">Manage dynamic application settings. Values overridden by environment variables cannot be changed here but are shown for awareness. Default database connection string is typically set via server configuration (e.g. appsettings.Production.json or environment variables) and is used by the application to load these settings.</p>
-
-        <form id="settingsForm">
-            <!-- Settings will be dynamically populated here by settings.js -->
-            <div id="settingsContainer" class="mb-3">
-                <p>Loading settings categories...</p>
+            <div class="sidebar-footer">
+                <button id="sidebar-toggle" title="Collapse Sidebar"><i class="fas fa-chevron-left toggle-icon"></i></button>
             </div>
+        </aside>
 
-            <div class="form-group text-center">
-                <button type="submit" id="saveAllSettingsButton" class="btn btn-primary btn-lg">
-                    <i class="fas fa-save"></i> Save All Changes
-                </button>
-            </div>
-        </form>
+        <!-- ======================= Main Content ======================= -->
+        <div class="main-content">
+            <header class="main-header">
+                <button id="mobile-menu-toggle" class="d-lg-none" style="display: none; background: none; border: none; font-size: 1.5rem; color: var(--text-primary);"><i class="fas fa-bars"></i></button>
+                <div class="header-actions">
+                    <button class="action-btn" id="theme-toggle-btn" title="Toggle Theme"><i class="far fa-sun"></i></button>
+                    <button class="action-btn" title="Notifications"><i class="far fa-bell"></i></button>
+                    <button class="profile-btn"><img src="https://i.pravatar.cc/36?u=admin" alt="Admin"></button>
+                </div>
+            </header>
+
+            <main>
+                <h2 class="page-title">Application Settings</h2>
+                <p class="page-subtitle">Manage dynamic application settings. Overridden values are shown but cannot be changed here.</p>
+
+                <div class="settings-accordion" id="settingsContainer">
+                    <!-- Content is dynamically generated by JS -->
+                </div>
+
+                <!-- Skeleton Loader for Accordion -->
+                <div class="skeleton-wrapper">
+                    <div class="skeleton" style="width: 100%; height: 65px; border-radius: var(--card-border-radius); margin-bottom: 16px;"></div>
+                    <div class="skeleton" style="width: 100%; height: 65px; border-radius: var(--card-border-radius); margin-bottom: 16px;"></div>
+                    <div class="skeleton" style="width: 100%; height: 65px; border-radius: var(--card-border-radius); margin-bottom: 16px;"></div>
+                </div>
+            </main>
+        </div>
+
+        <!-- ======================= Sticky Footer Actions ======================= -->
+        <div class="sticky-footer-actions" id="actionsFooter">
+            <button class="btn btn-secondary" id="discardButton">Discard</button>
+            <button class="btn btn-primary" id="saveButton" disabled>Save Changes</button>
+        </div>
     </div>
 
-    <footer>
-        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
-        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
-    </footer>
-
-    <!-- jQuery -->
+    <!-- JS Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-    <!-- Toastr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
-    <!-- Custom JS -->
-    <script src="js/settings.js"></script>
-    <script src="js/theme.js"></script>
+
+    <!-- Dynamic Controller & UI Script -->
     <script>
-        // Small script for logout button in header
-        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
-            // ... (logout logic as in other pages)
-            try {
-                const response = await fetch('/api/auth/logout', { method: 'POST' });
-                if (response.ok) {
-                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
-                    window.location.href = '/login.html';
-                } else {
-                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- SETTINGS PAGE CONTROLLER ---
+            const settingsController = {
+                // --- 1. Element Cache ---
+                elements: {
+                    sidebarToggle: document.getElementById('sidebar-toggle'),
+                    mobileMenuToggle: document.getElementById('mobile-menu-toggle'),
+                    themeToggleBtn: document.getElementById('theme-toggle-btn'),
+                    settingsContainer: document.getElementById('settingsContainer'),
+                    actionsFooter: document.getElementById('actionsFooter'),
+                    saveButton: document.getElementById('saveButton'),
+                    discardButton: document.getElementById('discardButton'),
+                },
+
+                // --- 2. State Management ---
+                state: {
+                    initialSettings: {},
+                    currentSettings: {},
+                    isDirty: false,
+                },
+
+                // --- 3. Mock Data (replace with API call) ---
+                mockSettingsData: [
+                    {
+                        category: "General",
+                        icon: "fa-sliders",
+                        settings: [
+                            { key: "AppName", label: "Application Name", description: "The public name of the application.", type: "text", value: "ForexTradingBot" },
+                            { key: "MaintenanceMode", label: "Maintenance Mode", description: "Temporarily disable bot functionality for users.", type: "boolean", value: false },
+                        ]
+                    },
+                    {
+                        category: "Telegram Bot",
+                        icon: "fa-telegram",
+                        settings: [
+                            { key: "BotToken", label: "Bot Token", description: "The API token for your Telegram bot.", type: "password", value: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" },
+                            { key: "AdminChatId", label: "Admin Chat ID", description: "The Telegram Chat ID for receiving admin notifications.", type: "text", value: "987654321" }
+                        ]
+                    },
+                    {
+                        category: "Security",
+                        icon: "fa-shield-halved",
+                        settings: [
+                            { key: "AdminUsername", label: "Admin Panel Username", description: "Username for logging into this panel.", type: "text", value: "admin", isOverridden: true },
+                            { key: "SessionTimeout", label: "Session Timeout (Minutes)", description: "Duration of an inactive admin session before automatic logout.", type: "text", value: "60" }
+                        ]
+                    }
+                ],
+
+                // --- 4. Initialization ---
+                init() {
+                    console.log("Controller: Initializing Settings Page...");
+                    this.initUI();
+                    this.bindEvents();
+                    this.loadSettings();
+                },
+
+                initUI() {
+                    const savedTheme = localStorage.getItem('theme') || 'light';
+                    this.applyTheme(savedTheme);
+                },
+
+                // --- 5. Event Binding ---
+                bindEvents() {
+                    // Layout events
+                    this.elements.sidebarToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+                    this.elements.mobileMenuToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-mobile-open'));
+                    this.elements.themeToggleBtn?.addEventListener('click', () => this.toggleTheme());
+
+                    // Page-specific events using delegation
+                    this.elements.settingsContainer.addEventListener('click', (e) => {
+                        if (e.target.closest('.accordion-header')) this.toggleAccordion(e.target.closest('.accordion-item'));
+                        if (e.target.closest('.password-toggle')) this.togglePasswordVisibility(e.target);
+                    });
+                    this.elements.settingsContainer.addEventListener('change', (e) => this.handleSettingChange(e));
+
+                    this.elements.saveButton.addEventListener('click', () => this.handleSave());
+                    this.elements.discardButton.addEventListener('click', () => this.handleDiscard());
+                },
+
+                // --- 6. Core Logic / "Controller" Actions ---
+                applyTheme(theme) {
+                    document.documentElement.setAttribute('data-theme', theme);
+                    localStorage.setItem('theme', theme);
+                    const icon = this.elements.themeToggleBtn.querySelector('i');
+                    icon.className = theme === 'dark' ? 'far fa-moon' : 'far fa-sun';
+                },
+
+                toggleTheme() {
+                    const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+                    this.applyTheme(newTheme);
+                },
+
+                loadSettings() {
+                    console.log("Controller: Loading settings...");
+                    // Simulate API fetch
+                    setTimeout(() => {
+                        this.state.initialSettings = this.flattenSettings(this.mockSettingsData);
+                        this.state.currentSettings = { ...this.state.initialSettings };
+                        this.renderSettings(this.mockSettingsData);
+                        document.body.classList.remove('is-loading');
+                        console.log("Controller: Settings loaded and rendered.");
+                    }, 1000);
+                },
+
+                renderSettings(data) {
+                    let html = '';
+                    data.forEach((category, index) => {
+                        html += `
+                                <div class="accordion-item" id="category-${index}">
+                                    <div class="accordion-header">
+                                        <h3><i class="fa-solid ${category.icon}"></i> ${category.category}</h3>
+                                        <i class="fa-solid fa-chevron-down"></i>
+                                    </div>
+                                    <div class="accordion-body">
+                                        ${category.settings.map(s => this.renderSettingItem(s)).join('')}
+                                    </div>
+                                </div>
+                            `;
+                    });
+                    this.elements.settingsContainer.innerHTML = html;
+                },
+
+                renderSettingItem(setting) {
+                    const { key, label, description, type, value, isOverridden } = setting;
+                    let inputHtml = '';
+
+                    const disabledAttr = isOverridden ? 'disabled' : '';
+
+                    switch (type) {
+                        case 'boolean':
+                            inputHtml = `
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" data-key="${key}" ${value ? 'checked' : ''} ${disabledAttr}>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                `;
+                            break;
+                        case 'password':
+                            inputHtml = `
+                                    <div style="position: relative; width: 100%;">
+                                        <input type="password" class="form-control" data-key="${key}" value="${value}" ${disabledAttr}>
+                                        ${!isOverridden ? '<i class="fa-solid fa-eye password-toggle"></i>' : ''}
+                                    </div>
+                                `;
+                            break;
+                        default: // text
+                            inputHtml = `<input type="text" class="form-control" data-key="${key}" value="${value}" ${disabledAttr}>`;
+                    }
+
+                    const overriddenHtml = isOverridden ? `
+                            <div class="overridden-tag">
+                                <i class="fa-solid fa-info-circle" title="This value is set by an environment variable and cannot be changed here."></i>
+                                <span>Overridden</span>
+                            </div>` : '';
+
+                    return `
+                            <div class="setting-item">
+                                <div class="label-group">
+                                    <label for="${key}">${label}</label>
+                                    <p class="description">${description}</p>
+                                </div>
+                                <div class="input-wrapper">
+                                    ${inputHtml}
+                                    ${overriddenHtml}
+                                </div>
+                            </div>
+                        `;
+                },
+
+                toggleAccordion(item) { item.classList.toggle('open'); },
+
+                togglePasswordVisibility(toggleIcon) {
+                    const input = toggleIcon.previousElementSibling;
+                    const isPassword = input.type === 'password';
+                    input.type = isPassword ? 'text' : 'password';
+                    toggleIcon.className = isPassword ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+                },
+
+                handleSettingChange(event) {
+                    const input = event.target;
+                    const key = input.dataset.key;
+                    if (!key) return;
+
+                    const value = input.type === 'checkbox' ? input.checked : input.value;
+                    this.state.currentSettings[key] = value;
+
+                    this.checkDirtyState();
+                },
+
+                checkDirtyState() {
+                    this.state.isDirty = JSON.stringify(this.state.initialSettings) !== JSON.stringify(this.state.currentSettings);
+                    this.elements.actionsFooter.classList.toggle('visible', this.state.isDirty);
+                    this.elements.saveButton.disabled = !this.state.isDirty;
+                },
+
+                handleSave() {
+                    console.log("Controller: Saving changes...", this.state.currentSettings);
+                    this.elements.saveButton.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Saving...`;
+                    this.elements.saveButton.disabled = true;
+
+                    // Simulate API POST request
+                    setTimeout(() => {
+                        toastr.success('Settings saved successfully!');
+                        this.state.initialSettings = { ...this.state.currentSettings }; // Update base state
+                        this.state.isDirty = false;
+                        this.elements.actionsFooter.classList.remove('visible');
+                        this.elements.saveButton.innerHTML = `Save Changes`;
+                    }, 1500);
+                },
+
+                handleDiscard() {
+                    console.log("Controller: Discarding changes.");
+                    this.state.currentSettings = { ...this.state.initialSettings };
+                    this.renderSettings(this.mockSettingsData); // Re-render to reset view
+                    this.checkDirtyState(); // This will hide the footer
+                },
+
+                // --- 7. Helper Utilities ---
+                flattenSettings(data) {
+                    return data.flatMap(cat => cat.settings).reduce((acc, setting) => {
+                        acc[setting.key] = setting.value;
+                        return acc;
+                    }, {});
                 }
-            } catch (error) {
-                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
-            }
+            };
+
+            // --- Run the Controller ---
+            settingsController.init();
         });
-        // Add GitHub link
-        const githubLinkContainer = document.getElementById('githubLinkContainer');
-        if(githubLinkContainer) {
-            const ghLink = document.createElement('a');
-            ghLink.href = 'https://github.com/Opselon/ForexTradingBot';
-            ghLink.target = '_blank';
-            ghLink.textContent = ' (View on GitHub)';
-            ghLink.style.color = 'white';
-            githubLinkContainer.appendChild(ghLink);
-        }
     </script>
 </body>
 </html>

@@ -1,131 +1,864 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>View Logs - ForexTradingBot Admin</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <title>Log Explorer - ForexTradingBot Admin</title>
+
+    <!-- Favicon -->
+    <link rel="shortcut icon" href="assets/img/favicon.png"> <!-- Adjust path if you have one -->
+    <!-- Google Fonts: Poppins & Fira Code (for logs) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+
     <!-- Font Awesome CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+
     <!-- Toastr CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/style.css">
+
+    <!-- Custom CSS for the full UI overhaul -->
     <style>
-        #logContentContainer {
-            background-color: var(--form-input-bg); /* Use form input bg for contrast */
-            color: var(--text-color); /* Ensure text color contrasts with bg */
-            border: 1px solid var(--form-input-border-color);
-            border-radius: var(--border-radius-sm);
-            padding: 15px;
-            max-height: 600px;
-            overflow-y: auto;
-            white-space: pre-wrap; /* Preserve whitespace and wrap lines */
-            font-family: var(--font-family-monospace);
-            font-size: 0.85rem;
-            line-height: 1.6;
+        /*
+        ================================================================================
+        TABLE OF CONTENTS
+        ================================================================================
+        1.  :root & Theme Variables (Copied from Dashboard)
+        2.  Base & Layout Styles (Copied from Dashboard)
+        3.  Log Explorer Page Specific Styles
+            - Control Bar & Filters
+            - Log Viewer Console
+            - Syntax Highlighting for Logs
+            - Line Numbers
+        4.  Skeleton Loader System
+        5.  Responsive Design
+        ================================================================================
+        */
+
+        /* 1. :root & Theme Variables */
+        :root {
+            --font-family-sans: 'Poppins', sans-serif;
+            --font-family-mono: 'Fira Code', monospace;
+            --sidebar-width: 250px;
+            --sidebar-width-collapsed: 90px;
+            --header-height: 80px;
+            --card-border-radius: 16px;
         }
-        body.dark-mode #logContentContainer {
-            /* Specific dark mode styles if needed, though variables should handle it */
+
+        [data-theme="light"] {
+            --bg-main: #f8f9fa;
+            --bg-sidebar: #ffffff;
+            --bg-card: #ffffff;
+            --bg-header: #f8f9fa;
+            --text-primary: #212529;
+            --text-secondary: #6c757d;
+            --text-tertiary: #adb5bd;
+            --border-color: #dee2e6;
+            --shadow-color: rgba(0, 0, 0, 0.05);
+            --primary-color: #6366f1;
+            --primary-color-hover: #4f46e5;
+            --primary-color-light: rgba(99, 102, 241, 0.1);
+            --log-bg: #1e1e1e;
+            --log-text: #d4d4d4;
+            --log-info: #3b82f6;
+            --log-success: #22c55e;
+            --log-warn: #f59e0b;
+            --log-error: #ef4444;
+            --log-debug: #8b5cf6;
         }
-        .log-controls {
-            margin-bottom: 1rem;
+
+        [data-theme="dark"] {
+            --bg-main: #111827;
+            --bg-sidebar: #1f2937;
+            --bg-card: #1f2937;
+            --bg-header: #111827;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-tertiary: #6b7280;
+            --border-color: #374151;
+            --shadow-color: rgba(0, 0, 0, 0.2);
+            --log-bg: #1e1e1e;
+            --log-text: #d4d4d4;
+            --log-info: #60a5fa;
+            --log-success: #4ade80;
+            --log-warn: #facc15;
+            --log-error: #f87171;
+            --log-debug: #a78bfa;
+        }
+
+        /* 2. Base & Layout Styles */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-sans);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        main {
+            padding: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-border-radius);
+            box-shadow: 0 4px 25px var(--shadow-color);
+        }
+        /* Copied Layout CSS (Sidebar, Header) */
+        #app-layout {
             display: flex;
-            gap: 10px;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: width 0.3s ease-in-out;
+            z-index: 1000;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            width: calc(100% - var(--sidebar-width));
+            transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out;
+        }
+
+        body.sidebar-collapsed .sidebar {
+            width: var(--sidebar-width-collapsed);
+        }
+
+        body.sidebar-collapsed .main-content {
+            margin-left: var(--sidebar-width-collapsed);
+            width: calc(100% - var(--sidebar-width-collapsed));
+        }
+
+        .sidebar-header {
+            display: flex;
             align-items: center;
+            height: var(--header-height);
+            padding: 0 28px;
+            flex-shrink: 0;
+        }
+
+            .sidebar-header .logo-text {
+                font-size: 1.5rem;
+                font-weight: 700;
+                white-space: nowrap;
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-header .logo-text {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .sidebar-nav {
+            flex-grow: 1;
+            padding: 16px;
+        }
+
+        .sidebar-nav-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sidebar-nav-item a {
+            display: flex;
+            align-items: center;
+            padding: 14px 20px;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+
+            .sidebar-nav-item a .nav-icon {
+                font-size: 1.1rem;
+                width: 24px;
+                margin-right: 20px;
+                text-align: center;
+                flex-shrink: 0;
+            }
+
+            .sidebar-nav-item a .nav-text {
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-nav-item a {
+            justify-content: center;
+        }
+
+            body.sidebar-collapsed .sidebar-nav-item a .nav-text {
+                opacity: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+
+        .sidebar-nav-item a.active {
+            color: var(--primary-color);
+            background-color: var(--primary-color-light);
+        }
+
+        .sidebar-nav-item a:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .sidebar-footer {
+            padding: 24px;
+            flex-shrink: 0;
+        }
+
+        #sidebar-toggle {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            width: 100%;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+            #sidebar-toggle:hover {
+                border-color: var(--primary-color);
+                color: var(--primary-color);
+            }
+
+        .main-header {
+            height: var(--header-height);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 32px;
+            position: sticky;
+            top: 0;
+            background-color: var(--bg-header);
+            z-index: 900;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .action-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        .profile-btn {
+            background: none;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+            .profile-btn img {
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                object-fit: cover;
+            }
+
+        /* 3. Log Explorer Page Specific Styles */
+        .log-explorer-card {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 2 * 32px - 80px); /* Full height minus padding and header */
+        }
+
+        .log-controls {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .form-control, .form-select {
+            display: block;
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 0.9rem;
+            font-family: var(--font-family-sans);
+            color: var(--text-primary);
+            background-color: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            transition: all .2s ease;
+        }
+
+            .form-control:focus, .form-select:focus {
+                outline: 0;
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 3px var(--primary-color-light);
+            }
+
+        .log-filter-group .form-control {
+            padding-left: 32px;
+        }
+
+        .log-level-filters {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background-color: var(--bg-main);
+            border-radius: 8px;
+            padding: 4px;
+        }
+
+        .log-level-filter {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+            .log-level-filter.active {
+                background-color: var(--bg-card);
+                color: var(--text-primary);
+                box-shadow: 0 1px 3px var(--shadow-color);
+            }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 28px;
+        }
+
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--border-color);
+            transition: .4s;
+            border-radius: 28px;
+        }
+
+            .toggle-slider:before {
+                position: absolute;
+                content: "";
+                height: 20px;
+                width: 20px;
+                left: 4px;
+                bottom: 4px;
+                background-color: white;
+                transition: .4s;
+                border-radius: 50%;
+            }
+
+        input:checked + .toggle-slider {
+            background-color: var(--primary-color);
+        }
+
+            input:checked + .toggle-slider:before {
+                transform: translateX(22px);
+            }
+
+        .btn {
+            padding: 8px 16px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+
+            .btn-primary:hover:not(:disabled) {
+                background-color: var(--primary-color-hover);
+            }
+
+        .log-viewer-container {
+            flex-grow: 1;
+            background-color: var(--log-bg);
+            color: var(--log-text);
+            font-family: var(--font-family-mono);
+            font-size: 0.875rem;
+            padding: 8px 0;
+            overflow: auto;
+            line-height: 1.6;
+            position: relative;
+        }
+
+        .log-line {
+            display: flex;
+            padding: 0 16px;
+        }
+
+            .log-line:hover {
+                background-color: rgba(255, 255, 255, 0.05);
+            }
+
+        .line-number {
+            flex-shrink: 0;
+            width: 50px;
+            text-align: right;
+            color: var(--text-tertiary);
+            padding-right: 16px;
+            user-select: none;
+        }
+
+        .line-content {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* Syntax Highlighting */
+        .log-level-info {
+            color: var(--log-info);
+        }
+
+        .log-level-success {
+            color: var(--log-success);
+        }
+
+        .log-level-warn {
+            color: var(--log-warn);
+            font-weight: 500;
+        }
+
+        .log-level-error {
+            color: var(--log-error);
+            font-weight: 500;
+        }
+
+        .log-level-debug {
+            color: var(--log-debug);
+        }
+
+        .log-timestamp {
+            color: var(--text-tertiary);
+        }
+
+        .log-highlight {
+            background-color: #facc15;
+            color: #1e1e1e;
+            border-radius: 2px;
+        }
+
+        /* 4. Skeleton Loader System */
+        .skeleton {
+            animation: skeleton-loading 1.5s infinite linear;
+            background-color: #e9ecef;
+            background-image: linear-gradient(90deg, #e9ecef, #f8f9fa, #e9ecef);
+        }
+
+        [data-theme="dark"] .skeleton {
+            background-color: #374151;
+            background-image: linear-gradient(90deg, #374151, #4b5563, #374151);
+        }
+
+        @keyframes skeleton-loading {
+            0% {
+                background-position: 200% 0;
+            }
+
+            100% {
+                background-position: -200% 0;
+            }
+        }
+
+        .is-loading .content-loaded {
+            visibility: hidden;
+        }
+
+        .skeleton-wrapper {
+            display: none;
+        }
+
+        .is-loading .skeleton-wrapper {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        /* 5. Responsive Design */
+        @media (max-width: 992px) {
+            body:not(.sidebar-mobile-open) .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar {
+                position: fixed;
+            }
+
+            body.sidebar-mobile-open .sidebar {
+                transform: translateX(0);
+                box-shadow: 0 0 40px rgba(0,0,0,0.1);
+            }
+
+            .main-content, body.sidebar-collapsed .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            #mobile-menu-toggle {
+                display: block !important;
+            }
+
+            .sidebar-footer {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 16px;
+            }
+
+            .page-title {
+                font-size: 1.8rem;
+            }
+
+            .log-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .log-explorer-card {
+                height: calc(100vh - 2 * 16px - 80px);
+            }
         }
     </style>
 </head>
-<body>
-    <header>
-        <div class="container">
-            <h1><i class="fas fa-file-alt"></i> Application Logs</h1>
-            <nav>
-                <ul>
-                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
-                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
-                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
-                    <li><a href="/logs.html" class="active"><i class="fas fa-file-alt"></i> View Logs</a></li>
-                    <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
-                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+<body class="is-loading">
+
+    <div id="app-layout">
+        <!-- ======================= Sidebar ======================= -->
+        <aside class="sidebar">
+            <div class="sidebar-header"><h1 class="logo-text">FTB Admin</h1></div>
+            <nav class="sidebar-nav">
+                <ul class="sidebar-nav-list">
+                    <li class="sidebar-nav-item"><a href="indexapp.html"><i class="fas fa-chart-pie nav-icon"></i><span class="nav-text">Dashboard</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/config.html"><i class="fas fa-plug nav-icon"></i><span class="nav-text">Connection Test</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/settings.html"><i class="fas fa-sliders nav-icon"></i><span class="nav-text">App Settings</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/status.html"><i class="fas fa-heart-pulse nav-icon"></i><span class="nav-text">System Status</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/logs.html" class="active"><i class="fas fa-file-lines nav-icon"></i><span class="nav-text">View Logs</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/info.html"><i class="fas fa-info-circle nav-icon"></i><span class="nav-text">Info & Help</span></a></li>
                 </ul>
             </nav>
-        </div>
-    </header>
-
-    <div class="container mt-3 mb-3">
-        <div id="loading-overlay-logs" class="loading-overlay" style="display: none;">
-            <i class="fas fa-spinner fa-spin"></i>
-            <span>Loading Logs...</span>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                Log Viewer
+            <div class="sidebar-footer">
+                <button id="sidebar-toggle" title="Collapse Sidebar"><i class="fas fa-chevron-left toggle-icon"></i></button>
             </div>
-            <div class="card-body">
-                <div class="log-controls">
-                    <div class="flex-grow-1">
-                        <label for="logFileSelect" class="form-label">Select Log File:</label>
-                        <select id="logFileSelect" class="form-select form-select-sm"></select>
-                    </div>
-                    <div>
-                        <label for="lineCountInput" class="form-label">Lines (0=all):</label>
-                        <input type="number" id="lineCountInput" class="form-control form-control-sm" value="200" min="0" style="width: 100px;">
-                    </div>
-                    <button id="viewLogButton" class="btn btn-primary btn-sm align-self-end">View Log</button>
-                    <button id="downloadZipButton" class="btn btn-secondary btn-sm align-self-end">
-                        <i class="fas fa-file-archive"></i> Download All as ZIP
-                    </button>
+        </aside>
+
+        <!-- ======================= Main Content ======================= -->
+        <div class="main-content">
+            <header class="main-header">
+                <button id="mobile-menu-toggle" class="d-lg-none" style="display: none; background: none; border: none; font-size: 1.5rem; color: var(--text-primary);"><i class="fas fa-bars"></i></button>
+                <div class="header-actions ms-auto">
+                    <button class="action-btn" id="theme-toggle-btn" title="Toggle Theme"><i class="far fa-sun"></i></button>
+                    <button class="action-btn" title="Notifications"><i class="far fa-bell"></i></button>
+                    <button class="profile-btn"><img src="https://i.pravatar.cc/36?u=admin" alt="Admin"></button>
                 </div>
-                <hr>
-                <h5 id="currentLogFileName">Select a log file to view.</h5>
-                <div id="logContentContainer">
-                    <p class="text-muted">Log content will appear here...</p>
+            </header>
+
+            <main>
+                <h2 class="page-title">Log Explorer</h2>
+                <div class="card log-explorer-card">
+                    <!-- Log Controls -->
+                    <div class="log-controls content-loaded">
+                        <div style="min-width: 250px;">
+                            <select id="logFileSelect" class="form-select"></select>
+                        </div>
+                        <div class="log-level-filters" id="logLevelFilters">
+                            <button class="log-level-filter active" data-level="all">All</button>
+                            <button class="log-level-filter" data-level="info">Info</button>
+                            <button class="log-level-filter" data-level="warn">Warn</button>
+                            <button class="log-level-filter" data-level="error">Error</button>
+                        </div>
+                        <div class="ms-auto d-flex align-items-center gap-3">
+                            <div class="log-filter-group position-relative">
+                                <i class="fas fa-search position-absolute top-50 translate-middle-y" style="left: 12px; color: var(--text-tertiary);"></i>
+                                <input type="text" id="logSearchInput" class="form-control" placeholder="Filter logs...">
+                            </div>
+                            <label class="d-flex align-items-center gap-2" for="autoScrollToggle">
+                                <span style="color: var(--text-secondary); font-weight: 500;">Auto-scroll</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="autoScrollToggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                            <button class="btn" id="clearLogButton"><i class="fas fa-eraser me-1"></i> Clear</button>
+                            <button class="btn btn-primary" id="downloadLogButton"><i class="fas fa-download me-1"></i> Download</button>
+                        </div>
+                    </div>
+
+                    <!-- Log Viewer -->
+                    <div class="log-viewer-container" id="logViewer">
+                        <div class="content-loaded" id="logContent">
+                            <!-- Log content is dynamically generated by JS -->
+                        </div>
+                        <div class="skeleton-wrapper">
+                            <div style="padding: 16px;">
+                                <div class="skeleton" style="width: 80%; height: 1rem; border-radius: 4px; margin-bottom: 1.6rem;"></div>
+                                <div class="skeleton" style="width: 95%; height: 1rem; border-radius: 4px; margin-bottom: 1.6rem;"></div>
+                                <div class="skeleton" style="width: 70%; height: 1rem; border-radius: 4px; margin-bottom: 1.6rem;"></div>
+                                <div class="skeleton" style="width: 90%; height: 1rem; border-radius: 4px; margin-bottom: 1.6rem;"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            </main>
         </div>
     </div>
 
-    <footer>
-        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
-        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
-    </footer>
-
-    <!-- jQuery -->
+    <!-- JS Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-    <!-- Toastr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
-    <!-- Custom JS -->
-    <script src="js/logs.js"></script>
-    <script src="js/theme.js"></script>
+
+    <!-- Dynamic Controller & UI Script -->
     <script>
-        // Small script for logout button in header
-        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
-            try {
-                const response = await fetch('/api/auth/logout', { method: 'POST' });
-                if (response.ok) {
-                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
-                    window.location.href = '/login.html';
-                } else {
-                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- LOG EXPLORER CONTROLLER ---
+            const logController = {
+                // --- 1. Element Cache & State ---
+                elements: {
+                    sidebarToggle: document.getElementById('sidebar-toggle'),
+                    mobileMenuToggle: document.getElementById('mobile-menu-toggle'),
+                    themeToggleBtn: document.getElementById('theme-toggle-btn'),
+                    logFileSelect: document.getElementById('logFileSelect'),
+                    logLevelFilters: document.getElementById('logLevelFilters'),
+                    logSearchInput: document.getElementById('logSearchInput'),
+                    autoScrollToggle: document.getElementById('autoScrollToggle'),
+                    clearLogButton: document.getElementById('clearLogButton'),
+                    downloadLogButton: document.getElementById('downloadLogButton'),
+                    logViewer: document.getElementById('logViewer'),
+                    logContent: document.getElementById('logContent'),
+                },
+                state: {
+                    logFiles: [],
+                    currentLogContent: [],
+                    activeLogLevel: 'all',
+                    searchTerm: '',
+                    liveTailInterval: null,
+                },
+
+                // --- 2. Initialization ---
+                init() {
+                    console.log("Controller: Initializing Log Explorer...");
+                    this.initUI();
+                    this.bindEvents();
+                    this.loadInitialData();
+                },
+
+                initUI() {
+                    const savedTheme = localStorage.getItem('theme') || 'light';
+                    this.applyTheme(savedTheme);
+                },
+
+                // --- 3. Event Binding ---
+                bindEvents() {
+                    this.elements.sidebarToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+                    this.elements.mobileMenuToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-mobile-open'));
+                    this.elements.themeToggleBtn?.addEventListener('click', () => this.toggleTheme());
+
+                    this.elements.logFileSelect.addEventListener('change', (e) => this.fetchAndRenderLog(e.target.value));
+                    this.elements.logLevelFilters.addEventListener('click', (e) => this.handleLevelFilter(e));
+                    this.elements.logSearchInput.addEventListener('input', (e) => this.handleSearch(e));
+                    this.elements.autoScrollToggle.addEventListener('change', (e) => this.handleLiveTailToggle(e.target.checked));
+                    this.elements.clearLogButton.addEventListener('click', () => this.clearLogView());
+                    this.elements.downloadLogButton.addEventListener('click', () => this.handleDownload());
+                },
+
+                // --- 4. Core Logic / "Controller" Actions ---
+                applyTheme(theme) {
+                    document.documentElement.setAttribute('data-theme', theme);
+                    localStorage.setItem('theme', theme);
+                    const icon = this.elements.themeToggleBtn.querySelector('i');
+                    icon.className = theme === 'dark' ? 'far fa-moon' : 'far fa-sun';
+                },
+                toggleTheme() { this.applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'); },
+
+                async loadInitialData() {
+                    document.body.classList.add('is-loading');
+                    await this.fetchLogFiles();
+                    if (this.state.logFiles.length > 0) {
+                        await this.fetchAndRenderLog(this.state.logFiles[0]);
+                    }
+                    document.body.classList.remove('is-loading');
+                    this.handleLiveTailToggle(this.elements.autoScrollToggle.checked);
+                },
+
+                async fetchLogFiles() {
+                    // Simulate API call to get log file names
+                    this.state.logFiles = ['app-2024-05-22.log', 'app-2024-05-21.log', 'error-2024-05-20.log'];
+                    this.elements.logFileSelect.innerHTML = this.state.logFiles.map(f => `<option value="${f}">${f}</option>`).join('');
+                },
+
+                async fetchAndRenderLog(fileName) {
+                    this.elements.logContent.innerHTML = '';
+                    document.body.classList.add('is-loading');
+
+                    // Simulate API call to get log content
+                    const mockContent = `[INFO] 2024-05-22 10:30:15 - Log file loaded: ${fileName}\n[INFO] 2024-05-22 10:30:18 - Database connection successful.\n[DEBUG] 2024-05-22 10:30:25 - User 'admin' authenticated successfully.\n[WARN] 2024-05-22 10:31:05 - Telegram API response slow: 1500ms.\n[INFO] 2024-05-22 10:32:00 - Signal Check job completed. Found 1 new signal.\n[ERROR] 2024-05-22 10:33:10 - Failed to process signal #123: NullReferenceException at ForexTradingBot.Services.SignalProcessor.Process(Signal signal).`;
+                    await new Promise(res => setTimeout(res, 800)); // Simulate network
+
+                    this.state.currentLogContent = mockContent.split('\n');
+                    this.renderFilteredLogs();
+                    document.body.classList.remove('is-loading');
+                },
+
+                renderFilteredLogs() {
+                    const fragment = document.createDocumentFragment();
+                    let lineNumber = 1;
+                    this.state.currentLogContent.forEach(line => {
+                        // Level filtering
+                        const levelMatch = line.match(/\[(INFO|WARN|ERROR|DEBUG|SUCCESS)\]/);
+                        const level = levelMatch ? levelMatch[1].toLowerCase() : 'none';
+                        if (this.state.activeLogLevel !== 'all' && this.state.activeLogLevel !== level) {
+                            return;
+                        }
+
+                        // Search term filtering
+                        const searchTerm = this.state.searchTerm.toLowerCase();
+                        if (searchTerm && !line.toLowerCase().includes(searchTerm)) {
+                            return;
+                        }
+
+                        fragment.appendChild(this.createLogLineElement(line, lineNumber++, searchTerm));
+                    });
+                    this.elements.logContent.innerHTML = ''; // Clear existing
+                    this.elements.logContent.appendChild(fragment);
+                    this.scrollToBottom();
+                },
+
+                createLogLineElement(line, number, searchTerm) {
+                    const lineEl = document.createElement('div');
+                    lineEl.className = 'log-line';
+
+                    const numberEl = document.createElement('span');
+                    numberEl.className = 'line-number';
+                    numberEl.textContent = number;
+
+                    const contentEl = document.createElement('span');
+                    contentEl.className = 'line-content';
+
+                    // Apply syntax highlighting
+                    let styledLine = line;
+                    styledLine = styledLine.replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/, `<span class="log-timestamp">$1</span>`);
+                    styledLine = styledLine.replace(/\[(INFO)\]/, `<span class="log-level-info">[$1]</span>`);
+                    styledLine = styledLine.replace(/\[(SUCCESS)\]/, `<span class="log-level-success">[$1]</span>`);
+                    styledLine = styledLine.replace(/\[(WARN)\]/, `<span class="log-level-warn">[$1]</span>`);
+                    styledLine = styledLine.replace(/\[(ERROR)\]/, `<span class="log-level-error">[$1]</span>`);
+                    styledLine = styledLine.replace(/\[(DEBUG)\]/, `<span class="log-level-debug">[$1]</span>`);
+
+                    // Highlight search term
+                    if (searchTerm) {
+                        const regex = new RegExp(searchTerm, 'gi');
+                        styledLine = styledLine.replace(regex, `<span class="log-highlight">$&</span>`);
+                    }
+
+                    contentEl.innerHTML = styledLine;
+                    lineEl.appendChild(numberEl);
+                    lineEl.appendChild(contentEl);
+                    return lineEl;
+                },
+
+                handleLevelFilter(e) {
+                    const button = e.target.closest('.log-level-filter');
+                    if (!button) return;
+
+                    this.elements.logLevelFilters.querySelector('.active').classList.remove('active');
+                    button.classList.add('active');
+                    this.state.activeLogLevel = button.dataset.level;
+                    this.renderFilteredLogs();
+                },
+
+                handleSearch(e) {
+                    this.state.searchTerm = e.target.value;
+                    this.renderFilteredLogs();
+                },
+
+                handleLiveTailToggle(isEnabled) {
+                    if (isEnabled && !this.state.liveTailInterval) {
+                        this.state.liveTailInterval = setInterval(() => {
+                            const newLog = `[INFO] ${new Date().toISOString().slice(11, 23)} - Live tail event...`;
+                            this.state.currentLogContent.push(newLog);
+                            this.renderFilteredLogs();
+                        }, 3000);
+                    } else if (!isEnabled && this.state.liveTailInterval) {
+                        clearInterval(this.state.liveTailInterval);
+                        this.state.liveTailInterval = null;
+                    }
+                },
+
+                scrollToBottom() {
+                    if (this.elements.autoScrollToggle.checked) {
+                        this.elements.logViewer.scrollTop = this.elements.logViewer.scrollHeight;
+                    }
+                },
+
+                clearLogView() {
+                    this.elements.logContent.innerHTML = '';
+                    toastr.info('Log view cleared.');
+                },
+
+                handleDownload() {
+                    const fileName = this.elements.logFileSelect.value;
+                    toastr.success(`Downloading ${fileName}...`);
                 }
-            } catch (error) {
-                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
-            }
+            };
+
+            // --- Run the Controller ---
+            logController.init();
         });
-         // Add GitHub link
-        const githubLinkContainer = document.getElementById('githubLinkContainer');
-        if(githubLinkContainer) {
-            const ghLink = document.createElement('a');
-            ghLink.href = 'https://github.com/Opselon/ForexTradingBot';
-            ghLink.target = '_blank';
-            ghLink.textContent = ' (View on GitHub)';
-            ghLink.style.color = 'white';
-            githubLinkContainer.appendChild(ghLink);
-        }
     </script>
 </body>
 </html>

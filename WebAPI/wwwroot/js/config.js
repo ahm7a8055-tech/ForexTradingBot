@@ -159,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 if (typeof toastr !== 'undefined') toastr.success(result.message || 'Configuration saved (placeholder)! Redirecting to dashboard...');
                 setTimeout(() => {
-                    window.location.href = '/index.html';
+                    window.location.href = '/indexapp.html';
                 }, 2000); // Delay for user to read toast
             } else {
                 if (typeof toastr !== 'undefined') toastr.error(result.message || `Failed to save configuration: ${response.status}`);

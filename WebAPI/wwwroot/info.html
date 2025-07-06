@@ -1,159 +1,862 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Information & Help - ForexTradingBot Admin</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <title>Info & Help Center - ForexTradingBot Admin</title>
+
+    <!-- Favicon -->
+    <link rel="shortcut icon" href="assets/img/favicon.png"> <!-- Adjust path if you have one -->
+    <!-- Google Fonts: Poppins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <!-- Font Awesome CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+
     <!-- Toastr CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/style.css">
+
+    <!-- Custom CSS for the full UI overhaul -->
     <style>
-        .info-section {
-            margin-bottom: 2rem;
+        /*
+        ================================================================================
+        TABLE OF CONTENTS
+        ================================================================================
+        1.  :root & Theme Variables (Copied from Dashboard)
+        2.  Base & Layout Styles (Copied from Dashboard)
+        3.  Help Center Page Specific Styles
+            - Content Grid Layout
+            - Resource & Action Links
+            - Interactive FAQ Accordion
+            - Release Notes (Changelog) Styling
+            - README Content Styling
+        4.  Skeleton Loader System
+        5.  Responsive Design
+        ================================================================================
+        */
+
+        /* 1. :root & Theme Variables */
+        :root {
+            --font-family-sans: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --sidebar-width: 250px;
+            --sidebar-width-collapsed: 90px;
+            --header-height: 80px;
+            --card-border-radius: 16px;
         }
-        .info-section h3 {
-            border-bottom: 1px solid var(--card-border-color);
-            padding-bottom: 0.5rem;
-            margin-bottom: 1rem;
+
+        [data-theme="light"] {
+            --bg-main: #f8f9fa;
+            --bg-sidebar: #ffffff;
+            --bg-card: #ffffff;
+            --bg-header: #f8f9fa;
+            --text-primary: #212529;
+            --text-secondary: #6c757d;
+            --text-tertiary: #adb5bd;
+            --border-color: #dee2e6;
+            --shadow-color: rgba(0, 0, 0, 0.05);
+            --primary-color: #6366f1;
+            --primary-color-hover: #4f46e5;
+            --primary-color-light: rgba(99, 102, 241, 0.1);
+            --success-color: #198754;
+            --info-color: #0dcaf0;
+            --danger-color: #dc3545;
+        }
+
+        [data-theme="dark"] {
+            --bg-main: #111827;
+            --bg-sidebar: #1f2937;
+            --bg-card: #1f2937;
+            --bg-header: #111827;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-tertiary: #6b7280;
+            --border-color: #374151;
+            --shadow-color: rgba(0, 0, 0, 0.2);
+            --success-color: #34d399;
+            --info-color: #22d3ee;
+            --danger-color: #f87171;
+        }
+
+        /* 2. Base & Layout Styles */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-sans);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        main {
+            padding: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-border-radius);
+            box-shadow: 0 4px 25px var(--shadow-color);
+            padding: 24px;
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+            .card-title .fa-solid, .card-title .fa-brands {
+                color: var(--primary-color);
+            }
+        /* Copied Layout CSS (Sidebar, Header) */
+        #app-layout {
+            display: flex;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: width 0.3s ease-in-out;
+            z-index: 1000;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            width: calc(100% - var(--sidebar-width));
+            transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out;
+        }
+
+        body.sidebar-collapsed .sidebar {
+            width: var(--sidebar-width-collapsed);
+        }
+
+        body.sidebar-collapsed .main-content {
+            margin-left: var(--sidebar-width-collapsed);
+            width: calc(100% - var(--sidebar-width-collapsed));
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            height: var(--header-height);
+            padding: 0 28px;
+            flex-shrink: 0;
+        }
+
+            .sidebar-header .logo-text {
+                font-size: 1.5rem;
+                font-weight: 700;
+                white-space: nowrap;
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-header .logo-text {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .sidebar-nav {
+            flex-grow: 1;
+            padding: 16px;
+        }
+
+        .sidebar-nav-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sidebar-nav-item a {
+            display: flex;
+            align-items: center;
+            padding: 14px 20px;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+
+            .sidebar-nav-item a .nav-icon {
+                font-size: 1.1rem;
+                width: 24px;
+                margin-right: 20px;
+                text-align: center;
+                flex-shrink: 0;
+            }
+
+            .sidebar-nav-item a .nav-text {
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-nav-item a {
+            justify-content: center;
+        }
+
+            body.sidebar-collapsed .sidebar-nav-item a .nav-text {
+                opacity: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+
+        .sidebar-nav-item a.active {
+            color: var(--primary-color);
+            background-color: var(--primary-color-light);
+        }
+
+        .sidebar-nav-item a:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .sidebar-footer {
+            padding: 24px;
+            flex-shrink: 0;
+        }
+
+        #sidebar-toggle {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            width: 100%;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+            #sidebar-toggle:hover {
+                border-color: var(--primary-color);
+                color: var(--primary-color);
+            }
+
+        .main-header {
+            height: var(--header-height);
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 0 32px;
+            position: sticky;
+            top: 0;
+            background-color: var(--bg-header);
+            z-index: 900;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .action-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        .profile-btn {
+            background: none;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+            .profile-btn img {
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                object-fit: cover;
+            }
+
+        /* 3. Help Center Page Specific Styles */
+        .help-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 32px;
+            align-items: flex-start;
+        }
+
+        .main-column {
+            display: flex;
+            flex-direction: column;
+            gap: 32px;
+        }
+
+        .side-column {
+            display: flex;
+            flex-direction: column;
+            gap: 32px;
+            position: sticky;
+            top: calc(var(--header-height) + 32px);
+        }
+
+        .resource-list, .action-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+            .resource-list li, .action-list li {
+                margin-bottom: 12px;
+            }
+
+                .resource-list li:last-child, .action-list li:last-child {
+                    margin-bottom: 0;
+                }
+
+            .resource-list a, .action-list a {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                text-decoration: none;
+                color: var(--text-secondary);
+                font-weight: 500;
+                padding: 12px;
+                border-radius: 8px;
+                transition: all 0.2s ease;
+            }
+
+                .resource-list a:hover, .action-list a:hover {
+                    background-color: var(--bg-main);
+                    color: var(--text-primary);
+                }
+
+                .resource-list a .fa-solid, .resource-list a .fa-brands {
+                    color: var(--text-tertiary);
+                }
+
+        #faqSearchInput {
+            width: 100%;
+            padding: 10px 16px 10px 40px;
+            font-size: 0.9rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background-color: var(--bg-main);
+            margin-bottom: 16px;
+        }
+
+        .faq-search-wrapper {
+            position: relative;
+        }
+
+            .faq-search-wrapper .fa-search {
+                position: absolute;
+                left: 16px;
+                top: 14px;
+                color: var(--text-tertiary);
+            }
+
+        .faq-accordion .faq-item {
+            border-bottom: 1px solid var(--border-color);
+        }
+
+            .faq-accordion .faq-item:last-child {
+                border-bottom: none;
+            }
+
+        .faq-question {
+            padding: 16px 0;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+            .faq-question .fa-chevron-down {
+                transition: transform 0.3s ease;
+            }
+
+        .faq-item.open .faq-question .fa-chevron-down {
+            transform: rotate(180deg);
+        }
+
+        .faq-answer {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.4s ease-out;
+            color: var(--text-secondary);
+            padding-bottom: 0;
+        }
+
+        .faq-item.open .faq-answer {
+            max-height: 300px;
+            padding-bottom: 16px;
+        }
+
+        .release-notes-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .release-note-item {
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+            .release-note-item:last-child {
+                border-bottom: none;
+            }
+
+        .release-note-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .release-version {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        .release-date {
+            font-size: 0.9rem;
+            color: var(--text-tertiary);
+        }
+
+        .release-note-item ul {
+            padding-left: 20px;
+            margin: 0;
+            color: var(--text-secondary);
+        }
+
+        .release-tag {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 6px;
+            margin-left: 8px;
+            display: inline-block;
+        }
+
+        .tag-new {
+            background-color: var(--primary-color-light);
             color: var(--primary-color);
         }
-        .info-section ul {
-            list-style-type: none;
-            padding-left: 0;
+
+        .tag-fix {
+            background-color: rgba(220, 53, 69, 0.1);
+            color: var(--danger-color);
         }
-        .info-section ul li {
-            margin-bottom: 0.5rem;
+
+        .tag-perf {
+            background-color: rgba(25, 135, 84, 0.1);
+            color: var(--success-color);
         }
-        .info-section ul li a {
-            text-decoration: underline;
+
+        .readme-content {
+            line-height: 1.7;
         }
-        .faq-item {
-            margin-bottom: 1rem;
+
+            .readme-content h3 {
+                font-size: 1.5rem;
+                margin-top: 24px;
+                margin-bottom: 12px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid var(--border-color);
+            }
+
+            .readme-content p, .readme-content ul {
+                color: var(--text-secondary);
+            }
+
+            .readme-content code {
+                background-color: var(--bg-main);
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-family: monospace;
+            }
+
+            .readme-content a {
+                color: var(--primary-color);
+                text-decoration: underline;
+            }
+
+        /* 4. Skeleton Loader System */
+        .skeleton {
+            animation: skeleton-loading 1.5s infinite linear;
+            background-color: #e9ecef;
+            background-image: linear-gradient(90deg, #e9ecef, #f8f9fa, #e9ecef);
         }
-        .faq-question {
-            font-weight: bold;
+
+        [data-theme="dark"] .skeleton {
+            background-color: #374151;
+            background-image: linear-gradient(90deg, #374151, #4b5563, #374151);
+        }
+
+        @keyframes skeleton-loading {
+            0% {
+                background-position: 200% 0;
+            }
+
+            100% {
+                background-position: -200% 0;
+            }
+        }
+
+        .is-loading .content-loaded {
+            visibility: hidden;
+        }
+
+        .skeleton-wrapper {
+            display: none;
+        }
+
+        .is-loading .skeleton-wrapper {
+            display: block;
+        }
+
+        /* 5. Responsive Design */
+        @media (max-width: 992px) {
+            .help-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .side-column {
+                position: static;
+            }
+
+            body:not(.sidebar-mobile-open) .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar {
+                position: fixed;
+            }
+
+            body.sidebar-mobile-open .sidebar {
+                transform: translateX(0);
+                box-shadow: 0 0 40px rgba(0,0,0,0.1);
+            }
+
+            .main-content, body.sidebar-collapsed .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            #mobile-menu-toggle {
+                display: block !important;
+            }
+
+            .sidebar-footer {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 16px;
+            }
+
+            .page-title {
+                font-size: 1.8rem;
+            }
         }
     </style>
 </head>
-<body>
-    <header>
-        <div class="container">
-            <h1><i class="fas fa-info-circle"></i> Information & Help</h1>
-            <nav>
-                <ul>
-                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
-                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
-                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
-                    <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
-                    <li><a href="/info.html" class="active"><i class="fas fa-info-circle"></i> Info & Help</a></li>
-                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+<body class="is-loading">
+
+    <div id="app-layout">
+        <!-- ======================= Sidebar ======================= -->
+        <aside class="sidebar">
+            <div class="sidebar-header"><h1 class="logo-text">FTB Admin</h1></div>
+            <nav class="sidebar-nav">
+                <ul class="sidebar-nav-list">
+                    <li class="sidebar-nav-item"><a href="indexapp.html"><i class="fas fa-chart-pie nav-icon"></i><span class="nav-text">Dashboard</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/config.html"><i class="fas fa-plug nav-icon"></i><span class="nav-text">Connection Test</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/settings.html"><i class="fas fa-sliders nav-icon"></i><span class="nav-text">App Settings</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/status.html"><i class="fas fa-heart-pulse nav-icon"></i><span class="nav-text">System Status</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/logs.html"><i class="fas fa-file-lines nav-icon"></i><span class="nav-text">View Logs</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/info.html" class="active"><i class="fas fa-info-circle nav-icon"></i><span class="nav-text">Info & Help</span></a></li>
                 </ul>
             </nav>
-        </div>
-    </header>
-
-    <div class="container mt-3 mb-3">
-        <div class="card">
-            <div class="card-body">
-                <div class="info-section">
-                    <h3><i class="fab fa-github"></i> Project Resources</h3>
-                    <ul>
-                        <li><a href="https://github.com/Opselon/ForexTradingBot" target="_blank"><i class="fab fa-github"></i> Main GitHub Repository</a> - Visit the project's source code, report issues, and contribute.</li>
-                        <!-- Add links to Issues and Wiki if they are actively used -->
-                        <!-- <li><a href="https://github.com/Opselon/ForexTradingBot/issues" target="_blank"><i class="fas fa-bug"></i> Report an Issue</a></li> -->
-                        <!-- <li><a href="https://github.com/Opselon/ForexTradingBot/wiki" target="_blank"><i class="fas fa-book"></i> Project Wiki</a></li> -->
-                    </ul>
-                </div>
-
-                <div class="info-section">
-                    <h3><i class="fas fa-question-circle"></i> Frequently Asked Questions (FAQ)</h3>
-                    <div class="faq-item">
-                        <p class="faq-question">Q: How do I update my Telegram Bot Token?</p>
-                        <p>A: Navigate to the "App Settings" page. Find the "TelegramPanel Settings" section and update the `TelegramPanel:BotToken` field. Remember to save changes. The application might need a restart for some core settings to take effect if dynamic reloading isn't fully supported for that specific setting yet.</p>
-                    </div>
-                    <div class="faq-item">
-                        <p class="faq-question">Q: Where can I see if my database connection is working?</p>
-                        <p>A: Go to the "Connection Test" page to test the database connection string you intend to use. The "System Status" page also shows the current live database connectivity status.</p>
-                    </div>
-                    <div class="faq-item">
-                        <p class="faq-question">Q: How are sensitive settings like API keys stored?</p>
-                        <p>A: When you save settings through the "App Settings" page, sensitive values are encrypted before being stored in the application's database. They are decrypted only when needed by the application. Environment variables can override these settings and are loaded directly by the application.</p>
-                    </div>
-                    <!-- Add more FAQ items as needed -->
-                </div>
-
-                <div class="info-section">
-                    <h3><i class="fas fa-tools"></i> Basic Troubleshooting Tips</h3>
-                    <ul>
-                        <li><strong>Bot not responding?</strong> Check the "System Status" page for Telegram API connectivity. Ensure your Bot Token is correct in "App Settings". Review the application logs on the "View Logs" page for any errors.</li>
-                        <li><strong>Can't log in to admin panel?</strong> Ensure the admin username and password configured in the application settings (or environment variables) are correct.</li>
-                        <li><strong>Settings not taking effect?</strong> Some critical settings might require an application restart after being changed. The system attempts to reload configurations dynamically where possible. Check logs for any errors during settings update or application startup.</li>
-                        <li><strong>Error messages on UI?</strong> Use browser developer tools (Console tab) to check for JavaScript errors. Toastr notifications at the top-right usually provide specific error details from API calls.</li>
-                    </ul>
-                    <!-- Add more tips -->
-                </div>
-
-                 <div class="info-section">
-                    <h3><i class="fas fa-file-alt"></i> About This Admin Panel</h3>
-                    <p>This admin panel provides tools to configure, monitor, and manage the ForexTradingBot application. It allows direct interaction with application settings, diagnostic checks, and operational insights.</p>
-                    <p><strong>Key Features:</strong></p>
-                    <ul>
-                        <li>Secure login for administrators.</li>
-                        <li>Dynamic application settings management with values stored securely in the database.</li>
-                        <li>Connection testing for critical services (Database, Redis, Telegram Bot API).</li>
-                        <li>Dashboard overview of key application statistics (users, signals).</li>
-                        <li>System status monitoring for core connectivity and Hangfire jobs.</li>
-                        <li>Log viewing and download capabilities.</li>
-                    </ul>
-                </div>
-
-
+            <div class="sidebar-footer">
+                <button id="sidebar-toggle" title="Collapse Sidebar"><i class="fas fa-chevron-left toggle-icon"></i></button>
             </div>
+        </aside>
+
+        <!-- ======================= Main Content ======================= -->
+        <div class="main-content">
+            <header class="main-header">
+                <button id="mobile-menu-toggle" class="d-lg-none" style="display: none; background: none; border: none; font-size: 1.5rem; color: var(--text-primary);"><i class="fas fa-bars"></i></button>
+                <div class="header-actions ms-auto">
+                    <button class="action-btn" id="theme-toggle-btn" title="Toggle Theme"><i class="far fa-sun"></i></button>
+                    <button class="action-btn" title="Notifications"><i class="far fa-bell"></i></button>
+                    <button class="profile-btn"><img src="https://i.pravatar.cc/36?u=admin" alt="Admin"></button>
+                </div>
+            </header>
+
+            <main>
+                <h2 class="page-title">Help Center</h2>
+
+                <div class="help-grid">
+                    <!-- Main Content Column -->
+                    <div class="main-column">
+                        <div class="card">
+                            <div class="card-title"><i class="fa-solid fa-file-lines"></i> About This Project</div>
+                            <div class="readme-content content-loaded" id="readmeContainer"></div>
+                            <div class="skeleton-wrapper">
+                                <div class="skeleton" style="width: 80%; height: 1rem; border-radius: 4px; margin-bottom: 1rem;"></div>
+                                <div class="skeleton" style="width: 95%; height: 1rem; border-radius: 4px; margin-bottom: 1rem;"></div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-title"><i class="fa-solid fa-code-branch"></i> Release Notes</div>
+                            <div class="release-notes-list content-loaded" id="releaseNotesContainer"></div>
+                            <div class="skeleton-wrapper">
+                                <div class="skeleton" style="width: 100%; height: 4rem; border-radius: 8px; margin-bottom: 1rem;"></div>
+                                <div class="skeleton" style="width: 100%; height: 4rem; border-radius: 8px;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Side Column -->
+                    <div class="side-column">
+                        <div class="card">
+                            <h3 class="card-title"><i class="fa-solid fa-link"></i> Project Resources</h3>
+                            <ul class="resource-list content-loaded" id="resourcesContainer"></ul>
+                            <div class="skeleton-wrapper">
+                                <div class="skeleton" style="width: 100%; height: 2rem; border-radius: 8px; margin-bottom: 0.75rem;"></div>
+                                <div class="skeleton" style="width: 100%; height: 2rem; border-radius: 8px;"></div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <h3 class="card-title"><i class="fa-solid fa-bolt"></i> Quick Actions</h3>
+                            <ul class="action-list content-loaded" id="actionsContainer"></ul>
+                            <div class="skeleton-wrapper">
+                                <div class="skeleton" style="width: 100%; height: 2rem; border-radius: 8px; margin-bottom: 0.75rem;"></div>
+                                <div class="skeleton" style="width: 100%; height: 2rem; border-radius: 8px;"></div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <h3 class="card-title"><i class="fa-solid fa-circle-question"></i> FAQ</h3>
+                            <div class="faq-search-wrapper">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="faqSearchInput" placeholder="Search questions...">
+                            </div>
+                            <div class="faq-accordion content-loaded" id="faqContainer"></div>
+                            <div class="skeleton-wrapper">
+                                <div class="skeleton" style="width: 100%; height: 2rem; border-radius: 8px; margin-top: 1rem;"></div>
+                                <div class="skeleton" style="width: 100%; height: 2rem; border-radius: 8px; margin-top: 0.75rem;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
         </div>
     </div>
 
-    <footer>
-        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
-        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
-    </footer>
-
-    <!-- jQuery -->
+    <!-- JS Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-    <!-- Toastr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
-    <!-- Custom JS (if any specific to this page, otherwise just theme.js) -->
-    <script src="js/theme.js"></script>
+
+    <!-- Dynamic Controller & UI Script -->
     <script>
-        // Small script for logout button in header
-        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
-            try {
-                const response = await fetch('/api/auth/logout', { method: 'POST' });
-                if (response.ok) {
-                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
-                    window.location.href = '/login.html';
-                } else {
-                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- HELP CENTER CONTROLLER ---
+            const helpController = {
+                // --- 1. Element Cache ---
+                elements: {
+                    sidebarToggle: document.getElementById('sidebar-toggle'),
+                    mobileMenuToggle: document.getElementById('mobile-menu-toggle'),
+                    themeToggleBtn: document.getElementById('theme-toggle-btn'),
+                    readmeContainer: document.getElementById('readmeContainer'),
+                    releaseNotesContainer: document.getElementById('releaseNotesContainer'),
+                    resourcesContainer: document.getElementById('resourcesContainer'),
+                    actionsContainer: document.getElementById('actionsContainer'),
+                    faqContainer: document.getElementById('faqContainer'),
+                    faqSearchInput: document.getElementById('faqSearchInput'),
+                },
+
+                // --- 2. State & Mock Data ---
+                state: {
+                    faqData: [],
+                },
+                mockData: {
+                    readme: `
+                            <h3>Project Overview</h3>
+                            <p><strong>ForexSignalBot</strong> is an AI-enhanced Telegram system designed to deliver hyper-accurate, real-time trading signals for global financial markets, with a strategic focus on Forex.</p>
+                            <p>Built on .NET 9 and adhering to Clean Architecture and Domain-Driven Design, it provides a resilient, intuitive, and performant platform for traders of all levels.</p>
+                            <h3>Key Highlights</h3>
+                            <ul>
+                                <li>🤖 AI-Powered Signal Generation</li>
+                                <li>📰 Real-time News Aggregation from 100+ sources</li>
+                                <li>💬 Full UI Experience directly within Telegram</li>
+                                <li>🔗 Automated Signal Execution (Auto-Forwarder)</li>
+                            </ul>
+                        `,
+                    releaseNotes: [
+                        { version: "v2.1.0", date: "May 20, 2024", notes: [{ tag: 'new', text: "Added live System Status page with real-time charts." }, { tag: 'fix', text: "Improved accuracy of signal parsing algorithm." }] },
+                        { version: "v2.0.5", date: "May 15, 2024", notes: [{ tag: 'perf', text: "Optimized database queries for faster dashboard loading." }, { tag: 'fix', text: "Resolved issue with Telegram API connection timeouts." }] },
+                    ],
+                    resources: [
+                        { text: 'Main GitHub Repository', icon: 'fa-brands fa-github', url: 'https://github.com/Opselon/ForexTradingBot' },
+                        { text: 'Report an Issue', icon: 'fa-solid fa-bug', url: 'https://github.com/Opselon/ForexTradingBot/issues' },
+                        { text: 'View Project License', icon: 'fa-solid fa-scroll', url: 'https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE' },
+                    ],
+                    quickActions: [
+                        { text: 'Test Connections', icon: 'fa-solid fa-plug-circle-check', url: '/config.html' },
+                        { text: 'Manage Settings', icon: 'fa-solid fa-sliders', url: '/settings.html' },
+                        { text: 'View Latest Logs', icon: 'fa-solid fa-file-lines', url: '/logs.html' },
+                    ],
+                    faq: [
+                        { q: "How do I update my Telegram Bot Token?", a: "Navigate to the 'App Settings' page. Find the 'Telegram Bot' section and update the 'BotToken' field. Remember to save your changes." },
+                        { q: "Where can I see if my database connection is working?", a: "Go to the 'Connection Test' page to test your connection string. The 'System Status' page also shows the live database connectivity status." },
+                        { q: "How are sensitive settings like API keys stored?", a: "When you save settings through the admin panel, sensitive values are encrypted before being stored. Environment variables can override these settings and are loaded directly by the application." },
+                        { q: "What does the 'Auto-Forwarder' feature do?", a: "The Auto-Forwarder automatically sends trading signals from this bot to your connected trading platform client (e.g., MetaTrader), eliminating the need for manual order entry." }
+                    ]
+                },
+
+                // --- 3. Initialization ---
+                init() {
+                    console.log("Controller: Initializing Help Center...");
+                    this.initUI();
+                    this.bindEvents();
+                    this.loadContent();
+                },
+
+                initUI() {
+                    const savedTheme = localStorage.getItem('theme') || 'light';
+                    this.applyTheme(savedTheme);
+                },
+
+                // --- 4. Event Binding ---
+                bindEvents() {
+                    this.elements.sidebarToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+                    this.elements.mobileMenuToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-mobile-open'));
+                    this.elements.themeToggleBtn?.addEventListener('click', () => this.toggleTheme());
+
+                    this.elements.faqContainer.addEventListener('click', (e) => {
+                        const question = e.target.closest('.faq-question');
+                        if (question) this.toggleFaqItem(question.parentElement);
+                    });
+                    this.elements.faqSearchInput.addEventListener('input', (e) => this.filterFaq(e.target.value));
+                },
+
+                // --- 5. Core Logic / "Controller" Actions ---
+                applyTheme(theme) {
+                    document.documentElement.setAttribute('data-theme', theme);
+                    localStorage.setItem('theme', theme);
+                    const icon = this.elements.themeToggleBtn.querySelector('i');
+                    icon.className = theme === 'dark' ? 'far fa-moon' : 'far fa-sun';
+                },
+                toggleTheme() { this.applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'); },
+
+                loadContent() {
+                    console.log("Controller: Loading all help content...");
+                    document.body.classList.add('is-loading');
+                    // Simulate fetching all content
+                    setTimeout(() => {
+                        this.renderReadme();
+                        this.renderReleaseNotes();
+                        this.renderResources();
+                        this.renderQuickActions();
+                        this.state.faqData = this.mockData.faq;
+                        this.renderFaq();
+                        document.body.classList.remove('is-loading');
+                        console.log("Controller: Content loaded and rendered.");
+                    }, 800);
+                },
+
+                renderReadme() {
+                    this.elements.readmeContainer.innerHTML = this.mockData.readme;
+                },
+
+                renderReleaseNotes() {
+                    this.elements.releaseNotesContainer.innerHTML = this.mockData.releaseNotes.map(release => `
+                            <div class="release-note-item">
+                                <div class="release-note-header">
+                                    <h4 class="release-version">${release.version}</h4>
+                                    <span class="release-date">${release.date}</span>
+                                </div>
+                                <ul>
+                                    ${release.notes.map(note => `<li><span class="release-tag tag-${note.tag}">${note.tag.toUpperCase()}</span> ${note.text}</li>`).join('')}
+                                </ul>
+                            </div>
+                        `).join('');
+                },
+
+                renderResources() {
+                    this.elements.resourcesContainer.innerHTML = this.mockData.resources.map(res => `
+                            <li><a href="${res.url}" target="_blank" rel="noopener noreferrer"><i class="${res.icon} fa-fw"></i> ${res.text}</a></li>
+                        `).join('');
+                },
+
+                renderQuickActions() {
+                    this.elements.actionsContainer.innerHTML = this.mockData.quickActions.map(act => `
+                            <li><a href="${act.url}"><i class="${act.icon} fa-fw"></i> ${act.text}</a></li>
+                        `).join('');
+                },
+
+                renderFaq(filteredData = this.state.faqData) {
+                    if (filteredData.length === 0) {
+                        this.elements.faqContainer.innerHTML = `<p style="color: var(--text-secondary); text-align: center; padding: 1rem;">No questions found.</p>`;
+                        return;
+                    }
+                    this.elements.faqContainer.innerHTML = filteredData.map(item => `
+                            <div class="faq-item">
+                                <div class="faq-question">
+                                    <span>${item.q}</span>
+                                    <i class="fa-solid fa-chevron-down"></i>
+                                </div>
+                                <div class="faq-answer"><p>${item.a}</p></div>
+                            </div>
+                        `).join('');
+                },
+
+                toggleFaqItem(faqItem) {
+                    faqItem.classList.toggle('open');
+                },
+
+                filterFaq(searchTerm) {
+                    const lowerCaseTerm = searchTerm.toLowerCase();
+                    const filtered = this.state.faqData.filter(item =>
+                        item.q.toLowerCase().includes(lowerCaseTerm) ||
+                        item.a.toLowerCase().includes(lowerCaseTerm)
+                    );
+                    this.renderFaq(filtered);
                 }
-            } catch (error) {
-                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
-            }
+            };
+
+            // --- Run the Controller ---
+            helpController.init();
         });
-         // Add GitHub link
-        const githubLinkContainer = document.getElementById('githubLinkContainer');
-        if(githubLinkContainer) {
-            const ghLink = document.createElement('a');
-            ghLink.href = 'https://github.com/Opselon/ForexTradingBot';
-            ghLink.target = '_blank';
-            ghLink.textContent = ' (View on GitHub)';
-            ghLink.style.color = 'white';
-            githubLinkContainer.appendChild(ghLink);
-        }
     </script>
 </body>
 </html>

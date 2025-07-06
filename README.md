@@ -1,4 +1,4 @@
-﻿# ForexSignalBot: AI-Driven Telegram Forex Signals / Auto Forwarder Smart Free OpenSource 📈🤖✨🚀
+﻿# ForexSignalBot: AI-Driven Telegram Forex Signals / Telegramb bot Auto Forwarder Smart Free OpenSource 📈🤖✨🚀
 
 [![License](https://img.shields.io/github/license/Opselon/ForexTradingBot?style=for-the-badge&color=blue)](https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE "Project License Badge: Indicates the MIT License, allowing open use and modification of the codebase. Click to view license details and usage terms.")
 [![GitHub Stars](https://img.shields.io/github/stars/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/stargazers "GitHub Stars Count: Shows how many users have starred this repository, reflecting popularity and interest in the project. Click to see stargazers.")
@@ -149,7 +149,22 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true -
 
 ---
 
+### Step 4: The Web Setup Wizard ✨
+This is the new, streamlined setup process.
 
+1.  **Open the Web Panel:** Navigate to **[http://localhost:5000/login.html](http://localhost:5000/login.html)** in your browser.
+2.  **Login:** Use the default credentials:
+    *   **Username:** `admin`
+    *   **Password:** `admin`
+    *(You will be prompted to change these sensitive details during the first-time setup process in the web UI for better security.)*
+3.  **Guided Setup:** After logging in for the first time, you will be automatically redirected to a secure setup page (`/indexapp.html`).
+    *   On this page, you will be prompted to enter your **Telegram Bot Token** and other core settings.
+    *   The system will **live-test** your credentials to ensure they are valid before saving.
+    *   Once saved, these settings are stored securely in the database, not in plain text files.
+4.  **Database Seeding:** After the initial setup, you will be prompted to seed the database. Click the "Seed Database" button in the web UI. This will populate the initial list of RSS feeds and other required data.
+
+**🎉 That's it! Your bot is now fully configured and running.** You can manage everything from the web panel.
+![alt text](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/Dashboard-Dark.png)
 ## 📖 Table of Contents 📚
 
 *   [🚀 Project Overview: Precision Trading with ForexSignalBot](#-project-overview-precision-trading-with-forexsignalbot)
@@ -510,3 +525,4 @@ Please review our `CONTRIBUTING.md` file (which will be created soon! 🔜 Stay 
 ## 📄 License 📜
 
 This project is proudly licensed under the **MIT License**. This permissive open-source license allows you to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, subject to the inclusion of the original copyright and permission notice. For comprehensive details, please refer to the [LICENSE](https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE) file located in the root of this repository. ✅
+#Tags: `#ForexTrading` `#TelegramBot` `#AISignals` `#AutomatedTrading` `#ForexBot` `#TradingAutomation` `#NETCore` `#DotNet9` `#FinancialTechnology` `#FinTech` `#AlgorithmicTrading` `#SignalBot` `#OpenSource` `#CryptoTrading` `#MarketAnalysis` `#Bots` `#Software` `#TradingBot`

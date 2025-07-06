@@ -25,7 +25,7 @@ Before you begin, ensure your server has the following software installed:
     *   **.NET 9 SDK (or later):** [Download .NET 9](https://dotnet.microsoft.com/en-us/download/dotnet/9.0)
     *   **PostgreSQL Server:** A running instance of PostgreSQL with the `pg_trgm` extension enabled (`CREATE EXTENSION pg_trgm;`).
     *   **Redis Server:** A running instance of Redis.
-*   **Admin Dashboard (Optional but Recommended):** For managing dynamic settings, the new Admin Dashboard will be served directly from this WebAPI's `/wwwroot` directory (e.g., `/index.html`, `/login.html`). No separate project instance is needed.
+*   **Admin Dashboard (Optional but Recommended):** For managing dynamic settings, the new Admin Dashboard will be served directly from this WebAPI's `/wwwroot` directory (e.g., `/indexapp.html`, `/login.html`). No separate project instance is needed.
 
 ---
 

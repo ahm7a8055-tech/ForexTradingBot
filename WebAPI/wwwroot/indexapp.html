@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - ForexTradingBot Admin</title>
+
+    <!-- Favicon -->
+    <link rel="shortcut icon" href="assets/img/favicon.png"> <!-- Adjust path if you have one -->
+    <!-- Google Fonts: Poppins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Font Awesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+
+    <!-- Custom CSS for the full UI overhaul -->
+    <style>
+        /*
+        ================================================================================
+        TABLE OF CONTENTS
+        ================================================================================
+        1.  :root & Theme Variables (Light Mode First)
+        2.  Base & Body Styles
+        3.  Main Layout (Sidebar, Main Content)
+        4.  Sidebar Component
+        5.  Header Component (Top Bar)
+        6.  Dashboard Grid & Card Styles
+        7.  Widget-Specific Styles
+            - Stat Cards
+            - Chart Container
+            - Activity Feed
+            - System Health
+            - Recent Logs
+        8.  Skeleton Loader System
+        9.  Utility & Helper Classes
+        10. Responsive Design
+        ================================================================================
+        */
+
+        /* 1. :root & Theme Variables */
+        :root {
+            --font-family-sans: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            /* Sizing & Spacing */
+            --sidebar-width: 250px;
+            --sidebar-width-collapsed: 90px;
+            --header-height: 80px;
+            --card-border-radius: 16px;
+        }
+
+        /* Light Theme (Default, matches image) */
+        [data-theme="light"] {
+            --bg-main: #f8f9fa;
+            --bg-sidebar: #ffffff;
+            --bg-card: #ffffff;
+            --bg-header: #f8f9fa;
+            --text-primary: #212529;
+            --text-secondary: #6c757d;
+            --text-tertiary: #adb5bd;
+            --border-color: #dee2e6;
+            --shadow-color: rgba(0, 0, 0, 0.05);
+            --primary-color: #6366f1;
+            --primary-color-hover: #4f46e5;
+            --primary-color-light: rgba(99, 102, 241, 0.1);
+            --success-color: #198754;
+            --success-bg: rgba(25, 135, 84, 0.1);
+            --warning-color: #fd7e14;
+            --warning-bg: rgba(253, 126, 20, 0.1);
+            --log-bg: #000000;
+            --log-text: #e9ecef;
+        }
+
+        /* Dark Theme (For toggling) */
+        [data-theme="dark"] {
+            --bg-main: #111827;
+            --bg-sidebar: #1f2937;
+            --bg-card: #1f2937;
+            --bg-header: #111827;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-tertiary: #6b7280;
+            --border-color: #374151;
+            --shadow-color: rgba(0, 0, 0, 0.2);
+            --success-color: #34d399;
+            --success-bg: rgba(16, 185, 129, 0.1);
+            --warning-color: #f59e0b;
+            --warning-bg: rgba(245, 158, 11, 0.1);
+            --log-bg: #000000;
+            --log-text: #e9ecef;
+        }
+
+        /* 2. Base & Body Styles */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-sans);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        /* 3. Main Layout */
+        #app-layout {
+            display: flex;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: width 0.3s ease-in-out;
+            z-index: 1000;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            width: calc(100% - var(--sidebar-width));
+            transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out;
+        }
+
+        body.sidebar-collapsed .sidebar {
+            width: var(--sidebar-width-collapsed);
+        }
+
+        body.sidebar-collapsed .main-content {
+            margin-left: var(--sidebar-width-collapsed);
+            width: calc(100% - var(--sidebar-width-collapsed));
+        }
+
+        /* 4. Sidebar Component */
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            height: var(--header-height);
+            padding: 0 28px;
+            flex-shrink: 0;
+        }
+
+            .sidebar-header .logo-text {
+                font-size: 1.5rem;
+                font-weight: 700;
+                white-space: nowrap;
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-header .logo-text {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .sidebar-nav {
+            flex-grow: 1;
+            padding: 16px;
+        }
+
+        .sidebar-nav-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sidebar-nav-item a {
+            display: flex;
+            align-items: center;
+            padding: 14px 20px;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+
+            .sidebar-nav-item a .nav-icon {
+                font-size: 1.1rem;
+                width: 24px;
+                margin-right: 20px;
+                text-align: center;
+                flex-shrink: 0;
+            }
+
+            .sidebar-nav-item a .nav-text {
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-nav-item a {
+            justify-content: center;
+        }
+
+            body.sidebar-collapsed .sidebar-nav-item a .nav-text {
+                opacity: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+
+        .sidebar-nav-item a.active {
+            color: var(--primary-color);
+            background-color: var(--primary-color-light);
+        }
+
+        .sidebar-nav-item a:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .sidebar-footer {
+            padding: 24px;
+            flex-shrink: 0;
+        }
+
+        #sidebar-toggle {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            width: 100%;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+            #sidebar-toggle:hover {
+                border-color: var(--primary-color);
+                color: var(--primary-color);
+            }
+
+            #sidebar-toggle .toggle-icon {
+                transition: transform 0.3s ease;
+            }
+
+        body.sidebar-collapsed #sidebar-toggle .toggle-icon {
+            transform: rotate(180deg);
+        }
+
+        body.sidebar-collapsed .sidebar-footer {
+            padding: 24px 16px;
+        }
+
+        /* 5. Header Component (Top Bar) */
+        .main-header {
+            height: var(--header-height);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 32px;
+            position: sticky;
+            top: 0;
+            background-color: var(--bg-header);
+            z-index: 900;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .search-bar {
+            position: relative;
+        }
+
+            .search-bar .fa-search {
+                position: absolute;
+                left: 16px;
+                top: 50%;
+                transform: translateY(-50%);
+                color: var(--text-tertiary);
+            }
+
+            .search-bar input {
+                background-color: var(--bg-sidebar);
+                border: 1px solid var(--border-color);
+                border-radius: 10px;
+                padding: 10px 16px 10px 45px;
+                width: 280px;
+                font-size: 0.9rem;
+                color: var(--text-primary);
+                transition: all 0.3s ease;
+            }
+
+                .search-bar input::placeholder {
+                    color: var(--text-tertiary);
+                }
+
+                .search-bar input:focus {
+                    outline: none;
+                    border-color: var(--primary-color);
+                    box-shadow: 0 0 0 3px var(--primary-color-light);
+                }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .action-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        .profile-btn {
+            background: none;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+            .profile-btn img {
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                object-fit: cover;
+            }
+
+            .profile-btn .username {
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+
+            .profile-btn .fa-chevron-down {
+                font-size: 0.8rem;
+                color: var(--text-secondary);
+            }
+
+        /* 6. Dashboard Grid & Card Styles */
+        main {
+            padding: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 32px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            gap: 24px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-border-radius);
+            padding: 24px;
+            box-shadow: 0 4px 25px var(--shadow-color);
+            transition: all 0.3s ease;
+        }
+
+        .card-header {
+            padding: 0;
+            margin-bottom: 24px;
+            background: none;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+            .card-title .fa-solid, .card-title .fa-regular, .card-title .fa-brands {
+                color: var(--text-tertiary);
+            }
+
+        /* 7. Widget-Specific Styles */
+        .stat-card-grid {
+            grid-template-columns: repeat(4, 1fr);
+        }
+
+        .stat-card {
+            text-align: left;
+            padding: 24px;
+        }
+
+            .stat-card .value {
+                font-size: 2.5rem;
+                font-weight: 600;
+                line-height: 1.1;
+                color: var(--text-primary);
+            }
+
+            .stat-card .label {
+                font-size: 0.9rem;
+                color: var(--text-secondary);
+                margin-top: 4px;
+                margin-bottom: 12px;
+            }
+
+            .stat-card .trend {
+                font-size: 0.9rem;
+                font-weight: 600;
+            }
+
+        .trend.positive {
+            color: var(--success-color);
+        }
+
+        .trend.negative {
+            color: var(--warning-color);
+        }
+
+        .chart-container {
+            height: 350px;
+        }
+
+        .activity-feed ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .activity-feed li {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+            .activity-feed li:first-child {
+                padding-top: 0;
+            }
+
+            .activity-feed li:last-child {
+                border: none;
+                padding-bottom: 0;
+            }
+
+        .activity-feed .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            flex-shrink: 0;
+        }
+
+        .activity-feed .activity-text {
+            flex-grow: 1;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .activity-feed .activity-time {
+            font-size: 0.8rem;
+            color: var(--text-tertiary);
+            margin-top: 4px;
+        }
+
+        .system-health-list {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .system-health-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+            .system-health-item .item-name {
+                color: var(--text-secondary);
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+        .status-badge {
+            font-weight: 600;
+            padding: 5px 12px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+        }
+
+            .status-badge.ok {
+                background-color: var(--success-bg);
+                color: var(--success-color);
+            }
+
+            .status-badge.degraded {
+                background-color: var(--warning-bg);
+                color: var(--warning-color);
+            }
+
+        .recent-logs-container {
+            background-color: var(--log-bg);
+            color: var(--log-text);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            padding: 20px;
+            border-radius: 10px;
+            height: 165px;
+            overflow-y: auto;
+        }
+
+        /* 8. Skeleton Loader System */
+        .skeleton {
+            animation: skeleton-loading 1.5s infinite linear;
+            background-color: #e9ecef;
+            background-image: linear-gradient(90deg, #e9ecef, #f8f9fa, #e9ecef);
+            background-size: 200% 100%;
+        }
+
+        [data-theme="dark"] .skeleton {
+            background-color: #374151;
+            background-image: linear-gradient(90deg, #374151, #4b5563, #374151);
+        }
+
+        @keyframes skeleton-loading {
+            0% {
+                background-position: 200% 0;
+            }
+
+            100% {
+                background-position: -200% 0;
+            }
+        }
+
+        .skeleton-text {
+            height: 1em;
+            border-radius: 4px;
+        }
+
+        .is-loading .content-loaded {
+            visibility: hidden;
+        }
+
+        .skeleton-wrapper {
+            display: none;
+        }
+
+        .is-loading .skeleton-wrapper {
+            display: block;
+        }
+
+        /* 10. Responsive Design */
+        @media (max-width: 1200px) {
+            .stat-card-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .dashboard-grid.bottom-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 992px) {
+            body:not(.sidebar-mobile-open) .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar {
+                position: fixed;
+            }
+
+            body.sidebar-mobile-open .sidebar {
+                transform: translateX(0);
+                box-shadow: 0 0 40px rgba(0,0,0,0.1);
+            }
+
+            .main-content, body.sidebar-collapsed .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            #mobile-menu-toggle {
+                display: block;
+            }
+
+            .sidebar-footer {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 16px;
+            }
+
+            .page-title {
+                font-size: 1.8rem;
+                margin-bottom: 24px;
+            }
+
+            .main-header {
+                padding: 0 16px;
+            }
+
+            .stat-card-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .dashboard-grid.mid-row {
+                grid-template-columns: 1fr;
+            }
+
+            .profile-btn .username {
+                display: none;
+            }
+
+            .search-bar {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body class="is-loading">
+
+    <div id="app-layout">
+        <!-- ======================= Sidebar ======================= -->
+        <aside class="sidebar">
+            <div class="sidebar-header"><h1 class="logo-text">FTB Admin</h1></div>
+            <nav class="sidebar-nav">
+                <ul class="sidebar-nav-list">
+                    <li class="sidebar-nav-item"><a href="indexapp.html" class="active"><i class="fas fa-chart-pie nav-icon"></i><span class="nav-text">Dashboard</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/config.html"><i class="fas fa-plug nav-icon"></i><span class="nav-text">Connection Test</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/settings.html"><i class="fas fa-sliders nav-icon"></i><span class="nav-text">App Settings</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/status.html"><i class="fas fa-heart-pulse nav-icon"></i><span class="nav-text">System Status</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/logs.html"><i class="fas fa-file-lines nav-icon"></i><span class="nav-text">View Logs</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/info.html"><i class="fas fa-info-circle nav-icon"></i><span class="nav-text">Info & Help</span></a></li>
+                </ul>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="sidebar-toggle" title="Collapse Sidebar"><i class="fas fa-chevron-left toggle-icon"></i></button>
+            </div>
+        </aside>
+
+        <!-- ======================= Main Content ======================= -->
+        <div class="main-content">
+            <!-- Top Header -->
+            <header class="main-header">
+                <div class="header-left">
+                    <button id="mobile-menu-toggle" class="d-lg-none"><i class="fas fa-bars"></i></button>
+                    <div class="search-bar">
+                        <i class="fas fa-search"></i>
+                        <input type="text" placeholder="Search...">
+                    </div>
+                </div>
+
+                <div class="header-actions">
+                    <button class="action-btn" id="theme-toggle-btn" title="Toggle Theme"><i class="far fa-sun"></i></button>
+                    <button class="action-btn" title="Notifications"><i class="far fa-bell"></i></button>
+                    <button class="profile-btn"><img src="https://i.pravatar.cc/36?u=admin" alt="Admin"><span class="username d-none d-lg-block">Admin User</span><i class="fas fa-chevron-down ms-1 d-none d-lg-block"></i></button>
+                </div>
+            </header>
+
+            <!-- Main Dashboard Content -->
+            <main>
+                <h2 class="page-title">Dashboard Overview</h2>
+
+                <!-- Stat Cards -->
+                <div class="dashboard-grid stat-card-grid mb-4">
+                    <div class="card stat-card">
+                        <div class="content-loaded"><p class="value" id="totalUsersValue">--</p><p class="label">Total Users</p><p class="trend positive" id="totalUsersTrend"><i class="fas fa-arrow-up"></i> --</p></div>
+                        <div class="skeleton-wrapper w-100"><div class="skeleton mx-auto" style="width: 50%; height: 2.5rem; border-radius: 8px;"></div><div class="skeleton mx-auto mt-2" style="width: 30%; height: 1rem;"></div></div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="content-loaded"><p class="value" id="signalsTodayValue">--</p><p class="label">Signals Today</p><p class="trend negative" id="signalsTodayTrend"><i class="fas fa-arrow-down"></i> --</p></div>
+                        <div class="skeleton-wrapper w-100"><div class="skeleton mx-auto" style="width: 50%; height: 2.5rem; border-radius: 8px;"></div><div class="skeleton mx-auto mt-2" style="width: 30%; height: 1rem;"></div></div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="content-loaded"><p class="value" id="revenueTodayValue">--</p><p class="label">Revenue Today</p><p class="trend positive" id="revenueTodayTrend"><i class="fas fa-arrow-up"></i> N/A</p></div>
+                        <div class="skeleton-wrapper w-100"><div class="skeleton mx-auto" style="width: 50%; height: 2.5rem; border-radius: 8px;"></div><div class="skeleton mx-auto mt-2" style="width: 30%; height: 1rem;"></div></div>
+                    </div>
+                    <div class="card stat-card">
+                        <div class="content-loaded"><p class="value" id="errorsTodayValue">--</p><p class="label">Errors Today</p><p class="trend positive" id="errorsTodayTrend"><i class="fas fa-arrow-up"></i> N/A</p></div>
+                        <div class="skeleton-wrapper w-100"><div class="skeleton mx-auto" style="width: 50%; height: 2.5rem; border-radius: 8px;"></div><div class="skeleton mx-auto mt-2" style="width: 30%; height: 1rem;"></div></div>
+                    </div>
+                </div>
+
+                <!-- Charts & Activity Grid -->
+                <div class="dashboard-grid mid-row mb-4" style="grid-template-columns: 2fr 1fr; align-items: flex-start;">
+                    <div class="card chart-container">
+                        <div class="card-header"><h3 class="card-title"><i class="fas fa-chart-line"></i> User Growth (Last 7 Days)</h3></div>
+                        <div class="content-loaded h-100"><canvas id="userGrowthChartCanvas"></canvas></div>
+                        <div class="skeleton-wrapper h-100"><div class="skeleton h-100 w-100" style="border-radius: 12px;"></div></div>
+                    </div>
+                    <div class="card activity-feed">
+                        <div class="card-header"><h3 class="card-title"><i class="far fa-clock"></i> Live Activity</h3></div>
+                        <ul class="content-loaded">
+                            <li><div class="activity-icon" style="background-color: #198754;"><i class="fas fa-user-plus"></i></div><div class="activity-text">New user registered: <strong>john_doe_123</strong><div class="activity-time">5 minutes ago</div></div></li>
+                            <li><div class="activity-icon" style="background-color: #0d6efd;"><i class="fas fa-rss"></i></div><div class="activity-text">Signal sent: <strong>EUR/USD Buy</strong><div class="activity-time">15 minutes ago</div></div></li>
+                            <li><div class="activity-icon" style="background-color: #ffc107;"><i class="fas fa-cog"></i></div><div class="activity-text">Setting updated: <strong>Admin changed StopLoss</strong><div class="activity-time">1 hour ago</div></div></li>
+                        </ul>
+                        <div class="skeleton-wrapper"><div class="skeleton skeleton-text my-3" style="height: 40px"></div><div class="skeleton skeleton-text my-3" style="height: 40px"></div><div class="skeleton skeleton-text my-3" style="height: 40px"></div></div>
+                    </div>
+                </div>
+
+                <!-- System Status and Logs Grid -->
+                <div class="dashboard-grid bottom-row" style="grid-template-columns: 1fr 2fr; align-items: flex-start;">
+                    <div class="card">
+                        <div class="card-header"><h3 class="card-title"><i class="far fa-heart"></i> System Health</h3></div>
+                        <div class="system-health-list content-loaded">
+                            <div class="system-health-item"><span class="item-name"><i class="fas fa-server"></i> API Service</span><span class="status-badge ok">Operational</span></div>
+                            <div class="system-health-item"><span class="item-name"><i class="fas fa-database"></i> Database</span><span class="status-badge ok">Connected</span></div>
+                            <div class="system-health-item"><span class="item-name"><i class="fas fa-tasks"></i> Job Scheduler</span><span class="status-badge ok">Running</span></div>
+                            <div class="system-health-item"><span class="item-name"><i class="fab fa-telegram"></i> Telegram API</span><span class="status-badge degraded">Degraded</span></div>
+                        </div>
+                        <div class="skeleton-wrapper"><div class="skeleton skeleton-text my-3" style="height: 25px"></div><div class="skeleton skeleton-text my-3" style="height: 25px"></div></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><h3 class="card-title"><i class="far fa-file-alt"></i> Recent Logs</h3></div>
+                        <div class="recent-logs-container content-loaded" id="recentLogsContent">[INFO] 2024-05-21 10:30:15 - Application starting up...</div>
+                        <div class="skeleton-wrapper"><div class="skeleton h-100 w-100" style="min-height: 165px; border-radius: 10px;"></div></div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- JS Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
+    <!-- Dynamic Controller & UI Script -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- UI ELEMENTS ---
+            const sidebarToggle = document.getElementById('sidebar-toggle');
+            const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
+            const themeToggleBtn = document.getElementById('theme-toggle-btn');
+            const themeIcon = themeToggleBtn.querySelector('i');
+
+            // --- UI EVENT LISTENERS ---
+            sidebarToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+            mobileMenuToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-mobile-open'));
+
+            // --- THEME CONTROLLER ---
+            const applyTheme = (theme) => {
+                document.documentElement.setAttribute('data-theme', theme);
+                localStorage.setItem('theme', theme);
+                if (theme === 'dark') {
+                    themeIcon.classList.remove('fa-sun');
+                    themeIcon.classList.add('fa-moon');
+                } else {
+                    themeIcon.classList.remove('fa-moon');
+                    themeIcon.classList.add('fa-sun');
+                }
+                // Notify other components (like charts) that the theme has changed
+                window.dispatchEvent(new CustomEvent('themeChanged', { detail: { theme } }));
+            };
+
+            themeToggleBtn.addEventListener('click', () => {
+                const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+                applyTheme(newTheme);
+            });
+
+            // --- CHART CONTROLLER ---
+            let userGrowthChartInstance;
+            const getChartColors = () => {
+                const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+                return {
+                    grid: isDark ? 'rgba(255, 255, 255, 0.05)' : '#e9ecef',
+                    ticks: isDark ? '#9ca3af' : '#6c757d',
+                    line: '#6366f1',
+                    pointBg: '#6366f1',
+                    gradientStart: 'rgba(99, 102, 241, 0.2)',
+                    gradientEnd: 'rgba(99, 102, 241, 0)'
+                };
+            }
+
+            const renderUserGrowthChart = (data) => {
+                const ctx = document.getElementById('userGrowthChartCanvas')?.getContext('2d');
+                if (!ctx) return;
+
+                const colors = getChartColors();
+                const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
+                gradient.addColorStop(0, colors.gradientStart);
+                gradient.addColorStop(1, colors.gradientEnd);
+
+                const chartConfig = {
+                    type: 'line',
+                    data: {
+                        labels: data.labels,
+                        datasets: [{
+                            label: 'New Users',
+                            data: data.values,
+                            fill: true,
+                            backgroundColor: gradient,
+                            borderColor: colors.line,
+                            tension: 0.4,
+                            borderWidth: 2.5,
+                            pointBackgroundColor: colors.pointBg,
+                            pointRadius: 0,
+                            pointHoverRadius: 6,
+                            pointHitRadius: 20
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                border: { display: false },
+                                grid: { color: colors.grid },
+                                ticks: { color: colors.ticks, precision: 0, stepSize: 1 }
+                            },
+                            x: {
+                                border: { display: false },
+                                grid: { display: false },
+                                ticks: { color: colors.ticks }
+                            }
+                        }
+                    }
+                };
+
+                if (userGrowthChartInstance) userGrowthChartInstance.destroy();
+                userGrowthChartInstance = new Chart(ctx, chartConfig);
+            }
+
+            window.addEventListener('themeChanged', () => {
+                // Re-render chart with new colors when theme changes
+                if (window.dashboardData) {
+                    renderUserGrowthChart(window.dashboardData.userGrowth);
+                }
+            });
+
+
+            // --- MAIN PAGE CONTROLLER ---
+            const loadDashboardData = () => {
+                // This function simulates fetching data from a backend API.
+                console.log("Controller: Fetching dashboard data...");
+
+                setTimeout(() => {
+                    console.log("Controller: Data received.");
+
+                    // Mock data received from an API
+                    const apiData = {
+                        stats: {
+                            totalUsers: { value: 3, trend: '--' },
+                            signalsToday: { value: 0, trend: '--' },
+                            revenueToday: { value: '$0', trend: 'N/A' },
+                            errorsToday: { value: 0, trend: 'N/A' }
+                        },
+                        userGrowth: {
+                            labels: ['Jun 30', 'Jul 1', 'Jul 2', 'Jul 3', 'Jul 4', 'Jul 5', 'Jul 6'],
+                            values: [0, 0, 0.2, 1, 0.4, 0.1, 0] // Data to create the arch from the image
+                        },
+                        logs: [
+                            "[INFO] 2024-05-21 10:30:15 - Application starting up...",
+                            "[INFO] 2024-05-21 10:30:18 - Database connection successful.",
+                            "[WARN] 2024-05-21 10:31:05 - Telegram API response slow: 1500ms.",
+                            "[INFO] 2024-05-21 10:32:00 - Signal Check job completed. Found 1 new signal."
+                        ]
+                    };
+
+                    // Store data globally for theme changes
+                    window.dashboardData = apiData;
+
+                    // Populate UI Elements (The "View" part of a simple MVC)
+                    document.getElementById('totalUsersValue').textContent = apiData.stats.totalUsers.value;
+                    document.getElementById('totalUsersTrend').innerHTML = `<i class="fas fa-arrow-up"></i> ${apiData.stats.totalUsers.trend}`;
+
+                    document.getElementById('signalsTodayValue').textContent = apiData.stats.signalsToday.value;
+                    document.getElementById('signalsTodayTrend').innerHTML = `<i class="fas fa-arrow-down"></i> ${apiData.stats.signalsToday.trend}`;
+
+                    document.getElementById('revenueTodayValue').textContent = apiData.stats.revenueToday.value;
+                    document.getElementById('revenueTodayTrend').innerHTML = `<i class="fas fa-arrow-up"></i> ${apiData.stats.revenueToday.trend}`;
+
+                    document.getElementById('errorsTodayValue').textContent = apiData.stats.errorsToday.value;
+                    document.getElementById('errorsTodayTrend').innerHTML = `<i class="fas fa-arrow-up"></i> ${apiData.stats.errorsToday.trend}`;
+
+                    document.getElementById('recentLogsContent').innerHTML = apiData.logs.join('<br>');
+
+                    // Render chart with the new data
+                    renderUserGrowthChart(apiData.userGrowth);
+
+                    // Reveal the content now that it's populated
+                    document.body.classList.remove('is-loading');
+                    console.log("Controller: UI updated and revealed.");
+
+                }, 1500); // Simulate a 1.5-second network request
+            };
+
+            // --- INITIALIZATION ---
+            const savedTheme = localStorage.getItem('theme') || 'light'; // Default to light to match image
+            applyTheme(savedTheme);
+            loadDashboardData(); // Start the process
+        });
+    </script>
+</body>
+</html>

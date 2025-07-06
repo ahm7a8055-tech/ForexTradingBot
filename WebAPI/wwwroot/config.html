@@ -1,108 +1,859 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bot Configuration - ForexTradingBot Admin</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <title>Connection Setup - ForexTradingBot Admin</title>
+
+    <!-- Favicon -->
+    <link rel="shortcut icon" href="assets/img/favicon.png"> <!-- Adjust path if you have one -->
+    <!-- Google Fonts: Poppins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <!-- Font Awesome CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+
     <!-- Toastr CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/style.css">
+
+    <!-- Custom CSS for the full UI overhaul -->
+    <style>
+        /*
+        ================================================================================
+        TABLE OF CONTENTS
+        ================================================================================
+        1.  :root & Theme Variables (Copied from Dashboard)
+        2.  Base & Layout Styles (Copied from Dashboard)
+        3.  Config Page Specific Styles
+            - Input Groups with Test Buttons
+            - Password Visibility Toggle
+            - Test Results Panel
+            - Status Indicators (Testing, Success, Error)
+        4.  Skeleton Loader System (Copied from Dashboard)
+        ================================================================================
+        */
+
+        /* 1. :root & Theme Variables */
+        :root {
+            --font-family-sans: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --sidebar-width: 250px;
+            --sidebar-width-collapsed: 90px;
+            --header-height: 80px;
+            --card-border-radius: 16px;
+        }
+
+        [data-theme="light"] {
+            --bg-main: #f8f9fa;
+            --bg-sidebar: #ffffff;
+            --bg-card: #ffffff;
+            --bg-header: #f8f9fa;
+            --text-primary: #212529;
+            --text-secondary: #6c757d;
+            --text-tertiary: #adb5bd;
+            --border-color: #dee2e6;
+            --shadow-color: rgba(0, 0, 0, 0.05);
+            --primary-color: #6366f1;
+            --primary-color-hover: #4f46e5;
+            --primary-color-light: rgba(99, 102, 241, 0.1);
+            --success-color: #198754;
+            --success-bg: rgba(25, 135, 84, 0.1);
+            --danger-color: #dc3545;
+            --danger-bg: rgba(220, 53, 69, 0.1);
+        }
+
+        [data-theme="dark"] {
+            --bg-main: #111827;
+            --bg-sidebar: #1f2937;
+            --bg-card: #1f2937;
+            --bg-header: #111827;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-tertiary: #6b7280;
+            --border-color: #374151;
+            --shadow-color: rgba(0, 0, 0, 0.2);
+            --success-color: #34d399;
+            --success-bg: rgba(16, 185, 129, 0.1);
+            --danger-color: #f87171;
+            --danger-bg: rgba(239, 68, 68, 0.1);
+        }
+
+        /* 2. Base & Layout Styles */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: var(--font-family-sans);
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        #app-layout {
+            display: flex;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: width 0.3s ease-in-out;
+            z-index: 1000;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            width: calc(100% - var(--sidebar-width));
+            transition: margin-left 0.3s ease-in-out, width 0.3s ease-in-out;
+        }
+
+        body.sidebar-collapsed .sidebar {
+            width: var(--sidebar-width-collapsed);
+        }
+
+        body.sidebar-collapsed .main-content {
+            margin-left: var(--sidebar-width-collapsed);
+            width: calc(100% - var(--sidebar-width-collapsed));
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            height: var(--header-height);
+            padding: 0 28px;
+            flex-shrink: 0;
+        }
+
+            .sidebar-header .logo-text {
+                font-size: 1.5rem;
+                font-weight: 700;
+                white-space: nowrap;
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-header .logo-text {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .sidebar-nav {
+            flex-grow: 1;
+            padding: 16px;
+        }
+
+        .sidebar-nav-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sidebar-nav-item a {
+            display: flex;
+            align-items: center;
+            padding: 14px 20px;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+
+            .sidebar-nav-item a .nav-icon {
+                font-size: 1.1rem;
+                width: 24px;
+                margin-right: 20px;
+                text-align: center;
+                flex-shrink: 0;
+            }
+
+            .sidebar-nav-item a .nav-text {
+                opacity: 1;
+                transition: opacity 0.2s ease;
+            }
+
+        body.sidebar-collapsed .sidebar-nav-item a {
+            justify-content: center;
+        }
+
+            body.sidebar-collapsed .sidebar-nav-item a .nav-text {
+                opacity: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+
+        .sidebar-nav-item a.active {
+            color: var(--primary-color);
+            background-color: var(--primary-color-light);
+        }
+
+        .sidebar-nav-item a:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .sidebar-footer {
+            padding: 24px;
+            flex-shrink: 0;
+        }
+
+        #sidebar-toggle {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            width: 100%;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+            #sidebar-toggle:hover {
+                border-color: var(--primary-color);
+                color: var(--primary-color);
+            }
+
+            #sidebar-toggle .toggle-icon {
+                transition: transform 0.3s ease;
+            }
+
+        body.sidebar-collapsed #sidebar-toggle .toggle-icon {
+            transform: rotate(180deg);
+        }
+
+        body.sidebar-collapsed .sidebar-footer {
+            padding: 24px 16px;
+        }
+
+        .main-header {
+            height: var(--header-height);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 32px;
+            position: sticky;
+            top: 0;
+            background-color: var(--bg-header);
+            z-index: 900;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .action-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+        }
+
+        .profile-btn {
+            background: none;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+            .profile-btn img {
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                object-fit: cover;
+            }
+
+            .profile-btn .username {
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+
+        main {
+            padding: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-border-radius);
+            padding: 32px;
+            box-shadow: 0 4px 25px var(--shadow-color);
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .card-subtitle {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+
+        /* 3. Config Page Specific Styles */
+        .form-section {
+            margin-bottom: 24px;
+        }
+
+        .form-label {
+            font-weight: 500;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+            .form-label .fa-solid, .form-label .fa-brands {
+                color: var(--text-tertiary);
+                margin-right: 8px;
+            }
+
+        .input-group-testable {
+            position: relative;
+        }
+
+        .form-control {
+            display: block;
+            width: 100%;
+            padding: 10px 16px;
+            font-size: 1rem;
+            font-family: var(--font-family-sans);
+            color: var(--text-primary);
+            background-color: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            transition: border-color .15s ease-in-out,box-shadow .15s ease-in-out;
+        }
+
+            .form-control:focus {
+                outline: 0;
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 3px var(--primary-color-light);
+            }
+
+        .input-group-testable .form-control {
+            padding-right: 150px; /* Space for button and icon */
+        }
+
+        .password-toggle {
+            position: absolute;
+            top: 50%;
+            right: 110px; /* Position next to test button */
+            transform: translateY(-50%);
+            color: var(--text-tertiary);
+            cursor: pointer;
+        }
+
+        .btn-test {
+            position: absolute;
+            top: 50%;
+            right: 6px;
+            transform: translateY(-50%);
+            background-color: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+        }
+
+            .btn-test:hover {
+                background-color: var(--bg-main);
+                border-color: var(--text-primary);
+                color: var(--text-primary);
+            }
+
+        .form-text {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 8px;
+        }
+
+        .test-results-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .test-result-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .test-result-item-name {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+            .status-indicator .fa-spin {
+                color: var(--primary-color);
+            }
+
+            .status-indicator.status-success {
+                color: var(--success-color);
+            }
+
+            .status-indicator.status-error {
+                color: var(--danger-color);
+            }
+
+        .form-actions {
+            margin-top: 32px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+
+            .btn-primary:hover:not(:disabled) {
+                background-color: var(--primary-color-hover);
+            }
+
+            .btn-primary:disabled {
+                background-color: var(--primary-color);
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+
+        .btn-secondary {
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+            .btn-secondary:hover {
+                background-color: var(--border-color);
+            }
+
+        /* 4. Skeleton Loader System */
+        .skeleton {
+            animation: skeleton-loading 1.5s infinite linear;
+            background-color: #e9ecef;
+            background-image: linear-gradient(90deg, #e9ecef, #f8f9fa, #e9ecef);
+        }
+
+        [data-theme="dark"] .skeleton {
+            background-color: #374151;
+            background-image: linear-gradient(90deg, #374151, #4b5563, #374151);
+        }
+
+        @keyframes skeleton-loading {
+            0% {
+                background-position: 200% 0;
+            }
+
+            100% {
+                background-position: -200% 0;
+            }
+        }
+
+        .is-loading .content-loaded {
+            visibility: hidden;
+        }
+
+        .skeleton-wrapper {
+            display: none;
+        }
+
+        .is-loading .skeleton-wrapper {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            padding: 32px;
+        }
+
+        .skeleton-line {
+            height: 1em;
+            border-radius: 4px;
+        }
+
+        /* Responsive */
+        @media (max-width: 992px) {
+            body:not(.sidebar-mobile-open) .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar {
+                position: fixed;
+            }
+
+            body.sidebar-mobile-open .sidebar {
+                transform: translateX(0);
+                box-shadow: 0 0 40px rgba(0,0,0,0.1);
+            }
+
+            .main-content, body.sidebar-collapsed .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            #mobile-menu-toggle {
+                display: block !important;
+            }
+
+            .sidebar-footer {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 16px;
+            }
+
+            .page-title {
+                font-size: 1.8rem;
+            }
+
+            .main-header {
+                padding: 0 16px;
+            }
+
+            .config-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
 </head>
-<body>
-    <header>
-        <div class="container"> <!-- Added container for better alignment -->
-            <h1><i class="fas fa-cogs"></i> Bot Configuration</h1>
-            <nav>
-                <ul>
-                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                    <li><a href="/config.html" class="active"><i class="fas fa-plug"></i> Connection Test</a></li>
-                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
-                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
-                <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
-                <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
-                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+<body class="is-loading">
+
+    <div id="app-layout">
+        <!-- ======================= Sidebar ======================= -->
+        <aside class="sidebar">
+            <div class="sidebar-header"><h1 class="logo-text">FTB Admin</h1></div>
+            <nav class="sidebar-nav">
+                <ul class="sidebar-nav-list">
+                    <li class="sidebar-nav-item"><a href="indexapp.html"><i class="fas fa-chart-pie nav-icon"></i><span class="nav-text">Dashboard</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/config.html" class="active"><i class="fas fa-plug nav-icon"></i><span class="nav-text">Connection Test</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/settings.html"><i class="fas fa-sliders nav-icon"></i><span class="nav-text">App Settings</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/status.html"><i class="fas fa-heart-pulse nav-icon"></i><span class="nav-text">System Status</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/logs.html"><i class="fas fa-file-lines nav-icon"></i><span class="nav-text">View Logs</span></a></li>
+                    <li class="sidebar-nav-item"><a href="/info.html"><i class="fas fa-info-circle nav-icon"></i><span class="nav-text">Info & Help</span></a></li>
                 </ul>
             </nav>
-        </div>
-    </header>
+            <div class="sidebar-footer">
+                <button id="sidebar-toggle" title="Collapse Sidebar"><i class="fas fa-chevron-left toggle-icon"></i></button>
+            </div>
+        </aside>
 
-    <div class="container mt-3 mb-3"> <!-- Added mt-3 mb-3 for spacing -->
-        <div class="form-container" style="max-width: 700px;">
-            <h2 class="mb-3"><i class="fas fa-robot"></i> Telegram & Connections</h2>
-            <p class="text-muted mb-2">Configure essential settings for bot operation. Test connections before saving.</p>
+        <!-- ======================= Main Content ======================= -->
+        <div class="main-content">
+            <header class="main-header">
+                <button id="mobile-menu-toggle" class="d-lg-none" style="display: none; background: none; border: none; font-size: 1.5rem; color: var(--text-primary);"><i class="fas fa-bars"></i></button>
+                <div class="header-actions ms-auto">
+                    <button class="action-btn" id="theme-toggle-btn" title="Toggle Theme"><i class="far fa-sun"></i></button>
+                    <button class="action-btn" title="Notifications"><i class="far fa-bell"></i></button>
+                    <button class="profile-btn"><img src="https://i.pravatar.cc/36?u=admin" alt="Admin"></button>
+                </div>
+            </header>
 
-            <form id="configForm">
-                <div class="form-group">
-                    <label for="botToken"><i class="fab fa-telegram-plane"></i> Telegram Bot Token</label>
-                    <div class="input-group">
-                        <input type="password" id="botToken" class="form-control" placeholder="Enter your Telegram Bot Token">
-                        <span class="status-icon" id="botTokenStatus"></span>
+            <main>
+                <h2 class="page-title">Connection Test & Setup</h2>
+
+                <div class="dashboard-grid config-grid" style="grid-template-columns: 2fr 1fr; align-items: flex-start;">
+                    <!-- Configuration Form Card -->
+                    <div class="card" style="position: relative;">
+                        <div class="content-loaded">
+                            <h3 class="card-title">Connection Setup</h3>
+                            <p class="card-subtitle">Enter your service credentials here. Test each connection before saving.</p>
+                            <form id="configForm">
+                                <div class="form-section">
+                                    <label for="botToken" class="form-label"><i class="fa-brands fa-telegram"></i> Telegram Bot Token</label>
+                                    <div class="input-group-testable">
+                                        <input type="password" id="botToken" class="form-control" placeholder="Enter your Telegram Bot Token">
+                                        <i class="fa-solid fa-eye password-toggle"></i>
+                                        <button type="button" class="btn-test" data-service="telegram">Test</button>
+                                    </div>
+                                </div>
+                                <div class="form-section">
+                                    <label for="dbConn" class="form-label"><i class="fa-solid fa-database"></i> Database Connection String</label>
+                                    <div class="input-group-testable">
+                                        <input type="password" id="dbConn" class="form-control" placeholder="e.g., Host=localhost;Database=yourdb;...">
+                                        <i class="fa-solid fa-eye password-toggle"></i>
+                                        <button type="button" class="btn-test" data-service="database">Test</button>
+                                    </div>
+                                </div>
+                                <div class="form-section">
+                                    <label for="redisConn" class="form-label"><i class="fa-solid fa-memory"></i> Redis Connection String</label>
+                                    <div class="input-group-testable">
+                                        <input type="text" id="redisConn" class="form-control" placeholder="e.g., localhost:6379 (optional)">
+                                        <button type="button" class="btn-test" data-service="redis">Test</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                        <!-- Skeleton Loader for Form -->
+                        <div class="skeleton-wrapper">
+                            <div class="skeleton skeleton-line" style="width: 40%; height: 1.5rem; border-radius: 6px;"></div>
+                            <div class="skeleton skeleton-line mt-2" style="width: 60%; height: 1rem; border-radius: 6px;"></div>
+                            <div class="skeleton mt-4" style="width: 100%; height: 45px; border-radius: 10px;"></div>
+                            <div class="skeleton mt-4" style="width: 100%; height: 45px; border-radius: 10px;"></div>
+                            <div class="skeleton mt-4" style="width: 100%; height: 45px; border-radius: 10px;"></div>
+                        </div>
                     </div>
-                    <small class="form-text text-muted">Your unique token from BotFather.</small>
-                     <div class="mt-1">Bot Username: <strong id="telegramBotUsername">N/A</strong></div>
-                </div>
 
-                <div class="form-group">
-                    <label for="dbConn"><i class="fas fa-database"></i> Default Database Connection String</label>
-                     <div class="input-group">
-                        <input type="password" id="dbConn" class="form-control" placeholder="e.g., Host=localhost;Database=yourdb;Username=user;Password=pass">
-                        <span class="status-icon" id="dbConnStatus"></span>
+                    <!-- Test Results Card -->
+                    <div class="card" style="position: relative;">
+                        <div class="content-loaded">
+                            <h3 class="card-title">Test Results</h3>
+                            <p class="card-subtitle">Status of your connection tests will appear here.</p>
+                            <ul class="test-results-list">
+                                <li class="test-result-item">
+                                    <span class="test-result-item-name"><i class="fa-brands fa-telegram"></i> Telegram API</span>
+                                    <span class="status-indicator" id="telegramStatus">--</span>
+                                </li>
+                                <li class="test-result-item">
+                                    <span class="test-result-item-name"><i class="fa-solid fa-database"></i> Database</span>
+                                    <span class="status-indicator" id="databaseStatus">--</span>
+                                </li>
+                                <li class="test-result-item">
+                                    <span class="test-result-item-name"><i class="fa-solid fa-memory"></i> Redis</span>
+                                    <span class="status-indicator" id="redisStatus">--</span>
+                                </li>
+                            </ul>
+                            <div class="form-actions">
+                                <button type="button" id="testAllButton" class="btn btn-secondary"><i class="fas fa-network-wired"></i> Test All</button>
+                                <button type="button" id="saveButton" class="btn btn-primary" disabled><i class="fas fa-save"></i> Save Configuration</button>
+                            </div>
+                        </div>
+                        <!-- Skeleton Loader for Results -->
+                        <div class="skeleton-wrapper">
+                            <div class="skeleton skeleton-line" style="width: 40%; height: 1.5rem; border-radius: 6px;"></div>
+                            <div class="skeleton skeleton-line mt-2" style="width: 60%; height: 1rem; border-radius: 6px;"></div>
+                            <div class="skeleton skeleton-line mt-4" style="width: 100%; height: 1.5rem; border-radius: 6px;"></div>
+                            <div class="skeleton skeleton-line mt-3" style="width: 100%; height: 1.5rem; border-radius: 6px;"></div>
+                            <div class="skeleton skeleton-line mt-3" style="width: 100%; height: 1.5rem; border-radius: 6px;"></div>
+                            <div class="d-flex justify-content-end mt-4">
+                                <div class="skeleton" style="width: 120px; height: 45px; border-radius: 10px; margin-left: 12px;"></div>
+                                <div class="skeleton" style="width: 180px; height: 45px; border-radius: 10px;"></div>
+                            </div>
+                        </div>
                     </div>
-                    <small class="form-text text-muted">Connection string for the primary PostgreSQL database.</small>
                 </div>
-
-                <div class="form-group">
-                    <label for="redisConn"><i class="fas fa-memory"></i> Redis Connection String (Optional)</label>
-                    <div class="input-group">
-                        <input type="text" id="redisConn" class="form-control" placeholder="e.g., localhost:6379">
-                        <span class="status-icon" id="redisConnStatus"></span>
-                    </div>
-                    <small class="form-text text-muted">Leave blank if not using or using embedded Redis.</small>
-                </div>
-
-                <div class="form-group text-center mt-2">
-                    <button type="button" id="testConnectionButton" class="btn btn-secondary" style="margin-right: 10px;">
-                        <i class="fas fa-network-wired"></i> Test Connections
-                    </button>
-                    <button type="button" id="saveConfigurationButton" class="btn btn-primary" disabled>
-                        <i class="fas fa-save"></i> Save Configuration
-                    </button>
-                </div>
-            </form>
+            </main>
         </div>
     </div>
 
-    <footer>
-        <p>&copy; ForexTradingBot Admin Panel</p>
-        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
-    </footer>
-
-    <!-- jQuery -->
+    <!-- JS Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-    <!-- Toastr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
-    <!-- Custom JS -->
-    <script src="js/config.js"></script>
-    <script src="js/theme.js"></script>
+
+    <!-- Dynamic Controller & UI Script -->
     <script>
-        // Small script for logout button in header if needed, or handle in a global script
-        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
-            try {
-                const response = await fetch('/api/auth/logout', { method: 'POST' });
-                if (response.ok) {
-                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
-                    window.location.href = '/login.html';
-                } else {
-                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- CONFIG PAGE CONTROLLER ---
+            const configController = {
+                // --- 1. Element Cache ---
+                elements: {
+                    sidebarToggle: document.getElementById('sidebar-toggle'),
+                    mobileMenuToggle: document.getElementById('mobile-menu-toggle'),
+                    themeToggleBtn: document.getElementById('theme-toggle-btn'),
+                    testButtons: document.querySelectorAll('.btn-test'),
+                    testAllButton: document.getElementById('testAllButton'),
+                    saveButton: document.getElementById('saveButton'),
+                    passwordToggles: document.querySelectorAll('.password-toggle'),
+                    statusIndicators: {
+                        telegram: document.getElementById('telegramStatus'),
+                        database: document.getElementById('databaseStatus'),
+                        redis: document.getElementById('redisStatus'),
+                    }
+                },
+
+                // --- 2. State Management ---
+                state: {
+                    testsPassed: { telegram: false, database: false }, // Redis is optional
+                    isTesting: false,
+                },
+
+                // --- 3. Initialization ---
+                init() {
+                    console.log("Controller: Initializing Config Page...");
+                    this.initUI();
+                    this.bindEvents();
+                    this.loadInitialState();
+                },
+
+                initUI() {
+                    const savedTheme = localStorage.getItem('theme') || 'light';
+                    this.applyTheme(savedTheme);
+                    setTimeout(() => document.body.classList.remove('is-loading'), 200); // Reveal content
+                },
+
+                // --- 4. Event Binding ---
+                bindEvents() {
+                    this.elements.sidebarToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+                    this.elements.mobileMenuToggle?.addEventListener('click', () => document.body.classList.toggle('sidebar-mobile-open'));
+                    this.elements.themeToggleBtn?.addEventListener('click', () => this.toggleTheme());
+
+                    this.elements.testButtons.forEach(btn => {
+                        btn.addEventListener('click', (e) => this.handleSingleTest(e.target.dataset.service));
+                    });
+
+                    this.elements.testAllButton.addEventListener('click', () => this.handleTestAll());
+
+                    this.elements.passwordToggles.forEach(toggle => {
+                        toggle.addEventListener('click', (e) => this.togglePasswordVisibility(e.target));
+                    });
+                },
+
+                // --- 5. Core Logic / "Controller" Actions ---
+                toggleTheme() {
+                    const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+                    this.applyTheme(newTheme);
+                },
+
+                applyTheme(theme) {
+                    document.documentElement.setAttribute('data-theme', theme);
+                    localStorage.setItem('theme', theme);
+                    const icon = this.elements.themeToggleBtn.querySelector('i');
+                    icon.className = theme === 'dark' ? 'far fa-moon' : 'far fa-sun';
+                },
+
+                async handleSingleTest(service) {
+                    if (this.state.isTesting) return;
+                    this.state.isTesting = true;
+
+                    const indicator = this.elements.statusIndicators[service];
+                    this.setIndicatorState(indicator, 'testing');
+
+                    // Simulate API call to test the connection
+                    const success = await this.simulateApiTest(service);
+
+                    this.setIndicatorState(indicator, success ? 'success' : 'error');
+                    if (this.state.testsPassed.hasOwnProperty(service)) {
+                        this.state.testsPassed[service] = success;
+                    }
+
+                    this.state.isTesting = false;
+                    this.updateSaveButtonState();
+                },
+
+                async handleTestAll() {
+                    if (this.state.isTesting) return;
+                    this.state.isTesting = true;
+                    this.elements.testAllButton.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Testing...`;
+
+                    // Run tests in parallel
+                    await Promise.all([
+                        this.handleSingleTest('telegram'),
+                        this.handleSingleTest('database'),
+                        this.handleSingleTest('redis')
+                    ]);
+
+                    this.elements.testAllButton.innerHTML = `<i class="fas fa-network-wired"></i> Test All`;
+                    this.state.isTesting = false;
+                },
+
+                togglePasswordVisibility(toggleIcon) {
+                    const input = toggleIcon.previousElementSibling;
+                    const isPassword = input.type === 'password';
+                    input.type = isPassword ? 'text' : 'password';
+                    toggleIcon.className = isPassword ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+                },
+
+                setIndicatorState(element, state) {
+                    const states = {
+                        testing: `<i class="fas fa-spinner fa-spin"></i> Testing...`,
+                        success: `<i class="fas fa-check-circle"></i> Connected`,
+                        error: `<i class="fas fa-times-circle"></i> Failed`,
+                        default: `--`
+                    };
+                    element.innerHTML = states[state] || states.default;
+                    element.className = `status-indicator status-${state}`;
+                },
+
+                updateSaveButtonState() {
+                    // Save is enabled only if required tests (telegram, database) pass.
+                    const allRequiredPassed = Object.values(this.state.testsPassed).every(status => status === true);
+                    this.elements.saveButton.disabled = !allRequiredPassed;
+
+                    if (!this.elements.saveButton.disabled) {
+                        toastr.success('All required connections tested successfully. You can now save.', 'Ready to Save');
+                    }
+                },
+
+                // --- 6. API Simulation ---
+                simulateApiTest(service) {
+                    console.log(`Controller: Simulating test for ${service}...`);
+                    return new Promise(resolve => {
+                        setTimeout(() => {
+                            // Randomly succeed or fail for demonstration
+                            const isSuccess = Math.random() > 0.3;
+                            console.log(`Controller: Test for ${service} result: ${isSuccess ? 'Success' : 'Failure'}`);
+                            resolve(isSuccess);
+                        }, 1000 + Math.random() * 1000); // Simulate network delay
+                    });
+                },
+
+                // --- 7. Load Initial State from Backend ---
+                loadInitialState() {
+                    // In a real app, you would fetch saved values here and populate the inputs.
+                    // For now, we leave them as placeholders.
+                    console.log("Controller: In a real app, would load saved config values now.");
                 }
-            } catch (error) {
-                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
-            }
+            };
+
+            // --- Run the Controller ---
+            configController.init();
         });
     </script>
 </body>
