@@ -67,7 +67,13 @@ namespace WebAPI.Controllers
             {
                 var stats = _hangfireMonitoringApi.GetStatistics();
                 var servers = _hangfireMonitoringApi.Servers();
-                var recurringJobs = _hangfireMonitoringApi.RecurringJobs(0, 1000); // Get up to 1000 recurring jobs
+
+                // Corrected way to get recurring jobs
+                List<Hangfire.Storage.RecurringJobDto> hangfireRecurringJobs;
+                using (var connection = JobStorage.Current.GetConnection())
+                {
+                    hangfireRecurringJobs = connection.GetRecurringJobs();
+                }
 
                 var queues = new List<HangfireQueueDto>();
                 foreach(var queueStat in _hangfireMonitoringApi.Queues())
@@ -91,17 +97,18 @@ namespace WebAPI.Controllers
                     ServerCount = servers.Count,
                     Servers = servers.Select(s => $"Server: {s.Name}, Workers: {s.WorkersCount}, Started: {s.StartedAt?.ToString("o") ?? "N/A"}").ToList(),
                     Queues = queues,
-                    RecurringJobs = recurringJobs.Select(job => new HangfireRecurringJobDto
+                    RecurringJobs = hangfireRecurringJobs.Select(job => new HangfireRecurringJobDto
                     {
                         Id = job.Id,
                         Cron = job.Cron,
                         Queue = job.Queue,
                         NextExecution = job.NextExecution?.ToString("o"),
-                        LastExecution = job.LastExecution?.ToString("o"),
+                        LastExecution = job.LastExecutionTime?.ToString("o"), // Changed from LastExecution
                         CreatedAt = job.CreatedAt?.ToString("o"),
                         Removed = job.Removed,
                         Error = job.Error,
-                        Method = $"{job.Job.Type.FullName}.{job.Job.Method.Name}"
+                        // Constructing Method string from Hangfire.Common.Job
+                        Method = job.Job != null ? $"{job.Job.Type.ToGenericTypeString()}.{job.Job.Method.Name}" : "N/A"
                     }).ToList()
                 };
 
