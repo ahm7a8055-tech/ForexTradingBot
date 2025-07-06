@@ -363,7 +363,8 @@ namespace Infrastructure.Services.Admin
 
                 // Placeholder: Efficient way would be direct DB queries via repository.
                 // Fetching all signals and filtering in memory is inefficient for large datasets.
-                var allSignals = await _signalRepository.GetAllAsync(cancellationToken); // Assuming GetAllAsync exists
+                // Using GetAllWithCategoryAsync as it's the closest available method in ISignalRepository.
+                var allSignals = await _signalRepository.GetAllWithCategoryAsync(cancellationToken);
 
                 stats.SignalsToday = allSignals.Count(s => s.PublishedAt.Date == todayStart);
 

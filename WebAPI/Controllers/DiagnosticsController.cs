@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization; // Required for [Authorize]
 using Microsoft.AspNetCore.Mvc;
 using Hangfire; // Required for JobStorage and IMonitoringApi
 using Hangfire.Storage; // Required for IMonitoringApi access patterns
+using Hangfire.Common; // Added for ToGenericTypeString extension method
 using System.Linq; // Required for LINQ operations on collections
 using System;
 using System.Threading.Tasks;
@@ -95,7 +96,7 @@ namespace WebAPI.Controllers
                     FailedCount = stats.Failed,
                     DeletedCount = stats.Deleted,
                     ServerCount = servers.Count,
-                    Servers = servers.Select(s => $"Server: {s.Name}, Workers: {s.WorkersCount}, Started: {s.StartedAt?.ToString("o") ?? "N/A"}").ToList(),
+                    Servers = servers.Select(s => $"Server: {s.Name}, Workers: {s.WorkersCount}, Started: {(s.StartedAt.HasValue ? s.StartedAt.Value.ToString("o") : "N/A")}").ToList(),
                     Queues = queues,
                     RecurringJobs = hangfireRecurringJobs.Select(job => new HangfireRecurringJobDto
                     {
@@ -103,7 +104,7 @@ namespace WebAPI.Controllers
                         Cron = job.Cron,
                         Queue = job.Queue,
                         NextExecution = job.NextExecution?.ToString("o"),
-                        LastExecution = job.LastExecutionTime?.ToString("o"), // Changed from LastExecution
+                        LastExecution = job.LastExecution?.ToString("o"), // Corrected property name
                         CreatedAt = job.CreatedAt?.ToString("o"),
                         Removed = job.Removed,
                         Error = job.Error,
