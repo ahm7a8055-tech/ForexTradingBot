@@ -1109,6 +1109,18 @@ try
     // Custom middleware to redirect unauthenticated users trying to access protected admin pages
     _ = app.UseMiddleware<AuthRedirectMiddleware>();
 
+    // Explicitly map the root path to handle login/dashboard redirection
+    app.MapGet("/", (HttpContext context) =>
+    {
+        if (context.User?.Identity?.IsAuthenticated ?? false)
+        {
+            // User is authenticated, redirect to the main dashboard page
+            return Results.Redirect("/index.html", permanent: false);
+        }
+        // User is not authenticated, redirect to the login page
+        return Results.Redirect("/login.html", permanent: false);
+    });
+
     _ = app.MapHangfireDashboard();
     programLogger.LogInformation("HTTP request pipeline configured.");
     #endregion
