@@ -8,7 +8,7 @@ import ApiConnectionsPage from './pages/ApiConnectionsPage';
 import AppSettingsPage from './pages/AppSettingsPage';
 import UserManagementPage from './pages/UserManagementPage';
 import RoleManagementPage from './pages/RoleManagementPage';
-import SystemSettingsPage from './pages/SystemSettingsPage'; // Import the new page
+import SystemSettingsPage from './pages/SystemSettingsPage';
 // Import other pages as they are created
 
 // This component will be rendered by ProtectedRoute and will include the AppLayout

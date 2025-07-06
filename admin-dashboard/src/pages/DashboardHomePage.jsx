@@ -1,78 +1,70 @@
 import React from 'react';
-import { Link } from 'react-router-dom'; // Import Link for navigation
+import { Link } from 'react-router-dom';
 
-const DashboardHomePage = () => {
+export default function DashboardHomePage() {
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-6 text-gray-800 dark:text-white">Welcome to the ForexTradingBot Admin Dashboard</h1>
-
-      <div className="bg-white dark:bg-gray-800 shadow-md rounded-lg p-6 mb-8">
-        <p className="text-lg text-gray-700 dark:text-gray-300 mb-4">
-          This is your central hub for managing and monitoring the ForexTradingBot application.
-          From here, you can configure critical settings, manage API connections, oversee user access (future),
-          and ensure the system is running smoothly.
-        </p>
-        <p className="text-gray-600 dark:text-gray-400">
-          Please use the navigation sidebar on the left to access different sections of the dashboard.
-          Each section provides tools and information for specific aspects of the application.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Quick Links Example - can be expanded */}
-        <div className="bg-white dark:bg-gray-800 shadow-md rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-3 text-gray-700 dark:text-gray-200">Quick Links</h2>
-          <ul className="space-y-2">
-            <li>
-              <Link to="/app-settings" className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors">
-                Application Settings
-              </Link>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Manage Telegram bot configurations.</p>
-            </li>
-            <li>
-              <Link to="/api-connections-management" className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors">
-                API Connections
-              </Link>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Configure Telegram client API ID/Hash.</p>
-            </li>
-            <li>
-              <Link to="/system-settings" className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors">
-                System Settings & Diagnostics
-              </Link>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Check system health and manage application state.</p>
-            </li>
+    <div className="min-h-screen bg-gray-100 flex">
+      {/* Sidebar */}
+      <aside className="w-64 bg-white shadow-lg hidden md:flex flex-col p-6 space-y-6">
+        <div className="text-2xl font-bold text-blue-700 mb-8">ForexTradingBot</div>
+        <nav className="flex-1">
+          <ul className="space-y-4">
+            <li><Link to="/" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Dashboard Home</Link></li>
+            <li><Link to="/api-connections-management" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">API Connections</Link></li>
+            <li><Link to="/app-settings" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">App Settings</Link></li>
+            <li><Link to="/user-management" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">User Management</Link></li>
+            <li><Link to="/role-management" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Role Management</Link></li>
+            <li><Link to="/system-settings" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">System Settings</Link></li>
           </ul>
-        </div>
-
-        <div className="bg-white dark:bg-gray-800 shadow-md rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-3 text-gray-700 dark:text-gray-200">System Status Overview</h2>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-            (Placeholder for a brief system status summary)
-          </p>
-          <ul className="space-y-1 text-sm">
-             {/* This could later be populated by a quick API call */}
-            <li className="flex items-center"><span className="mr-2 h-3 w-3 rounded-full bg-green-500"></span>Backend API: Operational</li>
-            <li className="flex items-center"><span className="mr-2 h-3 w-3 rounded-full bg-yellow-500"></span>Telegram Bot: Connected (mock status)</li>
-            <li className="flex items-center"><span className="mr-2 h-3 w-3 rounded-full bg-gray-400"></span>Background Tasks: Idle (mock status)</li>
-          </ul>
-           <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
-            For detailed checks, please visit the <Link to="/system-settings" className="text-indigo-600 hover:underline dark:text-indigo-400">System Diagnostics</Link> page.
-          </p>
-        </div>
-
-        {/* Add more info cards as needed */}
+        </nav>
+        <div className="mt-auto text-xs text-gray-400">© 2025 ForexTradingBot</div>
+      </aside>
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col">
+        {/* Header */}
+        <header className="bg-white shadow flex items-center justify-between px-8 py-4">
+          <h1 className="text-2xl font-bold text-gray-800">Admin Dashboard</h1>
+          <button className="flex items-center space-x-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors">
+            <span className="material-icons">logout</span>
+            <span>Logout</span>
+          </button>
+        </header>
+        {/* Dashboard Content */}
+        <main className="flex-1 p-8 overflow-y-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mb-8">
+            {/* Card 1 */}
+            <div className="bg-white rounded-xl shadow p-6 flex flex-col items-start">
+              <h2 className="text-lg font-semibold text-blue-700 mb-2">Quick Links</h2>
+              <ul className="space-y-2">
+                <li><Link to="/app-settings" className="text-blue-600 hover:underline">Application Settings</Link></li>
+                <li><Link to="/api-connections-management" className="text-blue-600 hover:underline">API Connections</Link></li>
+                <li><Link to="/system-settings" className="text-blue-600 hover:underline">System Settings & Diagnostics</Link></li>
+              </ul>
+            </div>
+            {/* Card 2 */}
+            <div className="bg-white rounded-xl shadow p-6 flex flex-col items-start">
+              <h2 className="text-lg font-semibold text-blue-700 mb-2">System Status Overview</h2>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li><span className="inline-block w-3 h-3 rounded-full bg-green-500 mr-2"></span>Backend API: <span className="font-medium">Operational</span></li>
+                <li><span className="inline-block w-3 h-3 rounded-full bg-yellow-500 mr-2"></span>Telegram Bot: <span className="font-medium">Connected</span> (mock status)</li>
+                <li><span className="inline-block w-3 h-3 rounded-full bg-gray-400 mr-2"></span>Background Tasks: <span className="font-medium">Idle</span> (mock status)</li>
+              </ul>
+              <p className="text-xs text-gray-500 mt-3">For detailed checks, visit the <Link to="/system-settings" className="text-blue-600 hover:underline">System Diagnostics</Link> page.</p>
+            </div>
+            {/* Card 3 */}
+            <div className="bg-white rounded-xl shadow p-6 flex flex-col items-start">
+              <h2 className="text-lg font-semibold text-blue-700 mb-2">Need Help?</h2>
+              <p className="text-sm text-gray-700 mb-2">If you encounter any issues or have questions about managing the application, please refer to the project documentation or contact the system administrator.</p>
+            </div>
+          </div>
+          {/* Welcome Section */}
+          <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl shadow p-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">Welcome to the ForexTradingBot Admin Dashboard</h2>
+            <p className="text-gray-700 mb-2">This is your central hub for managing and monitoring the ForexTradingBot application. From here, you can configure critical settings, manage API connections, oversee user access (future), and ensure the system is running smoothly.</p>
+            <p className="text-gray-500">Use the navigation sidebar to access different sections. Each section provides tools and information for specific aspects of the application.</p>
+          </div>
+        </main>
       </div>
-
-      <div className="mt-8 p-6 bg-white dark:bg-gray-800 shadow-md rounded-lg">
-        <h3 className="text-lg font-semibold mb-2 text-gray-700 dark:text-gray-200">Need Help?</h3>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          If you encounter any issues or have questions about managing the application,
-          please refer to the project documentation or contact the system administrator.
-        </p>
-      </div>
-
     </div>
   );
-};
-
-export default DashboardHomePage;
+}
