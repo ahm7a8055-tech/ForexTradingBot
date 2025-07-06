@@ -1076,7 +1076,7 @@ try
     _ = app.UseSwaggerUI(c =>
     {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "Forex Signal Bot API V1");
-        c.RoutePrefix = string.Empty; // This will make Swagger UI the root page
+        c.RoutePrefix = "swagger"; // Changed: Swagger UI will be at /swagger
         c.DefaultModelsExpandDepth(-1); // Hide models section by default
     });
 
