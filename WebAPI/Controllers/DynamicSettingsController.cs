@@ -50,7 +50,7 @@ namespace WebAPI.Controllers
                     s.Description,
                     s.IsPersistedInDb,
                     s.IsOverriddenByEnvironment,
-                    (s is DynamicSettingDto concreteDto ? concreteDto.LastModifiedUtc : null) // Get LastModifiedUtc if available
+                    s.LastModifiedUtc // Now directly accessible from IDynamicSetting
                 )).ToList();
                 _logger.LogInformation("Successfully retrieved {Count} dynamic settings.", settingsDto.Count);
                 return Ok(settingsDto);

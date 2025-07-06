@@ -13,6 +13,7 @@ namespace Application.Common.Interfaces
         string? Description { get; }
         bool IsPersistedInDb { get; } // Indicates if the current value comes from the DB
         bool IsOverriddenByEnvironment { get; } // Indicates if an env var is overriding this
+        System.DateTime? LastModifiedUtc { get; } // When the setting was last modified in the DB
     }
 
     public interface IDynamicConfigurationService
