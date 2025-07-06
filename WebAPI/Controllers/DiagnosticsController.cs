@@ -96,7 +96,7 @@ namespace WebAPI.Controllers
                     FailedCount = stats.Failed,
                     DeletedCount = stats.Deleted,
                     ServerCount = servers.Count,
-                    Servers = servers.Select(s => $"Server: {s.Name}, Workers: {s.WorkersCount}, Started: {(s.StartedAt.HasValue ? s.StartedAt.Value.ToString("o") : "N/A")}").ToList(),
+                   // Servers = servers.Select(s => $"Server: {s.Name}, Workers: {s.WorkersCount}, Started: {(s.StartedAt.t ? s.StartedAt.Value.ToString("o") : "N/A")}").ToList(),
                     Queues = queues,
                     RecurringJobs = hangfireRecurringJobs.Select(job => new HangfireRecurringJobDto
                     {
@@ -109,7 +109,7 @@ namespace WebAPI.Controllers
                         Removed = job.Removed,
                         Error = job.Error,
                         // Constructing Method string from Hangfire.Common.Job
-                        Method = job.Job != null ? $"{job.Job.Type.ToGenericTypeString()}.{job.Job.Method.Name}" : "N/A"
+                     //   Method = job.Job != null ? $"{job.Job.Type.ToGenericTypeString()}.{job.Job.Method.Name}" : "N/A"
                     }).ToList()
                 };
 
