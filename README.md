@@ -164,7 +164,7 @@ This is the new, streamlined setup process.
 4.  **Database Seeding:** After the initial setup, you will be prompted to seed the database. Click the "Seed Database" button in the web UI. This will populate the initial list of RSS feeds and other required data.
 
 **🎉 That's it! Your bot is now fully configured and running.** You can manage everything from the web panel.
-![alt text](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/Dashboard-Dark.png)
+![alt text](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/Dashboard-Dark.png.jpg)
 ## 📖 Table of Contents 📚
 
 *   [🚀 Project Overview: Precision Trading with ForexSignalBot](#-project-overview-precision-trading-with-forexsignalbot)
