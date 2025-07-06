@@ -36,7 +36,9 @@ const LoginPage = () => {
           <h1 className="text-3xl font-bold text-gray-800 dark:text-white mt-2">
             ForexSignalBot
           </h1>
-          <p className="text-sm text-gray-600 dark:text-gray-400">Admin Command Center</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+            Administrative interface for system configuration and management.
+          </p>
         </div>
 
         {error && (
