@@ -1,0 +1,575 @@
+/* === GLOBAL CSS VARIABLES === */
+:root {
+    /* Light Theme (Default) */
+    --primary-color: #007bff; /* Blue */
+    --secondary-color: #6c757d; /* Gray */
+    --success-color: #28a745; /* Green */
+    --danger-color: #dc3545; /* Red */
+    --warning-color: #ffc107; /* Yellow */
+    --info-color: #17a2b8; /* Teal */
+
+    --body-bg: #f8f9fa; /* Lighter gray for body */
+    --text-color: #212529; /* Bootstrap default dark text */
+    --text-muted-color: #6c757d;
+
+    --header-bg: #343a40; /* Dark gray for header */
+    --header-text-color: #ffffff;
+
+    --card-bg: #ffffff;
+    --card-border-color: #dee2e6;
+    --card-box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+
+    --form-input-bg: #ffffff;
+    --form-input-border-color: #ced4da;
+    --form-input-focus-border-color: #80bdff;
+    --form-input-focus-box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+
+    --link-color: var(--primary-color);
+    --link-hover-color: #0056b3;
+
+    --border-radius-base: 0.375rem; /* Bootstrap 5 default */
+    --border-radius-sm: 0.25rem;
+    --border-radius-lg: 0.5rem;
+
+    --font-family-sans-serif: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-family-monospace: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Dark Theme Variables (applied when body.dark-mode is present) */
+body.dark-mode {
+    --primary-color: #0d6efd; /* Slightly brighter blue for dark mode */
+    --secondary-color: #adb5bd;
+    --success-color: #198754;
+    --danger-color: #dc3545;
+    --warning-color: #ffca2c;
+    --info-color: #0dcaf0;
+
+    --body-bg: #1a1a1a; /* Very dark gray */
+    --text-color: #e0e0e0; /* Light gray text */
+    --text-muted-color: #888e95;
+
+    --header-bg: #101010; /* Even darker for header */
+    --header-text-color: #f8f9fa;
+
+    --card-bg: #2c2c2c; /* Darker card background */
+    --card-border-color: #444;
+    --card-box-shadow: 0 0.125rem 0.25rem rgba(255, 255, 255, 0.05);
+
+    --form-input-bg: #333;
+    --form-input-border-color: #555;
+    --form-input-focus-border-color: #1e88e5;
+    --form-input-focus-box-shadow: 0 0 0 0.2rem rgba(30, 136, 229, 0.25);
+
+    --link-color: var(--primary-color);
+    --link-hover-color: #4dabf5;
+}
+
+/* === BASE STYLES === */
+body {
+    font-family: var(--font-family-sans-serif);
+    background-color: var(--body-bg);
+    color: var(--text-color);
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    line-height: 1.6;
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+    font-weight: 500;
+    line-height: 1.2;
+    color: inherit; /* Inherit from body or parent for easier theming */
+}
+h1 { font-size: 2.25rem; }
+h2 { font-size: 1.8rem; }
+h3 { font-size: 1.5rem; }
+h4 { font-size: 1.25rem; }
+
+p {
+    margin-top: 0;
+    margin-bottom: 1rem;
+}
+
+a {
+    color: var(--link-color);
+    text-decoration: none;
+    transition: color 0.15s ease-in-out;
+}
+a:hover {
+    color: var(--link-hover-color);
+    text-decoration: underline;
+}
+
+table {
+    width: 100%;
+    margin-bottom: 1rem;
+    border-collapse: collapse;
+}
+th, td {
+    padding: 0.75rem;
+    vertical-align: top;
+    border-top: 1px solid var(--card-border-color); /* Using card border for consistency */
+}
+thead th {
+    vertical-align: bottom;
+    border-bottom: 2px solid var(--card-border-color);
+    font-weight: 600;
+}
+tbody tr:nth-of-type(odd) {
+    background-color: rgba(0,0,0,.025); /* Subtle striping */
+}
+body.dark-mode tbody tr:nth-of-type(odd) {
+    background-color: rgba(255,255,255,.035);
+}
+
+
+/* === LAYOUT & CONTAINER === */
+.container { /* This is Bootstrap's container, but we can add base styling */
+    width: 100%;
+    padding-right: 15px; /* Standard Bootstrap padding */
+    padding-left: 15px;
+    margin-right: auto;
+    margin-left: auto;
+}
+/* Max widths for Bootstrap containers */
+@media (min-width: 576px) { .container { max-width: 540px; } }
+@media (min-width: 768px) { .container { max-width: 720px; } }
+@media (min-width: 992px) { .container { max-width: 960px; } }
+@media (min-width: 1200px) { .container { max-width: 1140px; } }
+@media (min-width: 1400px) { .container { max-width: 1320px; } }
+
+
+/* === HEADER === */
+header {
+    background-color: var(--header-bg);
+    color: var(--header-text-color);
+    padding: 1rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: background-color 0.3s ease;
+}
+header .container { /* If header content is wrapped in a .container */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+header h1 {
+    margin: 0 0 0.5rem 0;
+    font-size: 1.75rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+}
+header h1 i {
+    margin-right: 10px;
+    font-size: 1.5rem; /* Slightly smaller than h1 text */
+}
+
+nav ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+nav ul li {
+    display: inline-block; /* Changed from inline for better padding/margin */
+    margin: 0 5px;
+}
+nav ul li a, nav ul li button {
+    color: var(--header-text-color);
+    text-decoration: none;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--border-radius-sm);
+    transition: background-color 0.2s ease, color 0.2s ease;
+    font-size: 0.95rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+}
+nav ul li a:hover, nav ul li button:hover,
+nav ul li a.active {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--header-text-color); /* Ensure text remains white on hover */
+    text-decoration: none;
+}
+nav ul li button { /* For the logout button if styled as a link */
+    line-height: inherit; /* Align with <a> tags */
+}
+
+/* === FOOTER === */
+footer {
+    text-align: center;
+    padding: 1.5rem 0;
+    background-color: var(--header-bg); /* Same as header for consistency */
+    color: var(--header-text-color);
+    margin-top: auto; /* Pushes footer to the bottom */
+    font-size: 0.9rem;
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+footer a {
+    color: var(--header-text-color);
+    text-decoration: underline;
+}
+footer a:hover {
+    color: var(--secondary-color); /* A muted hover for footer links */
+}
+
+
+/* === FORMS === */
+.form-container {
+    max-width: 500px; /* Default, can be overridden */
+    margin: 40px auto;
+    padding: 2rem; /* Increased padding */
+    background-color: var(--card-bg); /* Use card bg for consistency */
+    border: 1px solid var(--card-border-color);
+    border-radius: var(--border-radius-lg); /* Larger radius for distinct panels */
+    box-shadow: var(--card-box-shadow);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.form-container h2 {
+    text-align: center;
+    margin-bottom: 1.5rem;
+    font-weight: 600;
+}
+.form-group {
+    margin-bottom: 1.25rem;
+}
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+}
+.form-group input[type="text"],
+.form-group input[type="password"],
+.form-group input[type="email"],
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 0.75rem 1rem; /* Adjusted padding */
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--text-color);
+    background-color: var(--form-input-bg);
+    background-clip: padding-box;
+    border: 1px solid var(--form-input-border-color);
+    border-radius: var(--border-radius-base);
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out, background-color 0.3s ease, color 0.3s ease;
+}
+.form-group input[type="text"]:focus,
+.form-group input[type="password"]:focus,
+.form-group input[type="email"]:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+    color: var(--text-color);
+    background-color: var(--form-input-bg);
+    border-color: var(--form-input-focus-border-color);
+    outline: 0;
+    box-shadow: var(--form-input-focus-box-shadow);
+}
+.form-group textarea {
+    resize: vertical;
+    min-height: 100px;
+}
+.input-group { /* For status icons next to inputs */
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    width: 100%;
+}
+.input-group .form-control { /* Ensure input takes up space correctly */
+    flex: 1 1 auto;
+    width: 1%;
+    min-width: 0;
+}
+.input-group .status-icon {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    font-size: 1.25rem;
+    background-color: #e9ecef; /* Bootstrap default input-group-text bg */
+    border: 1px solid var(--form-input-border-color);
+    border-left: 0;
+    border-radius: 0 var(--border-radius-base) var(--border-radius-base) 0;
+}
+body.dark-mode .input-group .status-icon {
+    background-color: #444;
+    border-color: var(--form-input-border-color);
+}
+
+
+/* === BUTTONS === */
+.btn {
+    display: inline-block;
+    font-weight: 600;
+    line-height: 1.5;
+    color: var(--text-color); /* Default button text color */
+    text-align: center;
+    text-decoration: none;
+    vertical-align: middle;
+    cursor: pointer;
+    user-select: none;
+    background-color: transparent;
+    border: 1px solid transparent;
+    padding: 0.625rem 1.25rem; /* Slightly more padding */
+    font-size: 1rem;
+    border-radius: var(--border-radius-base);
+    transition: color 0.15s ease-in-out, background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+.btn:hover {
+    text-decoration: none;
+}
+.btn:focus, .btn.focus {
+    outline: 0;
+    box-shadow: 0 0 0 0.2rem rgba(var(--primary-color-rgb, 0,123,255), 0.25); /* Needs --primary-color-rgb if used */
+}
+.btn:disabled, .btn.disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+.btn-primary {
+    color: #fff;
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+.btn-primary:hover {
+    background-color: var(--link-hover-color); /* Darken primary */
+    border-color: var(--link-hover-color);
+    color: #fff;
+}
+.btn-secondary {
+    color: #fff;
+    background-color: var(--secondary-color);
+    border-color: var(--secondary-color);
+}
+.btn-secondary:hover {
+    background-color: #545b62; /* Darken secondary */
+    border-color: #545b62;
+    color: #fff;
+}
+.btn-lg {
+    padding: 0.75rem 1.5rem;
+    font-size: 1.125rem;
+    border-radius: var(--border-radius-lg);
+}
+.btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+    border-radius: var(--border-radius-sm);
+}
+.btn-full-width {
+    display: block;
+    width: 100%;
+}
+.btn-link { /* For logout button styled as link */
+    font-weight: 400;
+    color: var(--link-color);
+    text-decoration: none;
+    background-color: transparent;
+    border: 0;
+    padding: 0;
+}
+.btn-link:hover {
+    color: var(--link-hover-color);
+    text-decoration: underline;
+}
+header nav .btn-link { /* Specific for header logout */
+    color: var(--header-text-color);
+    padding: 0.5rem 0.75rem; /* Match link padding */
+}
+header nav .btn-link:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    text-decoration: none;
+}
+
+
+/* === CARDS & DASHBOARD === */
+.dashboard-grid {
+    display: grid;
+    gap: 1.5rem; /* Increased gap */
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    word-wrap: break-word;
+    background-color: var(--card-bg);
+    background-clip: border-box;
+    border: 1px solid var(--card-border-color);
+    border-radius: var(--border-radius-lg); /* Larger radius for cards */
+    box-shadow: var(--card-box-shadow);
+    padding: 1.5rem; /* Standardized padding */
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.card-header {
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 0;
+    background-color: rgba(0,0,0,.03);
+    border-bottom: 1px solid var(--card-border-color);
+    font-size: 1.1rem;
+    font-weight: 600;
+    border-top-left-radius: var(--border-radius-lg);
+    border-top-right-radius: var(--border-radius-lg);
+}
+body.dark-mode .card-header {
+    background-color: rgba(255,255,255,.05);
+    border-bottom: 1px solid var(--card-border-color);
+}
+.card-body {
+    flex: 1 1 auto;
+    padding: 0; /* Padding is now on .card itself */
+}
+.card h3 { /* For stat cards */
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+    font-size: 1.1rem;
+    color: var(--primary-color);
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+}
+.card h3 i {
+    margin-right: 8px;
+}
+.card p.stat-value { /* Specific class for the large stat numbers */
+    font-size: 2.25rem;
+    font-weight: 700;
+    margin: 0.25rem 0 0 0;
+    color: var(--text-color);
+}
+.chart-container {
+    padding: 1.5rem;
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border-color);
+    border-radius: var(--border-radius-lg);
+    box-shadow: var(--card-box-shadow);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.chart-container h3 {
+    margin-bottom: 1rem;
+    text-align: center;
+}
+
+
+/* === UTILITIES & HELPERS === */
+.error-message {
+    color: var(--danger-color);
+    font-size: 0.9rem;
+    margin-top: 0.25rem;
+    display: block; /* Ensure it takes space */
+}
+.text-center { text-align: center !important; }
+.mt-1 { margin-top: 0.25rem !important; }
+.mt-2 { margin-top: 0.5rem !important; }
+.mt-3 { margin-top: 1rem !important; }
+.mb-1 { margin-bottom: 0.25rem !important; }
+.mb-2 { margin-bottom: 0.5rem !important; }
+.mb-3 { margin-bottom: 1rem !important; }
+.fw-bold { font-weight: bold !important; }
+.text-muted { color: var(--text-muted-color) !important; }
+.text-danger { color: var(--danger-color) !important; }
+.text-success { color: var(--success-color) !important; }
+.text-warning { color: var(--warning-color) !important; }
+.text-info { color: var(--info-color) !important; }
+
+
+/* Status Icons */
+.status-icon { margin-left: 8px; font-size: 1.1em; }
+.status-icon.fa-check-circle { color: var(--success-color); }
+.status-icon.fa-times-circle { color: var(--danger-color); }
+.status-icon.fa-spinner { color: var(--primary-color); }
+.status-icon.fa-minus-circle { color: var(--secondary-color); }
+
+
+/* Loading Overlay */
+.loading-overlay { /* Generic class for all overlays */
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(var(--body-bg-rgb, 248, 249, 250), 0.85); /* Needs --body-bg-rgb for opacity */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 10000; /* High z-index */
+    font-size: 1.25rem;
+    color: var(--text-color);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+body.dark-mode .loading-overlay {
+    background-color: rgba(var(--body-bg-rgb-dark, 26, 26, 26), 0.9); /* Needs --body-bg-rgb-dark */
+}
+.loading-overlay i {
+    font-size: 2.5rem; /* Larger spinner */
+    margin-bottom: 1rem;
+    color: var(--primary-color);
+}
+
+
+/* Toastr (ensure library is loaded and styles are compatible) */
+/* These are basic overrides if Toastr's own CSS isn't fully themed by variables */
+#toast-container > div {
+    opacity: 0.95 !important;
+    box-shadow: 0 0 12px #00000030 !important;
+    border-radius: var(--border-radius-base) !important;
+}
+#toast-container > .toast-success { background-color: var(--success-color) !important; }
+#toast-container > .toast-error { background-color: var(--danger-color) !important; }
+#toast-container > .toast-info { background-color: var(--info-color) !important; }
+#toast-container > .toast-warning { background-color: var(--warning-color) !important; }
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    header h1 { font-size: 1.5rem; }
+    nav ul li { margin: 0 3px; }
+    nav ul li a, nav ul li button { padding: 0.4rem 0.6rem; font-size: 0.9rem; }
+    .form-container { margin: 20px auto; padding: 1.5rem; }
+    .dashboard-grid { grid-template-columns: 1fr; /* Stack cards on smaller screens */ }
+    .card p.stat-value { font-size: 1.8rem; }
+}
+
+@media (max-width: 576px) {
+    header .container { flex-direction: column; }
+    nav ul { margin-top: 0.5rem; }
+    nav ul li { display: block; margin: 5px 0; } /* Stack nav items */
+    nav ul li a, nav ul li button { display: block; width: 100%; text-align: center; }
+    .btn-lg { padding: 0.6rem 1.2rem; font-size: 1rem; }
+}
+
+/* Dark Mode Toggle Button Example Style (add to HTML where needed) */
+/*
+.theme-toggle-button {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: var(--secondary-color);
+    color: var(--header-text-color);
+    border: none;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    font-size: 1.5rem;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    z-index: 1001;
+}
+*/
+/* Define RGB versions of colors for RGBA usage if not already done by Bootstrap or similar */
+:root {
+    --primary-color-rgb: 0,123,255;
+    --body-bg-rgb: 248, 249, 250;
+}
+body.dark-mode {
+    --body-bg-rgb-dark: 26, 26, 26;
+}

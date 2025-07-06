@@ -44,5 +44,23 @@ namespace Application.Interfaces
         /// </summary>
         Task<(int UserCount, int NewsItemCount, List<(DateTime Date, int Count)> UserJoinStats)> GetDashboardStatsWithUserJoinsAsync(CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Gets consolidated statistics for the admin dashboard.
+        /// </summary>
+        Task<AdminDashboardStatsDto> GetAdminDashboardStatsAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Lists available log files.
+        /// </summary>
+        /// <returns>A list of log file names.</returns>
+        Task<List<string>> ListLogFilesAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Gets the content of a specific log file.
+        /// </summary>
+        /// <param name="fileName">The name of the log file.</param>
+        /// <param name="lineCount">Optional: The number of lines from the end of the file to return. If null or 0, returns full content.</param>
+        /// <returns>The content of the log file, or null if not found or an error occurs.</returns>
+        Task<string?> GetLogFileContentAsync(string fileName, int? lineCount = null, CancellationToken cancellationToken = default);
     }
 }

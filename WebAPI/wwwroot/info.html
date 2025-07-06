@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Information & Help - ForexTradingBot Admin</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- Toastr CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .info-section {
+            margin-bottom: 2rem;
+        }
+        .info-section h3 {
+            border-bottom: 1px solid var(--card-border-color);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+        .info-section ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .info-section ul li {
+            margin-bottom: 0.5rem;
+        }
+        .info-section ul li a {
+            text-decoration: underline;
+        }
+        .faq-item {
+            margin-bottom: 1rem;
+        }
+        .faq-question {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><i class="fas fa-info-circle"></i> Information & Help</h1>
+            <nav>
+                <ul>
+                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
+                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
+                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
+                    <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
+                    <li><a href="/info.html" class="active"><i class="fas fa-info-circle"></i> Info & Help</a></li>
+                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container mt-3 mb-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="info-section">
+                    <h3><i class="fab fa-github"></i> Project Resources</h3>
+                    <ul>
+                        <li><a href="https://github.com/Opselon/ForexTradingBot" target="_blank"><i class="fab fa-github"></i> Main GitHub Repository</a> - Visit the project's source code, report issues, and contribute.</li>
+                        <!-- Add links to Issues and Wiki if they are actively used -->
+                        <!-- <li><a href="https://github.com/Opselon/ForexTradingBot/issues" target="_blank"><i class="fas fa-bug"></i> Report an Issue</a></li> -->
+                        <!-- <li><a href="https://github.com/Opselon/ForexTradingBot/wiki" target="_blank"><i class="fas fa-book"></i> Project Wiki</a></li> -->
+                    </ul>
+                </div>
+
+                <div class="info-section">
+                    <h3><i class="fas fa-question-circle"></i> Frequently Asked Questions (FAQ)</h3>
+                    <div class="faq-item">
+                        <p class="faq-question">Q: How do I update my Telegram Bot Token?</p>
+                        <p>A: Navigate to the "App Settings" page. Find the "TelegramPanel Settings" section and update the `TelegramPanel:BotToken` field. Remember to save changes. The application might need a restart for some core settings to take effect if dynamic reloading isn't fully supported for that specific setting yet.</p>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">Q: Where can I see if my database connection is working?</p>
+                        <p>A: Go to the "Connection Test" page to test the database connection string you intend to use. The "System Status" page also shows the current live database connectivity status.</p>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">Q: How are sensitive settings like API keys stored?</p>
+                        <p>A: When you save settings through the "App Settings" page, sensitive values are encrypted before being stored in the application's database. They are decrypted only when needed by the application. Environment variables can override these settings and are loaded directly by the application.</p>
+                    </div>
+                    <!-- Add more FAQ items as needed -->
+                </div>
+
+                <div class="info-section">
+                    <h3><i class="fas fa-tools"></i> Basic Troubleshooting Tips</h3>
+                    <ul>
+                        <li><strong>Bot not responding?</strong> Check the "System Status" page for Telegram API connectivity. Ensure your Bot Token is correct in "App Settings". Review the application logs on the "View Logs" page for any errors.</li>
+                        <li><strong>Can't log in to admin panel?</strong> Ensure the admin username and password configured in the application settings (or environment variables) are correct.</li>
+                        <li><strong>Settings not taking effect?</strong> Some critical settings might require an application restart after being changed. The system attempts to reload configurations dynamically where possible. Check logs for any errors during settings update or application startup.</li>
+                        <li><strong>Error messages on UI?</strong> Use browser developer tools (Console tab) to check for JavaScript errors. Toastr notifications at the top-right usually provide specific error details from API calls.</li>
+                    </ul>
+                    <!-- Add more tips -->
+                </div>
+
+                 <div class="info-section">
+                    <h3><i class="fas fa-file-alt"></i> About This Admin Panel</h3>
+                    <p>This admin panel provides tools to configure, monitor, and manage the ForexTradingBot application. It allows direct interaction with application settings, diagnostic checks, and operational insights.</p>
+                    <p><strong>Key Features:</strong></p>
+                    <ul>
+                        <li>Secure login for administrators.</li>
+                        <li>Dynamic application settings management with values stored securely in the database.</li>
+                        <li>Connection testing for critical services (Database, Redis, Telegram Bot API).</li>
+                        <li>Dashboard overview of key application statistics (users, signals).</li>
+                        <li>System status monitoring for core connectivity and Hangfire jobs.</li>
+                        <li>Log viewing and download capabilities.</li>
+                    </ul>
+                </div>
+
+
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
+        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
+    </footer>
+
+    <!-- jQuery -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!-- Toastr JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <!-- Custom JS (if any specific to this page, otherwise just theme.js) -->
+    <script src="js/theme.js"></script>
+    <script>
+        // Small script for logout button in header
+        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/auth/logout', { method: 'POST' });
+                if (response.ok) {
+                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
+                    window.location.href = '/login.html';
+                } else {
+                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+                }
+            } catch (error) {
+                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
+            }
+        });
+         // Add GitHub link
+        const githubLinkContainer = document.getElementById('githubLinkContainer');
+        if(githubLinkContainer) {
+            const ghLink = document.createElement('a');
+            ghLink.href = 'https://github.com/Opselon/ForexTradingBot';
+            ghLink.target = '_blank';
+            ghLink.textContent = ' (View on GitHub)';
+            ghLink.style.color = 'white';
+            githubLinkContainer.appendChild(ghLink);
+        }
+    </script>
+</body>
+</html>

@@ -37,6 +37,13 @@ using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
 using BackgroundTasks.Services;
+using Microsoft.AspNetCore.Authentication.Cookies; // Added for Cookie Authentication
+using WebAPI.Middleware; // Added for AuthRedirectMiddleware
+using Microsoft.AspNetCore.DataProtection; // Added for Data Protection
+using System.IO; // Added for Path.Combine
+using Infrastructure.Security; // For SettingsProtectionService
+using Infrastructure.Services; // For DynamicConfigurationService
+using Infrastructure.Configuration; // For DatabaseConfigurationSource/Provider
 
 #endregion
 
@@ -81,6 +88,109 @@ try
 
     #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+    // --- Pre-DI Configuration Setup for Dynamic Settings ---
+    // 1. Build a temporary configuration to access initial appsettings.json values for DB connection string.
+    var tempInitialConfigBuilder = new ConfigurationManager(); // Use ConfigurationManager for this pre-build step
+    tempInitialConfigBuilder.AddJsonFile("appsettings.json", optional: true, reloadOnChange: false);
+    // Add environment-specific json if needed, e.g., appsettings.Development.json
+    var currentEnv = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+    tempInitialConfigBuilder.AddJsonFile($"appsettings.{currentEnv}.json", optional: true, reloadOnChange: false);
+    tempInitialConfigBuilder.AddEnvironmentVariables();
+    // Add user secrets for development if needed for the initial DB connection string
+    if (builder.Environment.IsDevelopment())
+    {
+        tempInitialConfigBuilder.AddUserSecrets(typeof(Program).Assembly, optional: true);
+    }
+    var tempInitialConfig = tempInitialConfigBuilder.Build();
+
+    // 2. Setup a temporary ServiceCollection for services needed by DatabaseConfigurationProvider
+    var tempServices = new ServiceCollection();
+    tempServices.AddSingleton<IConfiguration>(tempInitialConfig); // Provide the temp config
+
+    // Configure EF Core for AppDbContext (needed by DynamicConfigurationService)
+    // This requires the DefaultConnection string to be available in tempInitialConfig
+    string? defaultConnectionString = tempInitialConfig.GetConnectionString("DefaultConnection");
+    if (string.IsNullOrEmpty(defaultConnectionString))
+    {
+        // Log or throw critical error: DefaultConnection is required to load dynamic settings from DB.
+        // This log will use Serilog's global logger if already configured, or a console logger.
+        Log.Fatal("CRITICAL ERROR: DefaultConnection string is missing from appsettings.json/user secrets/env vars. Cannot initialize dynamic configuration from database.");
+        // Optionally, you could throw an exception here to halt startup if DB settings are absolutely critical.
+        // throw new InvalidOperationException("DefaultConnection string is missing. Cannot initialize dynamic configuration.");
+    }
+
+    // Determine DB provider from tempInitialConfig for AppDbContext setup
+    string? dbProviderForDynamicConfig = tempInitialConfig.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant() ?? "postgres";
+    if (dbProviderForDynamicConfig == "sqlite")
+    {
+        tempServices.AddDbContext<AppDbContext>(options => options.UseSqlite(defaultConnectionString));
+    }
+    else if (dbProviderForDynamicConfig == "sqlserver")
+    {
+        tempServices.AddDbContext<AppDbContext>(options => options.UseSqlServer(defaultConnectionString));
+    }
+    else // Default to PostgreSQL
+    {
+        tempServices.AddDbContext<AppDbContext>(options => options.UseNpgsql(defaultConnectionString));
+    }
+
+    // Setup DataProtection (keys are needed for SettingsProtectionService)
+    var keysFolderTemp = Path.Combine(builder.Environment.ContentRootPath, "keys");
+    Directory.CreateDirectory(keysFolderTemp);
+    tempServices.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysFolderTemp)).SetApplicationName("ForexTradingBot");
+
+    tempServices.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
+    tempServices.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
+    // Add logging for these temporary services if needed, e.g. tempServices.AddLogging();
+
+    var tempServiceProvider = tempServices.BuildServiceProvider();
+
+    // 3. Action to register defined settings
+    Action<IDynamicConfigurationService, IConfigurationBuilder> registerSettingsAction = (service, configBuilder) =>
+    {
+        var tempLogger = tempServiceProvider.GetService<ILogger<Program>>() ?? new LoggerFactory().CreateLogger<Program>();
+        var baseConfig = configBuilder.Build(); // Build from the sources provided to the DatabaseConfigurationSource
+
+        tempLogger.LogInformation("Registering defined settings (pre-build) with DynamicConfigurationService...");
+        void RegisterSetting(string key, bool isSensitive, string description) {
+            service.RegisterSettingDefinition(key, baseConfig[key], isSensitive, description);
+        }
+        // Register all settings as defined in previous steps (Admin:Username, ConnectionStrings:Redis, etc.)
+        // This is the same block as later, but uses baseConfig for default values
+        RegisterSetting("Admin:Username", false, "Admin panel username.");
+        RegisterSetting("Admin:Password", true, "Admin panel password.");
+        RegisterSetting("ConnectionStrings:Redis", true, "Redis connection string.");
+        RegisterSetting("TelegramPanel:BotToken", true, "Main Telegram Bot Token.");
+        RegisterSetting("TelegramPanel:AdminUserIds", false, "Comma-separated list of Telegram Admin User IDs.");
+        RegisterSetting("TelegramPanel:WebhookAddress", false, "Webhook address for the main Telegram Bot.");
+        RegisterSetting("TelegramPanel:WebhookSecretToken", true, "Secret token for the Telegram webhook.");
+        // ... (add ALL other settings definitions here from the previous registration block) ...
+        RegisterSetting("TelegramUserApi:ApiId", false, "Telegram User API ID.");
+        RegisterSetting("TelegramUserApi:ApiHash", true, "Telegram User API Hash.");
+        RegisterSetting("TelegramUserApi:PhoneNumber", true, "Phone number for Telegram User API client.");
+        RegisterSetting("TelegramUserApi:VerificationCodeSource", false, "Source for User API verification code.");
+        RegisterSetting("TelegramUserApi:BotToken", true, "Bot token for the forwarder helper bot.");
+        RegisterSetting("TelegramUserApi:TwoFactorPasswordSource", false, "Source for User API 2FA password.");
+        RegisterSetting("CryptoPay:ApiToken", true, "CryptoPay API Token.");
+        RegisterSetting("CryptoPay:BaseUrl", false, "CryptoPay API Base URL.");
+        RegisterSetting("CryptoPay:IsTestnet", false, "Indicates if CryptoPay is using testnet.");
+        RegisterSetting("CryptoPay:WebhookSecretForCryptoPay", true, "Webhook secret from CryptoPay.");
+        RegisterSetting("HangfireSettings:StorageType", false, "Hangfire storage type.");
+        RegisterSetting("HangfireSettings:DefaultWorkerCount", false, "Default Hangfire worker count.");
+        RegisterSetting("HangfireSettings:NotificationWorkerCount", false, "Hangfire worker count for notifications.");
+        RegisterSetting("OperationalFlags:GlobalLogLevel", false, "Global log level override.");
+        RegisterSetting("OperationalFlags:EnableRssModule", false, "Feature flag for RSS module.");
+        RegisterSetting("OperationalFlags:EnableForwardingModule", false, "Feature flag for auto-forwarding module.");
+        tempLogger.LogInformation("All defined settings (pre-build) registered with DynamicConfigurationService.");
+    };
+
+    // 4. Add the custom configuration source to the main builder's configuration
+    builder.Configuration.Add(new DatabaseConfigurationSource(tempServiceProvider, registerSettingsAction));
+    Log.Information("DatabaseConfigurationSource added to application configuration.");
+
+    // --- End of Pre-DI Configuration Setup ---
+
     _ = builder.WebHost.UseKestrel();
     builder.Services.AddSingleton<TelegramAdminSink>();
     // This is more reliable than GetValue<bool> for environment variables.
@@ -228,6 +338,19 @@ try
     // فعال کردن API Explorer برای تولید مستندات Swagger/OpenAPI
     _ = builder.Services.AddEndpointsApiExplorer();
 
+    // Configure Cookie Authentication for Admin Dashboard
+    builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+        .AddCookie(options =>
+        {
+            options.Cookie.HttpOnly = true;
+            options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
+            options.Cookie.SameSite = SameSiteMode.Strict;
+            options.LoginPath = "/login.html";
+            options.LogoutPath = "/api/auth/logout";
+            options.ExpireTimeSpan = TimeSpan.FromMinutes(60); // Adjust as needed
+            options.SlidingExpiration = true;
+        });
+
     // Add CORS
     _ = builder.Services.AddCors(options =>
     {
@@ -331,6 +454,20 @@ try
 
     _ = builder.Services.AddApplicationServices();
     Log.Information("Application services registered.");
+
+    // Configure Data Protection - Keys persisted to file system.
+    // IMPORTANT: For production, ensure this 'keys' directory is properly secured and backed up.
+    // Consider using Azure Blob Storage, Redis, or another provider for key persistence in a distributed environment.
+    var keysFolder = Path.Combine(builder.Environment.ContentRootPath, "keys");
+    Directory.CreateDirectory(keysFolder); // Ensure the directory exists
+    builder.Services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(keysFolder))
+        .SetApplicationName("ForexTradingBot"); // Unique application name to isolate keys
+
+    // Register custom dynamic configuration services
+    builder.Services.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
+    builder.Services.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
+    Log.Information("Data Protection and Dynamic Configuration services registered.");
 
     // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
     if (!isSmokeTest)
@@ -741,6 +878,67 @@ try
     WebApplication app = builder.Build();
     Log.Information("Application host built. Performing mandatory startup tasks...");
 
+    // Initialize and register defined settings with the DynamicConfigurationService
+    using (var scope = app.Services.CreateScope())
+    {
+        var services = scope.ServiceProvider;
+        var dynamicConfigService = services.GetRequiredService<IDynamicConfigurationService>();
+        var configuration = services.GetRequiredService<IConfiguration>();
+        var logger = services.GetRequiredService<ILogger<Program>>(); // Using ILogger<Program> for this setup log
+
+        logger.LogInformation("Registering defined settings with DynamicConfigurationService...");
+
+        // Helper to register a setting
+        void RegisterSetting(string key, bool isSensitive, string description)
+        {
+            dynamicConfigService.RegisterSettingDefinition(key, configuration[key], isSensitive, description);
+        }
+
+        // Admin Credentials
+        RegisterSetting("Admin:Username", false, "Admin panel username.");
+        RegisterSetting("Admin:Password", true, "Admin panel password.");
+
+        // Connection Strings
+        // Note: DefaultConnection is bootstrap, others can be dynamic
+        RegisterSetting("ConnectionStrings:Redis", true, "Redis connection string.");
+
+        // Telegram Bot (Main Bot - TelegramPanel section)
+        RegisterSetting("TelegramPanel:BotToken", true, "Main Telegram Bot Token.");
+        RegisterSetting("TelegramPanel:AdminUserIds", false, "Comma-separated list of Telegram Admin User IDs.");
+        RegisterSetting("TelegramPanel:WebhookAddress", false, "Webhook address for the main Telegram Bot.");
+        RegisterSetting("TelegramPanel:WebhookSecretToken", true, "Secret token for the Telegram webhook.");
+        RegisterSetting("TelegramPanel:PollingInterval", false, "Polling interval in seconds (if not using webhook).");
+        RegisterSetting("TelegramPanel:EnableDebugMode", false, "Enables debug mode for the Telegram panel.");
+
+        // Telegram User API (Auto-Forwarder/User Client - TelegramUserApi section)
+        RegisterSetting("TelegramUserApi:ApiId", false, "Telegram User API ID."); // Typically not secret itself
+        RegisterSetting("TelegramUserApi:ApiHash", true, "Telegram User API Hash.");
+        RegisterSetting("TelegramUserApi:PhoneNumber", true, "Phone number for Telegram User API client.");
+        // SessionPath is usually app-relative, not typically user-configured via this UI
+        // RegisterSetting("TelegramUserApi:SessionPath", false, "Path for User API session file.");
+        RegisterSetting("TelegramUserApi:VerificationCodeSource", false, "Source for User API verification code (e.g., 'Console', 'Bot').");
+        RegisterSetting("TelegramUserApi:BotToken", true, "Bot token for the forwarder helper bot (if used).");
+        RegisterSetting("TelegramUserApi:TwoFactorPasswordSource", false, "Source for User API 2FA password (e.g., 'Console', 'Bot').");
+
+        // CryptoPay Settings (CryptoPay section)
+        RegisterSetting("CryptoPay:ApiToken", true, "CryptoPay API Token.");
+        RegisterSetting("CryptoPay:BaseUrl", false, "CryptoPay API Base URL.");
+        RegisterSetting("CryptoPay:IsTestnet", false, "Indicates if CryptoPay is using testnet.");
+        RegisterSetting("CryptoPay:WebhookSecretForCryptoPay", true, "Webhook secret from CryptoPay.");
+
+        // Hangfire Settings (HangfireSettings section)
+        RegisterSetting("HangfireSettings:StorageType", false, "Hangfire storage type (e.g., 'Postgres', 'Memory').");
+        RegisterSetting("HangfireSettings:DefaultWorkerCount", false, "Default Hangfire worker count.");
+        RegisterSetting("HangfireSettings:NotificationWorkerCount", false, "Hangfire worker count for notifications queue.");
+
+        // Example Other Operational Flags
+        RegisterSetting("OperationalFlags:GlobalLogLevel", false, "Global log level override (e.g., 'Information', 'Debug').");
+        RegisterSetting("OperationalFlags:EnableRssModule", false, "Feature flag to enable/disable the RSS module.");
+        RegisterSetting("OperationalFlags:EnableForwardingModule", false, "Feature flag to enable/disable the auto-forwarding module.");
+
+        logger.LogInformation("All defined settings registered.");
+    }
+
     // Automatically apply EF Core migrations at startup (async master)
     using (IServiceScope scope = app.Services.CreateScope())
     {
@@ -907,10 +1105,19 @@ try
 
     _ = app.UseHttpsRedirection(); //  ریدایرکت خودکار تمام درخواست‌های HTTP به HTTPS
 
+    _ = app.UseStaticFiles(); // Serve static files early, especially for login page
+
     _ = app.UseSerilogRequestLogging(); //  لاگ کردن تمام درخواست‌های HTTP ورودی با جزئیات (توسط Serilog)
 
     _ = app.UseRouting();
+
+    // IMPORTANT: Authentication must come before Authorization
+    _ = app.UseAuthentication(); // Added for Admin Dashboard authentication
     _ = app.UseAuthorization();
+
+    // Custom middleware to redirect unauthenticated users trying to access protected admin pages
+    _ = app.UseMiddleware<AuthRedirectMiddleware>();
+
     _ = app.MapHangfireDashboard();
     programLogger.LogInformation("HTTP request pipeline configured.");
     #endregion
@@ -1032,8 +1239,7 @@ try
         }
     });
     app.UseSerilogRequestLogging();
-    // In the middleware pipeline section (before app.Run())
-    _ = app.UseStaticFiles();
+    // In the middleware pipeline section (before app.Run()) - app.UseStaticFiles() moved earlier
     await app.RunAsync();
 }
 catch (Exception ex)

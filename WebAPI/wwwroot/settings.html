@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Application Settings - ForexTradingBot Admin</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- Toastr CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .settings-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+        }
+        .settings-section h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .form-group small.form-text {
+            font-size: 0.8rem;
+        }
+        .info-value {
+            font-weight: bold;
+            color: #555;
+        }
+        .overridden-value {
+            font-style: italic;
+            color: #777;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container"> <!-- Added container for better alignment -->
+            <h1><i class="fas fa-sliders-h"></i> Application Settings</h1>
+            <nav>
+                <ul>
+                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
+                    <li><a href="/settings.html" class="active"><i class="fas fa-sliders-h"></i> App Settings</a></li>
+                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
+                <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
+                <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
+                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container mt-3 mb-3"> <!-- Added mt-3 mb-3 for spacing -->
+        <div id="loading-overlay-settings" class="loading-overlay" style="display: none;">
+            <i class="fas fa-spinner fa-spin"></i>
+            <span>Loading Settings...</span>
+        </div>
+
+        <p class="text-muted mb-3">Manage dynamic application settings. Values overridden by environment variables cannot be changed here but are shown for awareness. Default database connection string is typically set via server configuration (e.g. appsettings.Production.json or environment variables) and is used by the application to load these settings.</p>
+
+        <form id="settingsForm">
+            <!-- Settings will be dynamically populated here by settings.js -->
+            <div id="settingsContainer" class="mb-3">
+                <p>Loading settings categories...</p>
+            </div>
+
+            <div class="form-group text-center">
+                <button type="submit" id="saveAllSettingsButton" class="btn btn-primary btn-lg">
+                    <i class="fas fa-save"></i> Save All Changes
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <footer>
+        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
+        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
+    </footer>
+
+    <!-- jQuery -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!-- Toastr JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <!-- Custom JS -->
+    <script src="js/settings.js"></script>
+    <script src="js/theme.js"></script>
+    <script>
+        // Small script for logout button in header
+        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
+            // ... (logout logic as in other pages)
+            try {
+                const response = await fetch('/api/auth/logout', { method: 'POST' });
+                if (response.ok) {
+                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
+                    window.location.href = '/login.html';
+                } else {
+                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+                }
+            } catch (error) {
+                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
+            }
+        });
+        // Add GitHub link
+        const githubLinkContainer = document.getElementById('githubLinkContainer');
+        if(githubLinkContainer) {
+            const ghLink = document.createElement('a');
+            ghLink.href = 'https://github.com/Opselon/ForexTradingBot';
+            ghLink.target = '_blank';
+            ghLink.textContent = ' (View on GitHub)';
+            ghLink.style.color = 'white';
+            githubLinkContainer.appendChild(ghLink);
+        }
+    </script>
+</body>
+</html>

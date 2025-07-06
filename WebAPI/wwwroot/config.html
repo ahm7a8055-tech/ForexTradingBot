@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Configuration - ForexTradingBot Admin</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- Toastr CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container"> <!-- Added container for better alignment -->
+            <h1><i class="fas fa-cogs"></i> Bot Configuration</h1>
+            <nav>
+                <ul>
+                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <li><a href="/config.html" class="active"><i class="fas fa-plug"></i> Connection Test</a></li>
+                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
+                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
+                <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
+                <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
+                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container mt-3 mb-3"> <!-- Added mt-3 mb-3 for spacing -->
+        <div class="form-container" style="max-width: 700px;">
+            <h2 class="mb-3"><i class="fas fa-robot"></i> Telegram & Connections</h2>
+            <p class="text-muted mb-2">Configure essential settings for bot operation. Test connections before saving.</p>
+
+            <form id="configForm">
+                <div class="form-group">
+                    <label for="botToken"><i class="fab fa-telegram-plane"></i> Telegram Bot Token</label>
+                    <div class="input-group">
+                        <input type="password" id="botToken" class="form-control" placeholder="Enter your Telegram Bot Token">
+                        <span class="status-icon" id="botTokenStatus"></span>
+                    </div>
+                    <small class="form-text text-muted">Your unique token from BotFather.</small>
+                     <div class="mt-1">Bot Username: <strong id="telegramBotUsername">N/A</strong></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="dbConn"><i class="fas fa-database"></i> Default Database Connection String</label>
+                     <div class="input-group">
+                        <input type="password" id="dbConn" class="form-control" placeholder="e.g., Host=localhost;Database=yourdb;Username=user;Password=pass">
+                        <span class="status-icon" id="dbConnStatus"></span>
+                    </div>
+                    <small class="form-text text-muted">Connection string for the primary PostgreSQL database.</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="redisConn"><i class="fas fa-memory"></i> Redis Connection String (Optional)</label>
+                    <div class="input-group">
+                        <input type="text" id="redisConn" class="form-control" placeholder="e.g., localhost:6379">
+                        <span class="status-icon" id="redisConnStatus"></span>
+                    </div>
+                    <small class="form-text text-muted">Leave blank if not using or using embedded Redis.</small>
+                </div>
+
+                <div class="form-group text-center mt-2">
+                    <button type="button" id="testConnectionButton" class="btn btn-secondary" style="margin-right: 10px;">
+                        <i class="fas fa-network-wired"></i> Test Connections
+                    </button>
+                    <button type="button" id="saveConfigurationButton" class="btn btn-primary" disabled>
+                        <i class="fas fa-save"></i> Save Configuration
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <footer>
+        <p>&copy; ForexTradingBot Admin Panel</p>
+        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
+    </footer>
+
+    <!-- jQuery -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!-- Toastr JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <!-- Custom JS -->
+    <script src="js/config.js"></script>
+    <script src="js/theme.js"></script>
+    <script>
+        // Small script for logout button in header if needed, or handle in a global script
+        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/auth/logout', { method: 'POST' });
+                if (response.ok) {
+                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
+                    window.location.href = '/login.html';
+                } else {
+                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+                }
+            } catch (error) {
+                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
+            }
+        });
+    </script>
+</body>
+</html>

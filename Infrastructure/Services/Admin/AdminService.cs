@@ -11,6 +11,8 @@ using Npgsql;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using Application.Common.Interfaces; // For IUserRepository, ISignalRepository
+using Domain.Entities; // For User, Signal entities if needed directly, though DTOs are preferred
 
 namespace Infrastructure.Services.Admin
 {
@@ -20,12 +22,22 @@ namespace Infrastructure.Services.Admin
         private readonly ILogger<AdminService> _logger;
         private const int CommandTimeoutSeconds = 180; // Increased timeout for admin queries
         private readonly ICacheService _cacheService;
-        public AdminService(IConfiguration configuration, ILogger<AdminService> logger, ICacheService cacheService)
+        private readonly IUserRepository _userRepository;
+        private readonly ISignalRepository _signalRepository;
+
+        public AdminService(
+            IConfiguration configuration,
+            ILogger<AdminService> logger,
+            ICacheService cacheService,
+            IUserRepository userRepository,
+            ISignalRepository signalRepository)
         {
             _connectionString = configuration.GetConnectionString("DefaultConnection")
                                 ?? throw new InvalidOperationException("DefaultConnection string is not found in configuration.");
             _logger = logger;
-            _cacheService = cacheService; // --- ADDED ---
+            _cacheService = cacheService;
+            _userRepository = userRepository;
+            _signalRepository = signalRepository;
         }
         private NpgsqlConnection CreateConnection()
         {
@@ -310,6 +322,158 @@ namespace Infrastructure.Services.Admin
             }
 
             return (userCount, newsItemCount, userJoinStats);
+        }
+
+        public async Task<AdminDashboardStatsDto> GetAdminDashboardStatsAsync(CancellationToken cancellationToken = default)
+        {
+            _logger.LogInformation("Fetching admin dashboard statistics.");
+            var stats = new AdminDashboardStatsDto();
+
+            // Get User Stats
+            try
+            {
+                var userStatsData = await GetDashboardStatsWithUserJoinsAsync(cancellationToken);
+                stats.TotalUsers = userStatsData.UserCount;
+                stats.UserGrowthLast7Days = userStatsData.UserJoinStats
+                    .Select(s => new DailyCountDto { Date = s.Date, Count = s.Count })
+                    .OrderByDescending(d => d.Date) // Ensure it's for the last 7 days from the GetDashboardStatsWithUserJoinsAsync logic
+                    .Take(7) // Take last 7, assuming GetDashboardStatsWithUserJoinsAsync provides enough data
+                    .OrderBy(d => d.Date) // Re-order for chart
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching user statistics for admin dashboard.");
+                // Optionally set default/error values or rethrow
+                stats.TotalUsers = -1; // Indicate error or unavailable
+            }
+
+            // Get Signal Stats
+            try
+            {
+                DateTime utcNow = DateTime.UtcNow;
+                DateTime todayStart = utcNow.Date;
+                DateTime sevenDaysAgoStart = todayStart.AddDays(-6); // -6 to include today as the 7th day
+
+                // This requires ISignalRepository to have methods to query by date ranges
+                // or to fetch all and filter in memory if the dataset isn't too large.
+                // For demonstration, assuming ISignalRepository might need new methods like:
+                // - GetSignalsCountAsync(DateTime from, DateTime to, CancellationToken token)
+                // - GetSignalsCountPerDayAsync(DateTime from, DateTime to, CancellationToken token) -> returns List<DailyCountDto>
+
+                // Placeholder: Efficient way would be direct DB queries via repository.
+                // Fetching all signals and filtering in memory is inefficient for large datasets.
+                var allSignals = await _signalRepository.GetAllAsync(cancellationToken); // Assuming GetAllAsync exists
+
+                stats.SignalsToday = allSignals.Count(s => s.PublishedAt.Date == todayStart);
+
+                stats.SignalsPerDayLast7Days = allSignals
+                    .Where(s => s.PublishedAt.Date >= sevenDaysAgoStart && s.PublishedAt.Date <= todayStart)
+                    .GroupBy(s => s.PublishedAt.Date)
+                    .Select(g => new DailyCountDto { Date = g.Key, Count = g.Count() })
+                    .OrderBy(d => d.Date)
+                    .ToList();
+
+                // Fill missing days for signals
+                var signalsPerDayFilled = new List<DailyCountDto>();
+                for (int i = 0; i < 7; i++)
+                {
+                    DateTime day = sevenDaysAgoStart.AddDays(i);
+                    var existingStat = stats.SignalsPerDayLast7Days.FirstOrDefault(s => s.Date == day);
+                    if (existingStat != null)
+                    {
+                        signalsPerDayFilled.Add(existingStat);
+                    }
+                    else
+                    {
+                        signalsPerDayFilled.Add(new DailyCountDto { Date = day, Count = 0 });
+                    }
+                }
+                stats.SignalsPerDayLast7Days = signalsPerDayFilled.OrderBy(d => d.Date).ToList();
+
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching signal statistics for admin dashboard.");
+                stats.SignalsToday = -1; // Indicate error or unavailable
+            }
+
+            // MessagesToday is deferred as per plan.
+
+            _logger.LogInformation("Admin dashboard statistics compiled successfully.");
+            return stats;
+        }
+
+        public async Task<List<string>> ListLogFilesAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+                if (!Directory.Exists(logDirectory))
+                {
+                    _logger.LogWarning("Log directory not found at {LogPath} when listing files.", logDirectory);
+                    return new List<string>();
+                }
+
+                var logFiles = Directory.GetFiles(logDirectory, "log-*.txt")
+                                        .Select(Path.GetFileName)
+                                        .OfType<string>() // Ensure GetFileName doesn't return nulls that break ToList()
+                                        .OrderByDescending(f => f) // Show newest first
+                                        .ToList();
+                return await Task.FromResult(logFiles); // Directory.GetFiles is sync, wrap in Task.FromResult for async signature
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error listing log files.");
+                return new List<string>(); // Return empty list on error
+            }
+        }
+
+        public async Task<string?> GetLogFileContentAsync(string fileName, int? lineCount = null, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)
+                || fileName.Contains("..") // Basic directory traversal prevention
+                || !fileName.StartsWith("log-") // Ensure it's one of our log files
+                || !fileName.EndsWith(".txt"))
+            {
+                _logger.LogWarning("Invalid or potentially malicious log file name requested: {FileName}", fileName);
+                return null; // Or throw an ArgumentException
+            }
+
+            try
+            {
+                string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+                // Securely combine path and ensure it's still within the logDirectory
+                string filePath = Path.Combine(logDirectory, Path.GetFileName(fileName)); // Use GetFileName to sanitize
+
+                if (!File.Exists(filePath) || !Path.GetFullPath(filePath).StartsWith(Path.GetFullPath(logDirectory), StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("Log file not found or access denied (path traversal attempt?): {FilePath}", filePath);
+                    return null;
+                }
+
+                _logger.LogInformation("Reading log file: {FilePath}. Line count: {LineCount}", filePath, lineCount.HasValue ? lineCount.Value.ToString() : "All");
+
+                if (lineCount.HasValue && lineCount > 0)
+                {
+                    var lines = new List<string>();
+                    // File.ReadLines allows efficient reading for large files if we only need a few lines from the end.
+                    // However, getting LAST N lines efficiently requires reading from end or keeping track.
+                    // A simpler approach for moderate log files:
+                    var allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
+                    lines = allLines.TakeLast(lineCount.Value).ToList();
+                    return string.Join(Environment.NewLine, lines);
+                }
+                else
+                {
+                    return await File.ReadAllTextAsync(filePath, cancellationToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reading log file content for {FileName}.", fileName);
+                return $"Error reading log file '{fileName}': {ex.Message}"; // Return error message as content for user
+            }
         }
     }
 }

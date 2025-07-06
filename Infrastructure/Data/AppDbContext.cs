@@ -74,7 +74,12 @@ namespace Infrastructure.Data
         public DbSet<NewsItem> NewsItems => Set<NewsItem>();
 
 
-        public DbSet<Setting> Settings { get; set; }
+        public DbSet<Setting> Settings { get; set; } // Existing generic settings table
+
+        /// <summary>
+        /// DbSet for the new ApplicationSetting entities for dynamic configuration.
+        /// </summary>
+        public DbSet<ApplicationSetting> ApplicationSettings => Set<ApplicationSetting>();
 
         /// <summary>
         /// DbSet برای موجودیت‌های ForwardingRule (از فضای نام خاص).

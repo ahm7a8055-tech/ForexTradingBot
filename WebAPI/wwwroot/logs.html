@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Logs - ForexTradingBot Admin</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- Toastr CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        #logContentContainer {
+            background-color: var(--form-input-bg); /* Use form input bg for contrast */
+            color: var(--text-color); /* Ensure text color contrasts with bg */
+            border: 1px solid var(--form-input-border-color);
+            border-radius: var(--border-radius-sm);
+            padding: 15px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap; /* Preserve whitespace and wrap lines */
+            font-family: var(--font-family-monospace);
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+        body.dark-mode #logContentContainer {
+            /* Specific dark mode styles if needed, though variables should handle it */
+        }
+        .log-controls {
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><i class="fas fa-file-alt"></i> Application Logs</h1>
+            <nav>
+                <ul>
+                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
+                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
+                    <li><a href="/status.html"><i class="fas fa-heartbeat"></i> System Status</a></li>
+                    <li><a href="/logs.html" class="active"><i class="fas fa-file-alt"></i> View Logs</a></li>
+                    <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
+                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container mt-3 mb-3">
+        <div id="loading-overlay-logs" class="loading-overlay" style="display: none;">
+            <i class="fas fa-spinner fa-spin"></i>
+            <span>Loading Logs...</span>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                Log Viewer
+            </div>
+            <div class="card-body">
+                <div class="log-controls">
+                    <div class="flex-grow-1">
+                        <label for="logFileSelect" class="form-label">Select Log File:</label>
+                        <select id="logFileSelect" class="form-select form-select-sm"></select>
+                    </div>
+                    <div>
+                        <label for="lineCountInput" class="form-label">Lines (0=all):</label>
+                        <input type="number" id="lineCountInput" class="form-control form-control-sm" value="200" min="0" style="width: 100px;">
+                    </div>
+                    <button id="viewLogButton" class="btn btn-primary btn-sm align-self-end">View Log</button>
+                    <button id="downloadZipButton" class="btn btn-secondary btn-sm align-self-end">
+                        <i class="fas fa-file-archive"></i> Download All as ZIP
+                    </button>
+                </div>
+                <hr>
+                <h5 id="currentLogFileName">Select a log file to view.</h5>
+                <div id="logContentContainer">
+                    <p class="text-muted">Log content will appear here...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
+        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
+    </footer>
+
+    <!-- jQuery -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!-- Toastr JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <!-- Custom JS -->
+    <script src="js/logs.js"></script>
+    <script src="js/theme.js"></script>
+    <script>
+        // Small script for logout button in header
+        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/auth/logout', { method: 'POST' });
+                if (response.ok) {
+                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
+                    window.location.href = '/login.html';
+                } else {
+                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+                }
+            } catch (error) {
+                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
+            }
+        });
+         // Add GitHub link
+        const githubLinkContainer = document.getElementById('githubLinkContainer');
+        if(githubLinkContainer) {
+            const ghLink = document.createElement('a');
+            ghLink.href = 'https://github.com/Opselon/ForexTradingBot';
+            ghLink.target = '_blank';
+            ghLink.textContent = ' (View on GitHub)';
+            ghLink.style.color = 'white';
+            githubLinkContainer.appendChild(ghLink);
+        }
+    </script>
+</body>
+</html>

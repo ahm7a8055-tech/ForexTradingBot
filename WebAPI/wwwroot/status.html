@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Status - ForexTradingBot Admin</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- Toastr CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .status-card {
+            margin-bottom: 20px;
+        }
+        .status-card .card-header {
+            font-weight: bold;
+        }
+        .status-ok { color: green; }
+        .status-error { color: red; }
+        .status-neutral { color: orange; }
+        .recurring-job-table th, .recurring-job-table td {
+            font-size: 0.9rem;
+            padding: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container"> <!-- Added container for better alignment -->
+            <h1><i class="fas fa-heartbeat"></i> System Status & Operations</h1>
+            <nav>
+                <ul>
+                    <li><a href="/index.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+                    <li><a href="/config.html"><i class="fas fa-plug"></i> Connection Test</a></li>
+                    <li><a href="/settings.html"><i class="fas fa-sliders-h"></i> App Settings</a></li>
+                    <li><a href="/status.html" class="active"><i class="fas fa-heartbeat"></i> System Status</a></li>
+                <li><a href="/logs.html"><i class="fas fa-file-alt"></i> View Logs</a></li>
+                <li><a href="/info.html"><i class="fas fa-info-circle"></i> Info & Help</a></li>
+                    <li><button id="logoutButtonTop" class="btn btn-link"><i class="fas fa-sign-out-alt"></i> Logout</button></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container mt-3 mb-3"> <!-- Added mt-3 mb-3 for spacing -->
+        <div id="loading-overlay-status" class="loading-overlay" style="display: none;">
+            <i class="fas fa-spinner fa-spin"></i>
+            <span>Loading Status Information...</span>
+        </div>
+
+        <!-- Connectivity Status Section -->
+        <div class="card mb-3"> <!-- Used standard card and mb-3 -->
+            <div class="card-header"> <!-- Removed bg-light to use new card-header style -->
+                <i class="fas fa-network-wired"></i> Core Connectivity
+            </div>
+            <div class="card-body">
+                <p><strong>Database Connection:</strong> <span id="dbStatus" class="fw-bold">Checking...</span> <span id="dbError"></span></p>
+                <p><strong>Telegram API (Bot):</strong> <span id="telegramApiStatus" class="fw-bold">Checking...</span> <span id="telegramApiError"></span></p>
+                <p><small><em>(Basic connectivity check via /getMe)</em></small></p>
+            </div>
+        </div>
+
+        <!-- Hangfire Status Section -->
+        <div class="card mb-3"> <!-- Used standard card and mb-3 -->
+            <div class="card-header"> <!-- Removed bg-light to use new card-header style -->
+                <i class="fas fa-tasks"></i> Hangfire Job Scheduler
+            </div>
+            <div class="card-body">
+                <h4>Summary Stats</h4>
+                <div class="row">
+                    <div class="col-md-4"><strong>Servers:</strong> <span id="hfServerCount" class="info-value">--</span></div>
+                    <div class="col-md-4"><strong>Enqueued:</strong> <span id="hfEnqueuedCount" class="info-value">--</span></div>
+                    <div class="col-md-4"><strong>Scheduled:</strong> <span id="hfScheduledCount" class="info-value">--</span></div>
+                    <div class="col-md-4"><strong>Processing:</strong> <span id="hfProcessingCount" class="info-value">--</span></div>
+                    <div class="col-md-4"><strong>Succeeded:</strong> <span id="hfSucceededCount" class="info-value">--</span></div>
+                    <div class="col-md-4"><strong>Failed:</strong> <span id="hfFailedCount" class="info-value">--</span></div>
+                </div>
+
+                <h4 class="mt-3">Queues</h4>
+                <div id="hfQueuesContainer" class="table-responsive">
+                    <p>Loading queues...</p>
+                </div>
+
+                <h4 class="mt-3">Servers Details</h4>
+                <div id="hfServersContainer">
+                    <p>Loading server details...</p>
+                </div>
+
+                <h4 class="mt-3">Recurring Jobs (<span id="hfRecurringJobCount">0</span>)</h4>
+                <div id="hfRecurringJobsContainer" class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <p>Loading recurring jobs...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Placeholder for other service statuses -->
+        <!--
+        <div class="card status-card">
+            <div class="card-header bg-light">
+                <i class="fab fa-telegram-plane"></i> TelegramPanel Service
+            </div>
+            <div class="card-body">
+                <p>Status: <span id="telegramPanelStatus">Checking...</span></p>
+            </div>
+        </div>
+        <div class="card status-card">
+            <div class="card-header bg-light">
+                <i class="fas fa-cogs"></i> BackgroundTasks Service
+            </div>
+            <div class="card-body">
+                <p>Status: <span id="backgroundTasksStatus">Checking...</span></p>
+            </div>
+        </div>
+        -->
+
+    </div>
+
+    <footer>
+        <p>&copy; ForexTradingBot Admin Panel <span id="githubLinkContainer"></span></p>
+        <button id="themeToggleButton" class="btn btn-sm btn-outline-secondary mt-2"><i class="fas fa-moon"></i> Dark Mode</button>
+    </footer>
+
+    <!-- jQuery -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!-- Toastr JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <!-- Custom JS -->
+    <script src="js/status.js"></script>
+    <script src="js/theme.js"></script>
+    <script>
+        // Small script for logout button in header
+        document.getElementById('logoutButtonTop')?.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/auth/logout', { method: 'POST' });
+                if (response.ok) {
+                    if(typeof toastr !== 'undefined') toastr.success('Logout successful!');
+                    window.location.href = '/login.html';
+                } else {
+                     if(typeof toastr !== 'undefined') toastr.error('Logout failed.');
+                }
+            } catch (error) {
+                if(typeof toastr !== 'undefined') toastr.error('Logout error.');
+            }
+        });
+         // Add GitHub link
+        const githubLinkContainer = document.getElementById('githubLinkContainer');
+        if(githubLinkContainer) {
+            const ghLink = document.createElement('a');
+            ghLink.href = 'https://github.com/Opselon/ForexTradingBot'; // Your project's GitHub URL
+            ghLink.target = '_blank';
+            ghLink.textContent = ' (View on GitHub)';
+            ghLink.style.color = 'white'; // Or inherit from footer
+            githubLinkContainer.appendChild(ghLink);
+        }
+    </script>
+</body>
+</html>
