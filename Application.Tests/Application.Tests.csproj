@@ -24,4 +24,9 @@
     <ProjectReference Include="..\Application\Application.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Features\" />
+    <Folder Include="Users\" />
+  </ItemGroup>
+
 </Project>
