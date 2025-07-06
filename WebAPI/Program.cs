@@ -42,8 +42,9 @@ using WebAPI.Middleware; // Added for AuthRedirectMiddleware
 using Microsoft.AspNetCore.DataProtection; // Added for Data Protection
 using System.IO; // Added for Path.Combine
 using Infrastructure.Security; // For SettingsProtectionService
-using Infrastructure.Services; // For DynamicConfigurationService
+using Infrastructure.Services; // For DynamicConfigurationService, SettingsService, DiagnosticsService
 using Infrastructure.Configuration; // For DatabaseConfigurationSource/Provider
+using Application.Interfaces; // For IDiagnosticsService, ISettingsService
 
 #endregion
 
@@ -458,7 +459,12 @@ try
     // Register custom dynamic configuration services
     builder.Services.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
     builder.Services.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
-    Log.Information("Data Protection and Dynamic Configuration services registered.");
+
+    // Register other core infrastructure services that might be missing
+    // Assuming Scoped lifetime is appropriate as they often use DbContext or HttpClientFactory.
+    builder.Services.AddScoped<ISettingsService, SettingsService>();
+    builder.Services.AddScoped<IDiagnosticsService, DiagnosticsService>();
+    Log.Information("Data Protection, Dynamic Configuration, Settings, and Diagnostics services registered.");
 
     // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
     if (!isSmokeTest)
