@@ -53,6 +53,7 @@ namespace TelegramPanel.Extensions
 
 
 
+
             // 3. Register ITelegramMessageSender
             _ = services.AddScoped<ITelegramCallbackQueryHandler, CryptoCallbackHandler>();
 
