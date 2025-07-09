@@ -212,6 +212,7 @@ namespace Infrastructure.Data
             _ = services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
             _ = services.AddSingleton<IAdviceService, AdviceService>();
             _ = services.AddSingleton<IHashtagService, HashtagService>();
+            _ = services.AddSingleton<MarkdownParserService>();
             #endregion
 
             // =================================================================
