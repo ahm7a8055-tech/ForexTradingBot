@@ -1291,11 +1291,10 @@ namespace Infrastructure.Services
 
                 if (!string.IsNullOrWhiteSpace(enhancedMessage))
                 {
-                    // SUCCESS: AI returned a new message.
-                    _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
-                    // We return the new message and NULL for entities, because the original
-                    // formatting is no longer valid for the completely redesigned text.
-                    return (enhancedMessage, null);
+                    _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                    // Always parse Gemini output as MarkdownV1
+                    var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
+                    return (parsedText, parsedEntities.Length > 0 ? parsedEntities : null);
                 }
                 else
                 {
@@ -1574,11 +1573,11 @@ namespace Infrastructure.Services
 
                     if (!string.IsNullOrWhiteSpace(enhancedMessage))
                     {
-                        // SUCCESS: AI returned a new message.
-                        _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
-                        message = enhancedMessage;
-                        // Since the text is completely redesigned, original entities are invalid.
-                        entitiesArray = null;
+                        _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                        // Always parse Gemini output as MarkdownV1
+                        var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
+                        message = parsedText;
+                        entitiesArray = parsedEntities.Length > 0 ? parsedEntities : null;
                     }
                     else
                     {
@@ -1930,9 +1929,11 @@ namespace Infrastructure.Services
 
                     if (!string.IsNullOrWhiteSpace(enhancedCaption))
                     {
-                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
-                        captionToSend = enhancedCaption;
-                        entitiesToSend = null; // Clear original entities as they are no longer valid
+                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                        // Always parse Gemini output as MarkdownV1
+                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
+                        captionToSend = parsedCaption;
+                        entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null;
                     }
                     else
                     {
