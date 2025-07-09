@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Retry;
+using System;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
@@ -57,6 +58,7 @@ namespace Infrastructure.Services
         private WTelegram.Client? _client;
         private readonly SemaphoreSlim _connectionLock = new(1, 1);
         private System.Threading.Timer? _cacheCleanupTimer;
+        private readonly IGeminiService _geminiService;
         // Internal caches used by WTelegramClient's update handler to populate main caches.
         // These remain Dictionary<long, ...> as WTelegramClient's CollectUsersChats populates these.
         private readonly Dictionary<long, TL.User> _internalWtcUserCache = [];
@@ -78,7 +80,7 @@ namespace Infrastructure.Services
         #endregion
 
         #region Constructor
-        public TelegramUserApiClient(IAdviceService adviceService,
+        public TelegramUserApiClient(IAdviceService adviceService, IGeminiService geminiService,
              ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
              IOptions<TelegramUserApiSettings> settingsOptions,
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
@@ -87,7 +89,7 @@ namespace Infrastructure.Services
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
             _useChannelForDispatch = useChannelForDispatch; // LEVEL 10: Initialize the flag
-
+            _geminiService = geminiService;
             // Set up the session file path for WTelegramClient's custom session management.
             _sessionPath = Path.Combine(AppContext.BaseDirectory, _settings.SessionPath ?? "telegram_user.session");
             _adviceService = adviceService;
@@ -1257,7 +1259,58 @@ namespace Infrastructure.Services
             public int id { get; set; }
             public string? advice { get; set; }
         }
+        /// <summary>
+        /// Enhances a fully constructed message with an AI service.
+        /// If enhancement succeeds, it returns the new message and clears existing entities.
+        /// If it fails for any reason, it returns the original message and entities as a fallback.
+        /// </summary>
+        /// <param name="originalMessage">The final, fully constructed message text to be enhanced.</param>
+        /// <param name="originalEntities">The original message entities.</param>
+        /// <param name="peerIdForLog">The peer ID for logging purposes.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A tuple containing the final message to send and its corresponding entities.</returns>
+        private async Task<(string message, MessageEntity[]? entities)> EnhanceMessageWithAiAsync(
+            string originalMessage,
+            MessageEntity[]? originalEntities,
+            long peerIdForLog,
+            CancellationToken cancellationToken)
+        {
+            // Only attempt enhancement if there's text content.
+            if (string.IsNullOrWhiteSpace(originalMessage))
+            {
+                return (originalMessage, originalEntities);
+            }
 
+            try
+            {
+                _logger.LogDebug("Attempting to enhance final message with AI for Peer {PeerId}.", peerIdForLog);
+                string? enhancedMessage = await _geminiService.EnhanceMessageAsync(originalMessage, cancellationToken).ConfigureAwait(false);
+
+                if (!string.IsNullOrWhiteSpace(enhancedMessage))
+                {
+                    // SUCCESS: AI returned a new message.
+                    _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
+                    // We return the new message and NULL for entities, because the original
+                    // formatting is no longer valid for the completely redesigned text.
+                    return (enhancedMessage, null);
+                }
+                else
+                {
+                    // FAILURE or FALLBACK: AI service is disabled, failed, out of quota, or returned empty content.
+                    _logger.LogDebug("AI enhancement returned no content or is disabled. Proceeding with original constructed message.");
+                    // Return the original constructed message and its original entities.
+                    return (originalMessage, originalEntities);
+                }
+            }
+            catch (Exception ex)
+            {
+                // CATCH-ALL: This ensures any unexpected error in the AI service
+                // does not stop the message from being sent.
+                _logger.LogWarning(ex, "An exception occurred during AI message enhancement. Proceeding with original constructed message.");
+                // Return the original constructed message and its original entities.
+                return (originalMessage, originalEntities);
+            }
+        }
         /// <summary>
         /// Sends a message (text or media) to a specified peer.
         /// Handles various message parameters and uses caching and resilience policies.
@@ -1282,17 +1335,17 @@ namespace Infrastructure.Services
         /// <exception cref="OperationCanceledException">Thrown if the operation is cancelled.</exception>
         /// <exception cref="Exception">Thrown for any other unhandled errors.</exception>
         public async Task<UpdatesBase> SendMessageAsync(
-            InputPeer peer,
-            string? message, // Message can be null if media is present (caption)
-            CancellationToken cancellationToken,
-            int? replyToMsgId = null,
-            ReplyMarkup? replyMarkup = null,
-            IEnumerable<MessageEntity>? entities = null, // KEEP as IEnumerable<MessageEntity> for input flexibility
-            bool noWebpage = false, // Will only be used for text messages
-            bool background = false,
-            bool clearDraft = false,
-            DateTime? schedule_date = null,
-            InputMedia? media = null)
+    InputPeer peer,
+    string? message, // Message can be null if media is present (caption)
+    CancellationToken cancellationToken,
+    int? replyToMsgId = null,
+    ReplyMarkup? replyMarkup = null,
+    IEnumerable<MessageEntity>? entities = null, // KEEP as IEnumerable<MessageEntity> for input flexibility
+    bool noWebpage = false, // Will only be used for text messages
+    bool background = false,
+    bool clearDraft = false,
+    DateTime? schedule_date = null,
+    InputMedia? media = null)
         {
             // Level 1: Early Exit for invalid state/arguments.
             if (_client is null)
@@ -1350,7 +1403,7 @@ namespace Infrastructure.Services
                 _logger.LogDebug("SendMessageAsync: Replaced WhatsApp link with @capxi for Peer {PeerId}.", peerIdForLog);
             }
 
-            // --- NEW: Add advice footer to text messages and media captions ---
+            // --- Add advice footer to text messages and media captions ---
             try
             {
                 // Call the get_random_advice function, which makes the API call.
@@ -1361,7 +1414,7 @@ namespace Infrastructure.Services
 
                     // 1. Define your package of emojis right here.
                     string[] adviceEmojis = new[]
- {
+{
     // --- Ideas, Wisdom & Insight ---
     "💡", "✨", "🌟", "🌠", "💫", "🧐", "🧠", "⚡", "🔥", "💯", "🤯", "😮", "👀",
     "👁️", "🕯️", "🔆", "🔎", "🔑", "🗝️", "📜", "📖", "📚", "✍️", "🧮",
@@ -1410,6 +1463,7 @@ namespace Infrastructure.Services
     "⭕", "❗", "❓", "❕", "❔", "‼️", "⁉️", "〰️", "〽️", "❗️", "❓", "❕",
     "❔", "🔃", "✔️", "✅"
 };
+
                     // 2. Create a Random object to pick one.
                     Random random = new();
 
@@ -1427,9 +1481,6 @@ namespace Infrastructure.Services
                     message = string.IsNullOrEmpty(message) ? $"{emoji} {randomAdvice}" : $"{message}{footer}";
 
                     _logger.LogDebug("SendMessageAsync: Appended random advice footer to the message for Peer {PeerId}.", peerIdForLog);
-
-                    // Re-truncate the message for accurate logging
-                    truncatedMessage = _logger.IsEnabled(LogLevel.Debug) ? TruncateString(message, 100) : "[...message...]";
                 }
                 else
                 {
@@ -1441,7 +1492,64 @@ namespace Infrastructure.Services
                 _logger.LogWarning(ex, "Failed to get advice for message footer. Skipping advice.");
             }
 
-           
+            // --- Add hashtag footer ---
+            try
+            {
+                // Get exactly 3 random hashtags from our dedicated service.
+                string hashtags = _hashtagService.GetRandomHashtags(3);
+
+                if (!string.IsNullOrWhiteSpace(hashtags))
+                {
+                    // Create the footer string.
+                    string footer = $"\n{hashtags}";
+
+                    // Append the footer to the final message.
+                    message += footer;
+
+                    _logger.LogDebug("Appended random hashtag footer to the message for PeerID {PeerId}.", peerIdForLog);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error but do not re-throw. This ensures that if the hashtag service fails for any reason,
+                // the original message can still be sent without the footer.
+                _logger.LogWarning(ex, "Failed to generate hashtag footer due to an exception. Message will be sent without it.");
+            }
+
+            // =========================================================================
+            // === NEW LOGIC BLOCK: AI ENHANCEMENT (FINAL STAGE OF TEXT PREPARATION) ====
+            // =========================================================================
+            try
+            {
+                // We only attempt enhancement if there's something to enhance.
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    _logger.LogDebug("Attempting to enhance final constructed message with AI for Peer {PeerId}.", peerIdForLog);
+                    string? enhancedMessage = await _geminiService.EnhanceMessageAsync(message, cancellationToken).ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(enhancedMessage))
+                    {
+                        // SUCCESS: AI returned a new message.
+                        _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
+                        message = enhancedMessage;
+                        // Since the text is completely redesigned, original entities are invalid.
+                        entitiesArray = null;
+                    }
+                    else
+                    {
+                        // FALLBACK: AI service is disabled, failed (e.g., out of quota), or returned empty content.
+                        _logger.LogDebug("AI enhancement failed or was disabled. Sending original constructed message.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // CATCH-ALL: This ensures any unexpected error in the AI service does not stop the message from being sent.
+                _logger.LogWarning(ex, "An exception occurred during AI message enhancement. Proceeding with original constructed message.");
+            }
+            // =========================================================================
+            // === END OF NEW AI LOGIC BLOCK ===========================================
+            // =========================================================================
 
             try
             {
@@ -1459,33 +1567,12 @@ namespace Infrastructure.Services
 
                 UpdatesBase updatesBase;
 
-
+                // This block is now separate from the hashtag block to allow AI to process the full text
                 try
                 {
-                    // Get exactly 3 random hashtags from our dedicated service.
-                    string hashtags = _hashtagService.GetRandomHashtags(3);
+                    // Re-calculate the truncated message for logging in case AI changed it.
+                    string finalTruncatedMessage = _logger.IsEnabled(LogLevel.Debug) ? TruncateString(message, 100) : "[...message...]";
 
-                    if (!string.IsNullOrWhiteSpace(hashtags))
-                    {
-                        // Create the footer string.
-                        string footer = $"\n{hashtags}";
-
-                        // Append the footer to the final message.
-                        message += footer;
-
-                        _logger.LogDebug("Appended random hashtag footer to the message for PeerID {PeerId}.", peerIdForLog);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    // Log the error but do not re-throw. This ensures that if the hashtag service fails for any reason,
-                    // the original message can still be sent without the footer.
-                    _logger.LogWarning(ex, "Failed to generate hashtag footer due to an exception. Message will be sent without it.");
-                }
-
-
-                try
-                {
                     // Level 5: Conditionally call Messages_SendMessage or Messages_SendMedia
                     if (media is null)
                     {
@@ -1526,7 +1613,6 @@ namespace Infrastructure.Services
                                 background: background,
                                 clear_draft: clearDraft,
                                 schedule_date: schedule_date
-                            // no_webpage parameter is NOT available for Messages_SendMedia
                             ).ConfigureAwait(false),
                             new Polly.Context(nameof(SendMessageAsync) + "_Media"),
                             cancellationToken
@@ -1536,7 +1622,7 @@ namespace Infrastructure.Services
                     // Level 1: Post-API call validation
                     if (updatesBase is null)
                     {
-                        _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, truncatedMessage);
+                        _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, finalTruncatedMessage);
                         throw new InvalidOperationException("Telegram API call to SendMessage/SendMedia unexpectedly returned null after all retries.");
                     }
 
@@ -1546,7 +1632,7 @@ namespace Infrastructure.Services
                         "Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{TruncatedMessage}'",
                         updatesBase.GetType().Name,
                         peerTypeForLog, peerIdForLog,
-                        truncatedMessage);
+                        finalTruncatedMessage);
 
                     return updatesBase;
                 }
@@ -1554,51 +1640,51 @@ namespace Infrastructure.Services
                 catch (OperationCanceledException oce) // Handle explicit cancellation first
                 {
                     _logger.LogInformation(oce, "SendMessageAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Message (partial): '{MessageContent}'.",
-                        peerTypeForLog, peerIdForLog, truncatedMessage);
+                        peerTypeForLog, peerIdForLog, truncatedMessage); // Note: uses original truncated message for context
                     throw; // Re-throw to propagate cancellation.
                 }
                 catch (RpcException rpcEx) // Handle Telegram API specific errors
                 {
-                    _logger.LogError(rpcEx, "SendMessageAsync: Telegram API (RPC) exception occurred after Polly retries exhausted (or error was not retryable) for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}. Message (partial): '{MessageContent}'",
-                        peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code, truncatedMessage);
+                    _logger.LogError(rpcEx, "SendMessageAsync: Telegram API (RPC) exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}. Message (partial): '{MessageContent}'",
+                        peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code, truncatedMessage); // Note: uses original truncated message for context
                     throw; // Re-throw to propagate the exception.
                 }
                 catch (Exception ex) // Catch any other unexpected exceptions
                 {
                     _logger.LogError(ex, "SendMessageAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{MessageContent}'",
-                        peerTypeForLog, peerIdForLog, truncatedMessage);
+                        peerTypeForLog, peerIdForLog, truncatedMessage); // Note: uses original truncated message for context
                     throw;
                 }
-                finally
-                {
-                    // Level 2: Trace logging for lock release
-                    _logger.LogTrace("SendMessageAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
-                }
+                // NOTE: The `finally` block was removed from this inner `try` as the lock is handled by the outer `finally`.
             }
-            catch
+            finally
             {
-                // Level 2: Trace logging for lock release
+                // This 'finally' now correctly corresponds to the 'try' that acquires the lock.
                 _logger.LogTrace("SendMessageAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
-                throw;
             }
-            // If we reach here, something went wrong and no value was returned or exception thrown.
+
+            // This path should ideally not be reached if the lock try/finally is structured correctly.
+            // If an exception is thrown before or during the lock, it will propagate.
+            // If it succeeds, it returns. This is for absolute safety.
             throw new InvalidOperationException("SendMessageAsync: Unexpected code path reached. No UpdatesBase was returned and no exception was thrown.");
         }
+
+
 
         /// <summary>
         /// Sends a group of media items as an album to a specified peer.
         /// Uses resilience policies.
         /// </summary>
         public async Task SendMediaGroupAsync( // Returns Task (void), as per interface
-           TL.InputPeer peer,
-           ICollection<TL.InputMedia> media,
-           CancellationToken cancellationToken,
-           string? albumCaption = null,
-           TL.MessageEntity[]? albumEntities = null, // Directly MessageEntity[] as per interface
-           int? replyToMsgId = null,
-           bool background = false, // Interface requires this, but SendAlbumAsync does not have it. Will be ignored.
-           DateTime? schedule_date = null,
-           bool sendAsBot = false) // Interface requires this, but SendAlbumAsync does not have it. Will be ignored.
+    TL.InputPeer peer,
+    ICollection<TL.InputMedia> media,
+    CancellationToken cancellationToken,
+    string? albumCaption = null,
+    TL.MessageEntity[]? albumEntities = null, // Directly MessageEntity[] as per interface
+    int? replyToMsgId = null,
+    bool background = false, // Interface requires this, but SendAlbumAsync does not have it. Will be ignored.
+    DateTime? schedule_date = null,
+    bool sendAsBot = false) // Interface requires this, but SendAlbumAsync does not have it. Will be ignored.
         {
             // Level 1: Early Exit for invalid state/arguments.
             if (_client is null)
@@ -1646,7 +1732,17 @@ namespace Infrastructure.Services
                     replyToMsgId.HasValue ? replyToMsgId.Value.ToString() : "N/A",
                     background, schedule_date.HasValue ? schedule_date.Value.ToString("s") : "N/A", sendAsBot);
             }
-            // --- NEW: Add advice footer to album caption ---
+
+            // --- STAGE 1: CAPTION CONSTRUCTION ---
+
+            // Pre-processing filter for @capxi
+            if (!string.IsNullOrEmpty(albumCaption) && albumCaption.Contains("https://wa.me/message/W6HXT7VWR3U2C1", StringComparison.OrdinalIgnoreCase))
+            {
+                albumCaption = albumCaption.Replace("https://wa.me/message/W6HXT7VWR3U2C1", "@capxi", StringComparison.OrdinalIgnoreCase);
+                _logger.LogDebug("SendMediaGroupAsync: Replaced WhatsApp link with @capxi in album caption for Peer {PeerId}.", peerIdForLog);
+            }
+
+            // Add advice footer to album caption
             try
             {
                 string? randomAdvice = await GetChannelAdviceAsync(cancellationToken).ConfigureAwait(false);
@@ -1719,6 +1815,60 @@ namespace Infrastructure.Services
                 _logger.LogWarning(ex, "Failed to get advice for album caption footer. Skipping advice.");
             }
 
+            // Add hashtag footer to album caption
+            try
+            {
+                string hashtags = _hashtagService.GetRandomHashtags(3);
+                if (!string.IsNullOrWhiteSpace(hashtags))
+                {
+                    albumCaption += $"\n{hashtags}";
+                    _logger.LogDebug("Appended random hashtag footer to the album caption for PeerID {PeerId}.", peerIdForLog);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to generate hashtag footer for album. Skipping.");
+            }
+
+            // --- STAGE 2: AI ENHANCEMENT ---
+            string captionToSend;
+            TL.MessageEntity[]? entitiesToSend;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(albumCaption))
+                {
+                    _logger.LogDebug("Attempting to enhance final constructed album caption with AI for Peer {PeerId}.", peerIdForLog);
+                    string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, cancellationToken).ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                    {
+                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
+                        captionToSend = enhancedCaption;
+                        entitiesToSend = null; // Clear original entities as they are no longer valid
+                    }
+                    else
+                    {
+                        // Fallback to original caption if AI fails or is disabled
+                        _logger.LogDebug("AI enhancement for album caption failed or was disabled. Sending original constructed caption.");
+                        captionToSend = albumCaption;
+                        entitiesToSend = albumEntities;
+                    }
+                }
+                else
+                {
+                    // No caption to enhance, use original values
+                    captionToSend = albumCaption;
+                    entitiesToSend = albumEntities;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Absolute fallback in case of any unexpected exception in the AI service
+                _logger.LogWarning(ex, "An exception occurred during AI album caption enhancement. Proceeding with original constructed caption.");
+                captionToSend = albumCaption;
+                entitiesToSend = albumEntities;
+            }
 
             try
             {
@@ -1734,16 +1884,14 @@ namespace Infrastructure.Services
                 TL.Message[] sentMessages = await _resiliencePipeline.ExecuteAsync(async (context, token) =>
                     await _client!.SendAlbumAsync(
                         peer: peer,
-                        medias: media, // ICollection<InputMedia>
-                        caption: albumCaption,
+                        medias: media,
+                        caption: captionToSend,         // Use the final caption
                         reply_to_msg_id: replyToMsgIdInt,
-                        entities: albumEntities, // Directly MessageEntity[] as per WTC method signature
+                        entities: entitiesToSend,       // Use the final entities
                         schedule_date: schedule_date ?? default
-                    // videoUrlAsFile is not on the interface, relying on WTelegramClient's default (false)
-                    // background is not on SendAlbumAsync
                     ).ConfigureAwait(false),
                     new Polly.Context(nameof(SendMediaGroupAsync)),
-                    cancellationToken // Pass cancellation token to Polly pipeline
+                    cancellationToken
                 ).ConfigureAwait(false);
 
                 // Level 1: Post-API call validation
@@ -1756,9 +1904,6 @@ namespace Infrastructure.Services
                 // Level 2: Informational logging for success
                 _logger.LogInformation("SendMediaGroupAsync: Successfully sent media group of {MediaCount} items to Peer (Type: {PeerType}, LoggedID: {PeerId}). First message ID: {FirstMessageId}.",
                     media.Count, peerTypeForLog, peerIdForLog, sentMessages.FirstOrDefault()?.id ?? 0);
-
-                // Note: Interface expects Task (void), so we don't return sentMessages.
-                // If you need the messages, change the interface return type.
             }
             // Level 6: Consistent Error Handling and Logging
             catch (OperationCanceledException oce)
@@ -1784,7 +1929,6 @@ namespace Infrastructure.Services
                 _logger.LogTrace("SendMediaGroupAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
             }
         }
-
         /// <summary>
         /// Forwards messages from one peer to another.
         /// Uses resilience policies.

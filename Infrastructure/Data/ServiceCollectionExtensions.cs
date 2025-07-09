@@ -38,6 +38,7 @@ using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using TelegramPanel.Application.Interfaces;
 using TelegramPanel.Infrastructure.Services;
+using Infrastructure.Persistence.Repositories;
 #endregion
 
 namespace Infrastructure.Data
@@ -296,7 +297,7 @@ namespace Infrastructure.Data
             _ = services.AddSingleton<TelegramUserApiClient>();
 
             _ = services.AddHostedService<TelegramUserApiInitializationService>();
-
+            _ = services.AddScoped<IAiApiConfigurationRepository, AiApiConfigurationRepository>();
             // All these registrations are correct.
             _ = services.AddScoped<IRssFetchingCoordinatorService, RssFetchingCoordinatorService>();
             _ = services.AddScoped<IRssReaderService, RssReaderService>();

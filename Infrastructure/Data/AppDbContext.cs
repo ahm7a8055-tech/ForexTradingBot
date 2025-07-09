@@ -76,6 +76,7 @@ namespace Infrastructure.Data
 
         public DbSet<Setting> Settings { get; set; } // Existing generic settings table
 
+        public DbSet<AiApiConfiguration> AiApiConfigurations { get; set; }
         /// <summary>
         /// DbSet for the new ApplicationSetting entities for dynamic configuration.
         /// </summary>
