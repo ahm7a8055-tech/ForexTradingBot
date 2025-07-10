@@ -24,10 +24,11 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
         private const int CommandTimeoutSeconds = 30;
 
         private const string TableName = "\"AiApiConfigurations\"";
+        // --- FIX: Added "ApiKeyName" to the SELECT statement ---
         private const string BaseSelectSql = $@"
             SELECT
                 ""Id"", ""ProviderName"", ""IsEnabled"", ""ApiKey"", ""ModelName"", ""PromptTemplate"",
-                ""Description"", ""CreatedAt"", ""LastUpdatedAt""
+                ""Description"", ""CreatedAt"", ""LastUpdatedAt"", ""ApiKeyName""
             FROM public.{TableName}";
 
         /// <summary>
@@ -155,10 +156,10 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
         }
 
         public async Task<IEnumerable<AiApiConfiguration>> GetAllByProviderAndStatusAndKeyNameAsync(
-      string providerName,
-      bool isEnabled,
-      string? apiKeyName = null,
-      CancellationToken cancellationToken = default)
+            string providerName,
+            bool isEnabled,
+            string? apiKeyName = null,
+            CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(providerName))
             {
@@ -166,39 +167,28 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
                 return Enumerable.Empty<AiApiConfiguration>();
             }
 
-            // --- FIX START ---
-            // Build the SQL query string using string interpolation and conditional logic.
-            string baseSql = BaseSelectSql; // Assuming BaseSelectSql is defined elsewhere and contains your SELECT statement
-
-            // Start with the base query and the mandatory WHERE clauses.
+            // This block is functionally correct, its issue was the underlying BaseSelectSql.
+            // No changes are needed here now that BaseSelectSql is fixed.
+            string baseSql = BaseSelectSql;
             string sql = $"{baseSql} WHERE \"ProviderName\" = @ProviderName AND \"IsEnabled\" = @IsEnabled";
-
-            // Conditionally add the ApiKeyName filter if it's provided.
             if (!string.IsNullOrWhiteSpace(apiKeyName))
             {
                 sql += " AND \"ApiKeyName\" = @ApiKeyName";
             }
-
-            // Add the semicolon to terminate the SQL statement.
             sql += ";";
-            // --- FIX END ---
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection(); // Assuming CreateConnection is defined
+                    await using var connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
-
-                    // Construct parameters based on whether apiKeyName is provided.
-                    // Dapper handles null parameters gracefully, so we can always pass it.
                     var parameters = new
                     {
                         ProviderName = providerName,
                         IsEnabled = isEnabled,
-                        ApiKeyName = apiKeyName // Dapper will use this if it's not null for the SQL part
+                        ApiKeyName = apiKeyName
                     };
-
                     return await connection.QueryAsync<AiApiConfiguration>(
                         new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
                     );
@@ -214,9 +204,10 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
         public async Task<AiApiConfiguration> AddAsync(AiApiConfiguration configuration, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(configuration);
+            // --- FIX: Added "ApiKeyName" to the INSERT statement ---
             string sql = $@"
-                INSERT INTO public.{TableName} (""ProviderName"", ""IsEnabled"", ""ApiKey"", ""ModelName"", ""PromptTemplate"", ""Description"")
-                VALUES (@ProviderName, @IsEnabled, @ApiKey, @ModelName, @PromptTemplate, @Description)
+                INSERT INTO public.{TableName} (""ProviderName"", ""IsEnabled"", ""ApiKey"", ""ModelName"", ""PromptTemplate"", ""Description"", ""ApiKeyName"")
+                VALUES (@ProviderName, @IsEnabled, @ApiKey, @ModelName, @PromptTemplate, @Description, @ApiKeyName)
                 RETURNING *;";
 
             try
@@ -233,7 +224,7 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
                 _logger.LogInformation("Successfully added AiApiConfiguration with Id: {ConfigId} for Provider: '{ProviderName}'", addedConfig.Id, addedConfig.ProviderName);
                 return addedConfig;
             }
-            catch (PostgresException pEx) when (pEx.SqlState == "23505")
+            catch (PostgresException pEx) when (pEx.SqlState == "23505") // Assuming unique constraint on ProviderName or a similar field
             {
                 _logger.LogError(pEx, "Failed to add AiApiConfiguration for Provider '{ProviderName}'. A configuration with this provider name already exists.", configuration.ProviderName);
                 throw new RepositoryException($"A configuration for provider '{configuration.ProviderName}' already exists.", pEx);
@@ -248,10 +239,11 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
         public async Task UpdateAsync(AiApiConfiguration configuration, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(configuration);
+            // --- FIX: Added "ApiKeyName" to the UPDATE statement ---
             string sql = $@"
                 UPDATE public.{TableName}
                 SET ""ProviderName"" = @ProviderName, ""IsEnabled"" = @IsEnabled, ""ApiKey"" = @ApiKey, ""ModelName"" = @ModelName,
-                    ""PromptTemplate"" = @PromptTemplate, ""Description"" = @Description, ""LastUpdatedAt"" = NOW()
+                    ""PromptTemplate"" = @PromptTemplate, ""Description"" = @Description, ""ApiKeyName"" = @ApiKeyName, ""LastUpdatedAt"" = NOW()
                 WHERE ""Id"" = @Id;";
 
             try
