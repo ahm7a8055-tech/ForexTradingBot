@@ -131,6 +131,29 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
             }
         }
 
+        public async Task<IEnumerable<AiApiConfiguration>> GetAllByProviderAndStatusAsync(string providerName, bool isEnabled, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(providerName)) return Enumerable.Empty<AiApiConfiguration>();
+            string sql = $@"{BaseSelectSql} WHERE ""ProviderName"" = @ProviderName AND ""IsEnabled"" = @IsEnabled;";
+
+            try
+            {
+                return await _retryPolicy.ExecuteAsync(async () =>
+                {
+                    await using var connection = CreateConnection();
+                    await connection.OpenAsync(cancellationToken);
+                    return await connection.QueryAsync<AiApiConfiguration>(
+                        new CommandDefinition(sql, new { ProviderName = providerName, IsEnabled = isEnabled }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
+                    );
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get all AiApiConfigurations by Provider '{ProviderName}' and IsEnabled '{IsEnabled}'.", providerName, isEnabled);
+                throw new RepositoryException($"Failed to get all configurations for provider '{providerName}' with status '{isEnabled}'.", ex);
+            }
+        }
+
         public async Task<AiApiConfiguration> AddAsync(AiApiConfiguration configuration, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(configuration);

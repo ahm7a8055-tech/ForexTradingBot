@@ -7,6 +7,7 @@ namespace Application.Common.Interfaces
         Task<AiApiConfiguration?> GetByProviderAndStatusAsync(string providerName, bool isEnabled, CancellationToken cancellationToken = default);
         Task<AiApiConfiguration?> GetByProviderNameAsync(string providerName, CancellationToken cancellationToken = default);
         Task<IEnumerable<AiApiConfiguration>> GetAllEnabledAsync(CancellationToken cancellationToken = default);
+        Task<IEnumerable<AiApiConfiguration>> GetAllByProviderAndStatusAsync(string providerName, bool isEnabled, CancellationToken cancellationToken = default);
         Task<AiApiConfiguration> AddAsync(AiApiConfiguration configuration, CancellationToken cancellationToken = default);
         Task UpdateAsync(AiApiConfiguration configuration, CancellationToken cancellationToken = default);
         Task DeleteAsync(int id, CancellationToken cancellationToken = default);
