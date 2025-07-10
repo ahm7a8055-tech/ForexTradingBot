@@ -135,68 +135,70 @@ namespace Application.Services
 
         private async Task<string?> AttemptApiCallAsync(AiApiConfiguration config, string message, CancellationToken cancellationToken)
         {
-            var prompt = config.PromptTemplate.Replace("{message}", message);
-            var requestBody = new GeminiRequest(new List<ContentPart> { new ContentPart(new List<TextPart> { new TextPart(prompt) }) });
-            var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={config.ApiKey}";
-
-            var safeApiKey = string.IsNullOrEmpty(config.ApiKey) ? "NULL_OR_EMPTY" : $"...{config.ApiKey.Substring(Math.Max(0, config.ApiKey.Length - 4))}";
-            var safeUri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={safeApiKey}";
-            var requestBodyJson = JsonSerializer.Serialize(requestBody, _jsonSerializerOptions);
-            _logger.LogInformation(
-                "Attempting Gemini API call. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Uri: {SafeUri}, Body: {RequestBody}",
-                config.Id, config.ApiKeyName, safeUri, requestBodyJson);
-
-            HttpResponseMessage response;
+            // --- Defensive try-catch block to log ANY unexpected error ---
             try
             {
-                response = await _httpClient.PostAsJsonAsync(uri, requestBody, cancellationToken);
-            }
-            catch (Exception ex) when (ex is HttpRequestException || ex is OperationCanceledException)
-            {
-                throw new GeminiApiFailoverException($"HTTP request failed for config Id: {config.Id}, ApiKeyName: {config.ApiKeyName}", ex);
-            }
+                var prompt = config.PromptTemplate.Replace("{message}", message);
+                var requestBody = new GeminiRequest(new List<ContentPart> { new ContentPart(new List<TextPart> { new TextPart(prompt) }) });
+                var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={config.ApiKey}";
 
-            if (response.IsSuccessStatusCode)
-            {
-                var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: cancellationToken);
-                string? enhancedText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
+                var safeApiKey = string.IsNullOrEmpty(config.ApiKey) ? "NULL_OR_EMPTY" : $"...{config.ApiKey.Substring(Math.Max(0, config.ApiKey.Length - 4))}";
+                var safeUri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={safeApiKey}";
+                var requestBodyJson = JsonSerializer.Serialize(requestBody, _jsonSerializerOptions);
+                _logger.LogInformation(
+                    "Attempting Gemini API call. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Uri: {SafeUri}, Body: {RequestBody}",
+                    config.Id, config.ApiKeyName, safeUri, requestBodyJson);
 
-                if (string.IsNullOrWhiteSpace(enhancedText))
+                HttpResponseMessage response;
+                try
                 {
-                    _logger.LogWarning("API for config Id {ConfigId}, ApiKeyName: {ApiKeyName} succeeded but returned empty content.", config.Id, config.ApiKeyName);
-                    throw new GeminiApiFailoverException($"API for config Id {config.Id} succeeded but returned empty content.");
+                    response = await _httpClient.PostAsJsonAsync(uri, requestBody, cancellationToken);
+                }
+                catch (Exception ex) when (ex is HttpRequestException || ex is OperationCanceledException)
+                {
+                    throw new GeminiApiFailoverException($"HTTP request failed for config Id: {config.Id}, ApiKeyName: {config.ApiKeyName}", ex);
                 }
 
-                _logger.LogInformation("Gemini API call successful for config Id: {ConfigId}", config.Id);
-                return enhancedText.Trim();
+                if (response.IsSuccessStatusCode)
+                {
+                    var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: cancellationToken);
+                    string? enhancedText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
+
+                    if (string.IsNullOrWhiteSpace(enhancedText))
+                    {
+                        _logger.LogWarning("API for config Id {ConfigId}, ApiKeyName: {ApiKeyName} succeeded but returned empty content.", config.Id, config.ApiKeyName);
+                        throw new GeminiApiFailoverException($"API for config Id {config.Id} succeeded but returned empty content.");
+                    }
+
+                    _logger.LogInformation("Gemini API call successful for config Id: {ConfigId}", config.Id);
+                    return enhancedText.Trim();
+                }
+
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                var geminiError = TryParseGeminiError(errorContent);
+
+                if (geminiError is not null)
+                {
+                    _logger.LogWarning(
+                        "Gemini API call failed with a structured error. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Status: {StatusCode}, ErrorCode: {ErrorCode}, Message: {ErrorMessage}",
+                        config.Id, config.ApiKeyName, response.StatusCode, geminiError.Error.Code, geminiError.Error.Message);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Gemini API call failed with a non-structured error. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Status: {StatusCode}, Response: {ErrorContent}",
+                        config.Id, config.ApiKeyName, response.StatusCode, errorContent);
+                }
+
+                throw new GeminiApiFailoverException($"API call for config {config.Id} failed with status {response.StatusCode}.");
             }
-
-            // --- FIX START: Re-integrated structured error parsing for better logging ---
-            var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            var geminiError = TryParseGeminiError(errorContent);
-
-            if (geminiError is not null)
+            catch (Exception ex) when (ex is not GeminiApiFailoverException)
             {
-                _logger.LogWarning(
-                    "Gemini API call failed with a structured error. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Status: {StatusCode}, ErrorCode: {ErrorCode}, Message: {ErrorMessage}",
-                    config.Id,
-                    config.ApiKeyName,
-                    response.StatusCode,
-                    geminiError.Error.Code,
-                    geminiError.Error.Message);
+                // This will catch unexpected errors like NullReferenceException.
+                _logger.LogError(ex, "An unexpected critical error occurred inside AttemptApiCallAsync for config Id: {ConfigId}. This is likely due to invalid data in the configuration.", config.Id);
+                // Re-throw as the type Polly is expecting, so it can fail over.
+                throw new GeminiApiFailoverException($"Unexpected error for config {config.Id}", ex);
             }
-            else
-            {
-                _logger.LogWarning(
-                    "Gemini API call failed with a non-structured error. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Status: {StatusCode}, Response: {ErrorContent}",
-                    config.Id,
-                    config.ApiKeyName,
-                    response.StatusCode,
-                    errorContent);
-            }
-
-            throw new GeminiApiFailoverException($"API call for config {config.Id} failed with status {response.StatusCode}.");
-            // --- FIX END ---
         }
 
         private static GeminiErrorResponse? TryParseGeminiError(string content)
