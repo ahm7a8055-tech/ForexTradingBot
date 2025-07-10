@@ -238,7 +238,7 @@ try
           rollOnFileSizeLimit: true,
           fileSizeLimitBytes: 10 * 1024 * 1024,
           shared: true,
-          restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Error, // Only write Error and above to file
+          restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug, // Only write Error and above to file
           outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({SourceContext}) {Message:lj}{NewLine}{Exception}"
       // --------------------
       )
