@@ -32,8 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 # Copy the published application from the 'build' stage.
 COPY --from=build /app/publish .
 
-# --- FIX: Ensure /app/keys and /app/logs exist and are writable by appuser ---
-RUN mkdir -p /app/keys /app/logs && chown appuser:appuser /app/keys /app/logs && chmod 700 /app/keys /app/logs
+# --- FIX: Ensure /app/keys exists and is writable by appuser ---
+RUN mkdir -p /app/keys && chown appuser:appuser /app/keys && chmod 700 /app/keys
 
 # Create a dedicated, non-root user for security.
 RUN adduser --system --group --disabled-password --gecos "" --home /app appuser
