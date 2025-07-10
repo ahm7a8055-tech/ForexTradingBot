@@ -32,6 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 # Copy the published application from the 'build' stage.
 COPY --from=build /app/publish .
 
+# --- FIX: Ensure /app/keys exists and is writable by appuser ---
+RUN mkdir -p /app/keys && chown appuser:appuser /app/keys && chmod 700 /app/keys
+
 # Create a dedicated, non-root user for security.
 RUN adduser --system --group --disabled-password --gecos "" --home /app appuser
 USER appuser
@@ -40,6 +43,8 @@ USER appuser
 ENV ASPNETCORE_URLS=http://+:80
 ENV ASPNETCORE_ENVIRONMENT=Production
 
+# --- DOC: To set the database connection string, pass it as an environment variable:
+#   -e ConnectionStrings__DefaultConnection=Host=...;Database=...;Username=...;Password=...
 # Expose the port that the application will listen on.
 EXPOSE 80
 
