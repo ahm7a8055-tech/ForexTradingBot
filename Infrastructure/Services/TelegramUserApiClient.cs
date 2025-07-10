@@ -53,13 +53,13 @@ namespace Infrastructure.Services
         // LEVEL 10: New Private Readonly Fields for Channel
         private readonly bool _useChannelForDispatch; // Configurable flag via constructor
         private readonly MarkdownParserService _markdownParserService; // Add markdown parser service
+        private readonly IGeminiService _geminiService; // Inject GeminiService singleton
         #endregion
 
         #region Private Fields
         private WTelegram.Client? _client;
         private readonly SemaphoreSlim _connectionLock = new(1, 1);
         private System.Threading.Timer? _cacheCleanupTimer;
-        private readonly IGeminiService _geminiService;
         // Internal caches used by WTelegramClient's update handler to populate main caches.
         // These remain Dictionary<long, ...> as WTelegramClient's CollectUsersChats populates these.
         private readonly Dictionary<long, TL.User> _internalWtcUserCache = [];
@@ -81,17 +81,19 @@ namespace Infrastructure.Services
         #endregion
 
         #region Constructor
-        public TelegramUserApiClient(IAdviceService adviceService, IGeminiService geminiService,
+        public TelegramUserApiClient(IAdviceService adviceService,
              ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
              IOptions<TelegramUserApiSettings> settingsOptions,
              MarkdownParserService markdownParserService, // Add markdown parser service parameter
+             IGeminiService geminiService, // Inject GeminiService singleton
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
+            _geminiService = geminiService ?? throw new ArgumentNullException(nameof(geminiService));
             _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
             _useChannelForDispatch = useChannelForDispatch; // LEVEL 10: Initialize the flag
-            _geminiService = geminiService;
+
             _markdownParserService = markdownParserService ?? throw new ArgumentNullException(nameof(markdownParserService)); // Initialize markdown parser service
             // Set up the session file path for WTelegramClient's custom session management.
             _sessionPath = Path.Combine(AppContext.BaseDirectory, _settings.SessionPath ?? "telegram_user.session");
@@ -1313,6 +1315,8 @@ namespace Infrastructure.Services
                 return (originalMessage, originalEntities);
             }
         }
+
+
         /// <summary>
         /// Sends a message (text or media) to a specified peer.
         /// Handles various message parameters and uses caching and resilience policies.

@@ -101,42 +101,34 @@ namespace Application.Services
         {
             return await EnhanceMessageAsync(originalMessage, cancellationToken, null);
         }
-
         private AsyncPolicyWrap<string?> CreateFallbackPolicyChain(List<AiApiConfiguration> configs, string message)
         {
+            // 1. Define the ultimate fallback. This is the last line of defense.
             AsyncFallbackPolicy<string?> finalFallback = Policy<string?>
                 .Handle<GeminiApiFailoverException>()
                 .FallbackAsync(
                     fallbackValue: null,
                     onFallbackAsync: args =>
                     {
-                        _logger.LogError(args.Exception, "All Gemini API configurations failed.");
+                        _logger.LogError(args.Exception, "All available Gemini API configurations have failed.");
                         return Task.CompletedTask;
                     });
 
-            if (configs.Count == 1)
+            // 2. If there are NO configs, we cannot build a chain.
+            // The policy to execute is simply the final fallback itself.
+            if (!configs.Any())
             {
-                var singleFallback = Policy<string?>
-                    .Handle<GeminiApiFailoverException>()
-                    .FallbackAsync(
-                        ct => AttemptApiCallAsync(configs[0], message, ct),
-                        onFallbackAsync: args =>
-                        {
-                            _logger.LogWarning(args.Exception, "Fallback triggered for config {ConfigId}. Only one configuration available.", configs[0].Id);
-                            return Task.CompletedTask;
-                        }
-                    );
-                // Only wrap if there are two policies, otherwise just return the single fallback
-                return Policy.WrapAsync(singleFallback, finalFallback);
-            }
-            else if (configs.Count == 0)
-            {
-                // Defensive: no configs, just return the final fallback
-                return Policy.WrapAsync(finalFallback);
+                _logger.LogWarning("No Gemini configurations to build a policy chain. Only the final null-returning fallback is active.");
+                // We still need to return a "wrap" to match the method signature.
+                // The correct way to do this for a single policy is to wrap it with a no-op policy.
+                return Policy.WrapAsync(finalFallback, Policy.NoOpAsync<string?>());
             }
 
-            // Usual chain for multiple configs
+            // 3. For one or more configs, build the chain iteratively.
+            // Start with the final fallback as the innermost policy.
             AsyncPolicyWrap<string?> policyChain = Policy.WrapAsync(finalFallback);
+
+            // Iterate in reverse so the first config in the list becomes the outermost policy.
             foreach (var config in configs.AsEnumerable().Reverse())
             {
                 var fallbackForConfig = Policy<string?>
@@ -149,8 +141,10 @@ namespace Application.Services
                             return Task.CompletedTask;
                         }
                     );
+                // Wrap the new fallback around the existing chain.
                 policyChain = fallbackForConfig.WrapAsync(policyChain);
             }
+
             return policyChain;
         }
 
