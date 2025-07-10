@@ -71,6 +71,13 @@ namespace Domain.Entities
         public DateTime LastUpdatedAt { get; set; }
 
         /// <summary>
+        /// The name of the API key used for this configuration.
+        /// </summary>
+        [Required]
+        [MaxLength(50)]
+        public string ApiKeyName { get; set; } = "Default";
+
+        /// <summary>
         /// Default constructor. Initializes with sensible defaults.
         /// </summary>
         public AiApiConfiguration()

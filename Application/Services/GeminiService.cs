@@ -38,7 +38,11 @@ namespace Application.Services
             _serviceProvider = serviceProvider;
         }
 
-        public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken)
+        /// <summary>
+        /// Enhances a message using Gemini AI. Optionally, a specific ApiKeyName can be provided to filter which Gemini config(s) to use.
+        /// If ApiKeyName is null, all enabled configs are considered (with failover). If provided, only configs with that ApiKeyName are used.
+        /// </summary>
+        public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken, string? apiKeyName = null)
         {
             if (string.IsNullOrWhiteSpace(originalMessage))
             {
@@ -50,14 +54,14 @@ namespace Application.Services
             await using var scope = _serviceProvider.CreateAsyncScope();
             var configRepository = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
 
-            // FIX: Use the 'configRepository' variable resolved from the scope, not the non-existent class field.
-            var configs = (await configRepository.GetAllByProviderAndStatusAsync(ProviderName, isEnabled: true, cancellationToken))
+            // Use the new method to filter by ApiKeyName if provided
+            var configs = (await configRepository.GetAllByProviderAndStatusAndKeyNameAsync(ProviderName, isEnabled: true, apiKeyName, cancellationToken))
                 .Where(c => !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName) && !string.IsNullOrWhiteSpace(c.PromptTemplate))
                 .ToList();
 
             if (!configs.Any())
             {
-                _logger.LogWarning("No valid Gemini provider configurations found. Skipping enhancement.");
+                _logger.LogWarning("No valid Gemini provider configurations found. Skipping enhancement. ApiKeyName: {ApiKeyName}", apiKeyName);
                 return null;
             }
             
@@ -73,23 +77,29 @@ namespace Application.Services
 
                 if (string.IsNullOrWhiteSpace(enhancedMessage))
                 {
-                    _logger.LogWarning("All Gemini API configurations were tried, but none returned a valid message.");
+                    _logger.LogWarning("All Gemini API configurations were tried, but none returned a valid message. ApiKeyName: {ApiKeyName}", apiKeyName);
                     return null;
                 }
 
-                _logger.LogInformation("Successfully enhanced message using Gemini.");
+                _logger.LogInformation("Successfully enhanced message using Gemini. ApiKeyName: {ApiKeyName}", apiKeyName);
                 return enhancedMessage;
             }
             catch (TimeoutRejectedException ex)
             {
-                _logger.LogError(ex, "Gemini API call timed out after 30 seconds. The operation was cancelled.");
+                _logger.LogError(ex, "Gemini API call timed out after 30 seconds. The operation was cancelled. ApiKeyName: {ApiKeyName}", apiKeyName);
                 return null;
             }
             catch (Exception ex) when (ex is not GeminiApiFailoverException)
             {
-                _logger.LogError(ex, "A non-recoverable error occurred during the Gemini API call after exhausting all fallback options.");
+                _logger.LogError(ex, "A non-recoverable error occurred during the Gemini API call after exhausting all fallback options. ApiKeyName: {ApiKeyName}", apiKeyName);
                 return null;
             }
+        }
+
+        // Explicit interface implementation for IGeminiService
+        public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken)
+        {
+            return await EnhanceMessageAsync(originalMessage, cancellationToken, null);
         }
 
         private AsyncPolicyWrap<string?> CreateFallbackPolicyChain(List<AiApiConfiguration> configs, string message)
@@ -146,7 +156,7 @@ namespace Application.Services
 
         private async Task<string?> AttemptApiCallAsync(AiApiConfiguration config, string message, CancellationToken cancellationToken)
         {
-            _logger.LogDebug("Attempting to enhance message using Gemini config Id: {ConfigId}, Model: {ModelName}", config.Id, config.ModelName);
+            _logger.LogDebug("Attempting to enhance message using Gemini config Id: {ConfigId}, Model: {ModelName}, ApiKeyName: {ApiKeyName}", config.Id, config.ModelName, config.ApiKeyName);
 
             var prompt = config.PromptTemplate.Replace("{message}", message);
             var requestBody = new GeminiRequest(new List<ContentPart> { new ContentPart(new List<TextPart> { new TextPart(prompt) }) });
@@ -159,11 +169,11 @@ namespace Application.Services
             }
             catch (HttpRequestException ex)
             {
-                throw new GeminiApiFailoverException($"Network error for config Id: {config.Id}", ex);
+                throw new GeminiApiFailoverException($"Network error for config Id: {config.Id}, ApiKeyName: {config.ApiKeyName}", ex);
             }
             catch (OperationCanceledException ex) when (ex.InnerException is TimeoutException)
             {
-                throw new GeminiApiFailoverException($"HttpClient timeout for config Id: {config.Id}", ex);
+                throw new GeminiApiFailoverException($"HttpClient timeout for config Id: {config.Id}, ApiKeyName: {config.ApiKeyName}", ex);
             }
 
             if (response.IsSuccessStatusCode)
@@ -173,7 +183,7 @@ namespace Application.Services
 
                 if (string.IsNullOrWhiteSpace(enhancedText))
                 {
-                    throw new GeminiApiFailoverException($"API for config Id {config.Id} succeeded but returned empty content.");
+                    throw new GeminiApiFailoverException($"API for config Id {config.Id}, ApiKeyName: {config.ApiKeyName} succeeded but returned empty content.");
                 }
                 return enhancedText.Trim();
             }
@@ -182,19 +192,19 @@ namespace Application.Services
 
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                throw new GeminiApiFailoverException($"Rate limit (429) for config Id: {config.Id}.");
+                throw new GeminiApiFailoverException($"Rate limit (429) for config Id: {config.Id}, ApiKeyName: {config.ApiKeyName}.");
             }
 
             var geminiError = TryParseGeminiError(errorContent);
             if (geminiError is not null)
             {
-                _logger.LogError("Unrecoverable Gemini API error for config Id: {ConfigId}. Status: {StatusCode}. Error Code: {ErrorCode}, Message: {ErrorMessage}",
-                    config.Id, response.StatusCode, geminiError.Error.Code, geminiError.Error.Message);
+                _logger.LogError("Unrecoverable Gemini API error for config Id: {ConfigId}, ApiKeyName: {ApiKeyName}. Status: {StatusCode}. Error Code: {ErrorCode}, Message: {ErrorMessage}",
+                    config.Id, config.ApiKeyName, response.StatusCode, geminiError.Error.Code, geminiError.Error.Message);
             }
             else
             {
-                _logger.LogError("Unrecoverable Gemini API error for config Id: {ConfigId}. Status: {StatusCode}. Response: {ErrorContent}",
-                    config.Id, response.StatusCode, errorContent);
+                _logger.LogError("Unrecoverable Gemini API error for config Id: {ConfigId}, ApiKeyName: {ApiKeyName}. Status: {StatusCode}. Response: {ErrorContent}",
+                    config.Id, config.ApiKeyName, response.StatusCode, errorContent);
             }
 
             response.EnsureSuccessStatusCode();

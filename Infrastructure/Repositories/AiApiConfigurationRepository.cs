@@ -154,6 +154,63 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
             }
         }
 
+        public async Task<IEnumerable<AiApiConfiguration>> GetAllByProviderAndStatusAndKeyNameAsync(
+      string providerName,
+      bool isEnabled,
+      string? apiKeyName = null,
+      CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(providerName))
+            {
+                _logger.LogWarning("ProviderName cannot be null or empty.");
+                return Enumerable.Empty<AiApiConfiguration>();
+            }
+
+            // --- FIX START ---
+            // Build the SQL query string using string interpolation and conditional logic.
+            string baseSql = BaseSelectSql; // Assuming BaseSelectSql is defined elsewhere and contains your SELECT statement
+
+            // Start with the base query and the mandatory WHERE clauses.
+            string sql = $"{baseSql} WHERE \"ProviderName\" = @ProviderName AND \"IsEnabled\" = @IsEnabled";
+
+            // Conditionally add the ApiKeyName filter if it's provided.
+            if (!string.IsNullOrWhiteSpace(apiKeyName))
+            {
+                sql += " AND \"ApiKeyName\" = @ApiKeyName";
+            }
+
+            // Add the semicolon to terminate the SQL statement.
+            sql += ";";
+            // --- FIX END ---
+
+            try
+            {
+                return await _retryPolicy.ExecuteAsync(async () =>
+                {
+                    await using var connection = CreateConnection(); // Assuming CreateConnection is defined
+                    await connection.OpenAsync(cancellationToken);
+
+                    // Construct parameters based on whether apiKeyName is provided.
+                    // Dapper handles null parameters gracefully, so we can always pass it.
+                    var parameters = new
+                    {
+                        ProviderName = providerName,
+                        IsEnabled = isEnabled,
+                        ApiKeyName = apiKeyName // Dapper will use this if it's not null for the SQL part
+                    };
+
+                    return await connection.QueryAsync<AiApiConfiguration>(
+                        new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
+                    );
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get all AiApiConfigurations by Provider '{ProviderName}', IsEnabled '{IsEnabled}', and ApiKeyName '{ApiKeyName}'.", providerName, isEnabled, apiKeyName);
+                throw new RepositoryException($"Failed to get all configurations for provider '{providerName}' with status '{isEnabled}' and ApiKeyName '{apiKeyName}'.", ex);
+            }
+        }
+
         public async Task<AiApiConfiguration> AddAsync(AiApiConfiguration configuration, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(configuration);
