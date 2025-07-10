@@ -104,6 +104,23 @@ namespace Application.Services
                         return Task.CompletedTask;
                     });
 
+            // If only one config, return its fallback directly (no wrap)
+            if (configs.Count == 1)
+            {
+                var singleFallback = Policy<string?>
+                    .Handle<GeminiApiFailoverException>()
+                    .FallbackAsync(
+                        ct => AttemptApiCallAsync(configs[0], message, ct),
+                        onFallbackAsync: args =>
+                        {
+                            _logger.LogWarning(args.Exception, "Fallback triggered for config {ConfigId}. Only one configuration available.", configs[0].Id);
+                            return Task.CompletedTask;
+                        }
+                    );
+                return Policy.WrapAsync(singleFallback, finalFallback);
+            }
+
+            // Usual chain for multiple configs
             AsyncPolicyWrap<string?> policyChain = Policy.WrapAsync(finalFallback);
             foreach (var config in configs.AsEnumerable().Reverse())
             {
