@@ -44,7 +44,8 @@ using System.IO; // Added for Path.Combine
 using Infrastructure.Security; // For SettingsProtectionService
 using Infrastructure.Services; // For DynamicConfigurationService, SettingsService, DiagnosticsService
 using Infrastructure.Configuration; // For DatabaseConfigurationSource/Provider
-using Application.Interfaces; // For IDiagnosticsService, ISettingsService
+using Application.Interfaces;
+using Application.Services; // For IDiagnosticsService, ISettingsService
 
 #endregion
 
@@ -860,7 +861,7 @@ try
     Log.Information("Hangfire cleaner service added.");
 
     Log.Information("Performing final manual service registrations...");
-
+    _ = builder.Services.AddSingleton<IGeminiService, GeminiService>();
     // FIX FOR: Unable to resolve 'IBotCommandSetupService'
     _ = builder.Services.AddTransient<IBotCommandSetupService, BotCommandSetupService>();
     _ = builder.Services.AddTransient<Infrastructure.Services.IHangfireCleaner, Infrastructure.Services.HangfireCleaner>();

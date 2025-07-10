@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Application.Services
 {
@@ -9,24 +10,25 @@ namespace Application.Services
     {
         private readonly ILogger<GeminiService> _logger;
         private readonly HttpClient _httpClient;
-        private readonly IAiApiConfigurationRepository _configRepository; // Our new repository
+        private readonly IServiceProvider _serviceProvider; // Use IServiceProvider for scoped resolution
         private const string ProviderName = "Gemini";
 
         public GeminiService(
             ILogger<GeminiService> logger,
             IHttpClientFactory httpClientFactory,
-            IAiApiConfigurationRepository configRepository) // Inject the repository
+            IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             _logger = logger;
             _httpClient = httpClientFactory.CreateClient("GeminiClient");
-            _configRepository = configRepository;
+            _serviceProvider = serviceProvider;
         }
 
         public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken)
         {
-            // 1. Get configuration from the database repository.
-            // This is fast because the repository uses the high-performance index.
-            var config = await _configRepository.GetByProviderAndStatusAsync(ProviderName, isEnabled: true, cancellationToken);
+            // 1. Get configuration from the database repository using a scope.
+            using var scope = _serviceProvider.CreateScope();
+            var configRepository = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
+            var config = await configRepository.GetByProviderAndStatusAsync(ProviderName, isEnabled: true, cancellationToken);
 
             // 2. Validate the configuration from the database.
             if (config is null)
