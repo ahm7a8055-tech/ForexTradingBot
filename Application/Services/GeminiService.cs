@@ -104,7 +104,6 @@ namespace Application.Services
                         return Task.CompletedTask;
                     });
 
-            // If only one config, return its fallback directly (no wrap)
             if (configs.Count == 1)
             {
                 var singleFallback = Policy<string?>
@@ -117,7 +116,13 @@ namespace Application.Services
                             return Task.CompletedTask;
                         }
                     );
+                // Only wrap if there are two policies, otherwise just return the single fallback
                 return Policy.WrapAsync(singleFallback, finalFallback);
+            }
+            else if (configs.Count == 0)
+            {
+                // Defensive: no configs, just return the final fallback
+                return Policy.WrapAsync(finalFallback);
             }
 
             // Usual chain for multiple configs
