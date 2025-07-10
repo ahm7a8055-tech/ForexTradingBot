@@ -1,15 +1,17 @@
 ﻿using Application.Common.Interfaces;
 using Domain.Entities;
-using Microsoft.Extensions.DependencyInjection; // Required for CreateAsyncScope
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Polly;
 using Polly.Fallback;
 using Polly.Timeout;
 using Polly.Wrap;
-using System.Net;
+using Polly;
 using System.Net.Http.Json;
-using System.Text.Json;
+using System.Net;
 using System.Text.Json.Serialization;
+using System.Text.Json;
+
+
 
 namespace Application.Services
 {
@@ -64,7 +66,7 @@ namespace Application.Services
                 _logger.LogWarning("No valid Gemini provider configurations found. Skipping enhancement. ApiKeyName: {ApiKeyName}", apiKeyName);
                 return null;
             }
-            
+
             var timeoutPolicy = Policy.TimeoutAsync(TimeSpan.FromSeconds(30), TimeoutStrategy.Pessimistic);
             var fallbackPolicyChain = CreateFallbackPolicyChain(configs, originalMessage);
             var resilientPolicy = timeoutPolicy.WrapAsync(fallbackPolicyChain);
@@ -101,6 +103,11 @@ namespace Application.Services
         {
             return await EnhanceMessageAsync(originalMessage, cancellationToken, null);
         }
+
+        // --------------------------------------------------------------------------------------
+        // --- START OF CORRECTION ---
+        // The original method had a logic error trying to wrap a single policy. This is the fix.
+        // --------------------------------------------------------------------------------------
         private AsyncPolicyWrap<string?> CreateFallbackPolicyChain(List<AiApiConfiguration> configs, string message)
         {
             // 1. Define the ultimate fallback. This is the last line of defense.
@@ -110,30 +117,29 @@ namespace Application.Services
                     fallbackValue: null,
                     onFallbackAsync: args =>
                     {
+                        // This log fires only when all fallbacks (including all configs) have been exhausted.
                         _logger.LogError(args.Exception, "All available Gemini API configurations have failed.");
                         return Task.CompletedTask;
                     });
 
-            // 2. If there are NO configs, we cannot build a chain.
-            // The policy to execute is simply the final fallback itself.
+            // Handle the zero-config case separately to avoid wrap exceptions.
             if (!configs.Any())
             {
                 _logger.LogWarning("No Gemini configurations to build a policy chain. Only the final null-returning fallback is active.");
-                // We still need to return a "wrap" to match the method signature.
-                // The correct way to do this for a single policy is to wrap it with a no-op policy.
+                // A wrap must contain at least two policies. Here we use the fallback and a no-op.
                 return Policy.WrapAsync(finalFallback, Policy.NoOpAsync<string?>());
             }
 
-            // 3. For one or more configs, build the chain iteratively.
-            // Start with the final fallback as the innermost policy.
-            AsyncPolicyWrap<string?> policyChain = Policy.WrapAsync(finalFallback);
+            // For one or more configs, build the chain iteratively from the inside out.
+            IAsyncPolicy<string?> policyChain = finalFallback;
 
-            // Iterate in reverse so the first config in the list becomes the outermost policy.
+            // Iterate in reverse so the first config in the list becomes the outermost (first-to-try) policy.
             foreach (var config in configs.AsEnumerable().Reverse())
             {
                 var fallbackForConfig = Policy<string?>
                     .Handle<GeminiApiFailoverException>()
                     .FallbackAsync(
+                        // This is the "action" for this fallback level: try the API with this config.
                         ct => AttemptApiCallAsync(config, message, ct),
                         onFallbackAsync: args =>
                         {
@@ -141,12 +147,17 @@ namespace Application.Services
                             return Task.CompletedTask;
                         }
                     );
-                // Wrap the new fallback around the existing chain.
+                // Wrap the new fallback around the existing policy chain.
                 policyChain = fallbackForConfig.WrapAsync(policyChain);
             }
 
-            return policyChain;
+            // The loop ran at least once, so policyChain is guaranteed to be an AsyncPolicyWrap.
+            // We cast it to match the method's return signature.
+            return (AsyncPolicyWrap<string?>)policyChain;
         }
+        // --------------------------------------------------------------------------------------
+        // --- END OF CORRECTION ---
+        // --------------------------------------------------------------------------------------
 
         private async Task<string?> AttemptApiCallAsync(AiApiConfiguration config, string message, CancellationToken cancellationToken)
         {
