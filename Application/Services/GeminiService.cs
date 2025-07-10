@@ -2,11 +2,6 @@
 using Domain.Entities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Polly;
-using Polly.Fallback;
-using Polly.Timeout;
-using Polly.Wrap;
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -22,22 +17,21 @@ namespace Application.Services
         private static readonly JsonSerializerOptions _jsonSerializerOptions = new() { WriteIndented = false };
         private const string ProviderName = "Gemini";
 
-        public class GeminiApiFailoverException : Exception
-        {
-            public GeminiApiFailoverException(string message) : base(message) { }
-            public GeminiApiFailoverException(string message, Exception innerException) : base(message, innerException) { }
-        }
-
         public GeminiService(
             ILogger<GeminiService> logger,
             IHttpClientFactory httpClientFactory,
             IServiceProvider serviceProvider)
         {
             _logger = logger;
+            // Set a default timeout on the HttpClient itself
             _httpClient = httpClientFactory.CreateClient("GeminiClient");
+            _httpClient.Timeout = TimeSpan.FromSeconds(30);
             _serviceProvider = serviceProvider;
         }
 
+        /// <summary>
+        /// Enhances a message using Gemini AI by trying each valid configuration sequentially.
+        /// </summary>
         public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken, string? apiKeyName = null)
         {
             if (string.IsNullOrWhiteSpace(originalMessage))
@@ -49,115 +43,57 @@ namespace Application.Services
             await using var scope = _serviceProvider.CreateAsyncScope();
             var configRepository = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
 
-            var configs = (await configRepository.GetAllByProviderAndStatusAndKeyNameAsync(ProviderName, isEnabled: true, apiKeyName, cancellationToken))
-                .Where(c => !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName) && !string.IsNullOrWhiteSpace(c.PromptTemplate))
+            var validConfigs = (await configRepository.GetAllByProviderAndStatusAndKeyNameAsync(ProviderName, isEnabled: true, apiKeyName, cancellationToken))
+                .Where(c => c != null && !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName) && !string.IsNullOrWhiteSpace(c.PromptTemplate))
                 .ToList();
 
-            if (!configs.Any())
+            if (!validConfigs.Any())
             {
                 _logger.LogWarning("No valid Gemini provider configurations found. Skipping enhancement. ApiKeyName: {ApiKeyName}", apiKeyName);
                 return null;
             }
 
-            var timeoutPolicy = Policy.TimeoutAsync(TimeSpan.FromSeconds(30), TimeoutStrategy.Pessimistic);
-            var fallbackPolicyChain = CreateFallbackPolicyChain(configs, originalMessage);
-            var resilientPolicy = timeoutPolicy.WrapAsync(fallbackPolicyChain);
+            _logger.LogInformation("Found {Count} valid Gemini configurations to try.", validConfigs.Count);
 
-            try
+            // --- Iterate through each configuration until one succeeds ---
+            foreach (var config in validConfigs)
             {
-                string? enhancedMessage = await resilientPolicy.ExecuteAsync(
-                    _ => throw new GeminiApiFailoverException("Starting the API key fallback chain."),
-                    cancellationToken);
+                string? enhancedMessage = await AttemptApiCallAsync(config, originalMessage, cancellationToken);
 
-                if (string.IsNullOrWhiteSpace(enhancedMessage))
+                if (!string.IsNullOrWhiteSpace(enhancedMessage))
                 {
-                    _logger.LogWarning("All Gemini API configurations were tried, but none returned a valid message. ApiKeyName: {ApiKeyName}", apiKeyName);
-                    return null;
+                    _logger.LogInformation("Successfully enhanced message using config Id: {ConfigId}, ApiKeyName: {ApiKeyName}", config.Id, config.ApiKeyName);
+                    return enhancedMessage; // Success, exit immediately.
                 }
+                // If null, the loop will continue to the next configuration.
+            }
 
-                _logger.LogInformation("Successfully enhanced message using Gemini. ApiKeyName: {ApiKeyName}", apiKeyName);
-                return enhancedMessage;
-            }
-            catch (TimeoutRejectedException ex)
-            {
-                _logger.LogError(ex, "Gemini API call timed out after 30 seconds. The operation was cancelled. ApiKeyName: {ApiKeyName}", apiKeyName);
-                return null;
-            }
-            catch (Exception ex) when (ex is not GeminiApiFailoverException)
-            {
-                _logger.LogError(ex, "A non-recoverable error occurred during the Gemini API call after exhausting all fallback options. ApiKeyName: {ApiKeyName}", apiKeyName);
-                return null;
-            }
+            _logger.LogWarning("All {Count} Gemini API configurations were tried, but none succeeded.", validConfigs.Count);
+            return null; // All configurations failed.
         }
 
+        // Explicit interface implementation
         public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken)
         {
             return await EnhanceMessageAsync(originalMessage, cancellationToken, null);
         }
 
-        private AsyncPolicyWrap<string?> CreateFallbackPolicyChain(List<AiApiConfiguration> configs, string message)
-        {
-            AsyncFallbackPolicy<string?> finalFallback = Policy<string?>
-                .Handle<GeminiApiFailoverException>()
-                .FallbackAsync(
-                    fallbackValue: null,
-                    onFallbackAsync: args =>
-                    {
-                        _logger.LogError(args.Exception, "All available Gemini API configurations have failed.");
-                        return Task.CompletedTask;
-                    });
-
-            if (!configs.Any())
-            {
-                _logger.LogWarning("No Gemini configurations to build a policy chain. Only the final null-returning fallback is active.");
-                return Policy.WrapAsync(finalFallback, Policy.NoOpAsync<string?>());
-            }
-
-            IAsyncPolicy<string?> policyChain = finalFallback;
-
-            foreach (var config in configs.AsEnumerable().Reverse())
-            {
-                var fallbackForConfig = Policy<string?>
-                    .Handle<GeminiApiFailoverException>()
-                    .FallbackAsync(
-                        ct => AttemptApiCallAsync(config, message, ct),
-                        onFallbackAsync: args =>
-                        {
-                            _logger.LogWarning(args.Exception, "Fallback triggered for config {ConfigId}. Trying next configuration.", config.Id);
-                            return Task.CompletedTask;
-                        }
-                    );
-                policyChain = fallbackForConfig.WrapAsync(policyChain);
-            }
-
-            return (AsyncPolicyWrap<string?>)policyChain;
-        }
-
+        /// <summary>
+        /// Attempts a single API call with a given configuration.
+        /// Returns the enhanced message on success, or null on any failure.
+        /// </summary>
         private async Task<string?> AttemptApiCallAsync(AiApiConfiguration config, string message, CancellationToken cancellationToken)
         {
-            // --- Defensive try-catch block to log ANY unexpected error ---
+            var requestBody = new GeminiRequest(new List<ContentPart> { new ContentPart(new List<TextPart> { new TextPart(config.PromptTemplate.Replace("{message}", message)) }) });
+            var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={config.ApiKey}";
+
+            // Log the attempt
+            var requestBodyJson = JsonSerializer.Serialize(requestBody, _jsonSerializerOptions);
+            _logger.LogInformation("Attempting API call with ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Body: {RequestBody}", config.Id, config.ApiKeyName, requestBodyJson);
+
             try
             {
-                var prompt = config.PromptTemplate.Replace("{message}", message);
-                var requestBody = new GeminiRequest(new List<ContentPart> { new ContentPart(new List<TextPart> { new TextPart(prompt) }) });
-                var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={config.ApiKey}";
-
-                var safeApiKey = string.IsNullOrEmpty(config.ApiKey) ? "NULL_OR_EMPTY" : $"...{config.ApiKey.Substring(Math.Max(0, config.ApiKey.Length - 4))}";
-                var safeUri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={safeApiKey}";
-                var requestBodyJson = JsonSerializer.Serialize(requestBody, _jsonSerializerOptions);
-                _logger.LogInformation(
-                    "Attempting Gemini API call. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Uri: {SafeUri}, Body: {RequestBody}",
-                    config.Id, config.ApiKeyName, safeUri, requestBodyJson);
-
-                HttpResponseMessage response;
-                try
-                {
-                    response = await _httpClient.PostAsJsonAsync(uri, requestBody, cancellationToken);
-                }
-                catch (Exception ex) when (ex is HttpRequestException || ex is OperationCanceledException)
-                {
-                    throw new GeminiApiFailoverException($"HTTP request failed for config Id: {config.Id}, ApiKeyName: {config.ApiKeyName}", ex);
-                }
+                var response = await _httpClient.PostAsJsonAsync(uri, requestBody, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -166,49 +102,34 @@ namespace Application.Services
 
                     if (string.IsNullOrWhiteSpace(enhancedText))
                     {
-                        _logger.LogWarning("API for config Id {ConfigId}, ApiKeyName: {ApiKeyName} succeeded but returned empty content.", config.Id, config.ApiKeyName);
-                        throw new GeminiApiFailoverException($"API for config Id {config.Id} succeeded but returned empty content.");
+                        _logger.LogWarning("API call for ConfigId {ConfigId} succeeded but returned empty content.", config.Id);
+                        return null; // Failure case
                     }
 
-                    _logger.LogInformation("Gemini API call successful for config Id: {ConfigId}", config.Id);
-                    return enhancedText.Trim();
+                    return enhancedText.Trim(); // Success case
                 }
 
+                // Handle non-successful status codes
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                var geminiError = TryParseGeminiError(errorContent);
-
-                if (geminiError is not null)
-                {
-                    _logger.LogWarning(
-                        "Gemini API call failed with a structured error. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Status: {StatusCode}, ErrorCode: {ErrorCode}, Message: {ErrorMessage}",
-                        config.Id, config.ApiKeyName, response.StatusCode, geminiError.Error.Code, geminiError.Error.Message);
-                }
-                else
-                {
-                    _logger.LogWarning(
-                        "Gemini API call failed with a non-structured error. ConfigId: {ConfigId}, ApiKeyName: {ApiKeyName}, Status: {StatusCode}, Response: {ErrorContent}",
-                        config.Id, config.ApiKeyName, response.StatusCode, errorContent);
-                }
-
-                throw new GeminiApiFailoverException($"API call for config {config.Id} failed with status {response.StatusCode}.");
+                _logger.LogWarning(
+                    "API call for ConfigId {ConfigId} failed with status {StatusCode}. Response: {ErrorContent}",
+                    config.Id, response.StatusCode, errorContent);
+                return null; // Failure case
             }
-            catch (Exception ex) when (ex is not GeminiApiFailoverException)
+            catch (OperationCanceledException ex)
             {
-                // This will catch unexpected errors like NullReferenceException.
-                _logger.LogError(ex, "An unexpected critical error occurred inside AttemptApiCallAsync for config Id: {ConfigId}. This is likely due to invalid data in the configuration.", config.Id);
-                // Re-throw as the type Polly is expecting, so it can fail over.
-                throw new GeminiApiFailoverException($"Unexpected error for config {config.Id}", ex);
+                _logger.LogError(ex, "API call for ConfigId {ConfigId} timed out.", config.Id);
+                return null; // Failure case
             }
-        }
-
-        private static GeminiErrorResponse? TryParseGeminiError(string content)
-        {
-            try { return JsonSerializer.Deserialize<GeminiErrorResponse>(content, _jsonOptions); }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An unexpected exception occurred during the API call for ConfigId {ConfigId}.", config.Id);
+                return null; // Failure case
+            }
         }
     }
 
-    // Strongly-typed models for Gemini API
+    // Strongly-typed models for Gemini API (remain the same)
     public record GeminiRequest(List<ContentPart> contents);
     public record ContentPart(List<TextPart> parts);
     public record TextPart(string text);
@@ -217,7 +138,4 @@ namespace Application.Services
     public record Candidate([property: JsonPropertyName("content")] Content? Content);
     public record Content([property: JsonPropertyName("parts")] List<Part>? Parts);
     public record Part([property: JsonPropertyName("text")] string? Text);
-
-    public record GeminiErrorResponse([property: JsonPropertyName("error")] GeminiError Error);
-    public record GeminiError([property: JsonPropertyName("code")] string Code, [property: JsonPropertyName("message")] string Message);
 }
