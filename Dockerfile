@@ -32,11 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 # Copy the published application from the 'build' stage.
 COPY --from=build /app/publish .
 
+# Create a dedicated, non-root user for security.
+RUN adduser --system --group --disabled-password --gecos "" --home /app appuser
+
 # --- FIX: Ensure /app/keys exists and is writable by appuser ---
 RUN mkdir -p /app/keys && chown appuser:appuser /app/keys && chmod 700 /app/keys
 
-# Create a dedicated, non-root user for security.
-RUN adduser --system --group --disabled-password --gecos "" --home /app appuser
 USER appuser
 
 # Set environment variables for the ASP.NET Core runtime.

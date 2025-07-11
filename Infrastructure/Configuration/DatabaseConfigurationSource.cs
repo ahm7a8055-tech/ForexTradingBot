@@ -1,33 +1,32 @@
 using Application.Common.Interfaces;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection; // For IServiceProvider
+using Microsoft.Extensions.DependencyInjection; // For IServiceCollection
 using System;
 
 namespace Infrastructure.Configuration
 {
     public class DatabaseConfigurationSource : IConfigurationSource
     {
-        private readonly IServiceProvider _serviceProvider; // To resolve services needed by the provider
+        private readonly IServiceCollection _services; // To build service provider when needed
         private readonly Action<IDynamicConfigurationService, IConfigurationBuilder> _registerDefinedSettings;
 
 
         // We need a way to get IDynamicConfigurationService. Since it's registered as a singleton,
         // we can resolve it later via a temporary service provider or pass a factory.
-        // For simplicity in registration, we might pass the service provider built from initial services.
-        public DatabaseConfigurationSource(IServiceProvider serviceProvider, Action<IDynamicConfigurationService, IConfigurationBuilder> registerDefinedSettings)
+        // For simplicity in registration, we might pass the service collection and build provider when needed.
+        public DatabaseConfigurationSource(IServiceCollection services, Action<IDynamicConfigurationService, IConfigurationBuilder> registerDefinedSettings)
         {
-            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+            _services = services ?? throw new ArgumentNullException(nameof(services));
             _registerDefinedSettings = registerDefinedSettings ?? throw new ArgumentNullException(nameof(registerDefinedSettings));
         }
 
         public IConfigurationProvider Build(IConfigurationBuilder builder)
         {
-            // Create a scope to resolve scoped services if necessary, though IDynamicConfigurationService is singleton.
-            // It's generally safer to resolve from a scope if there's any doubt.
-            // However, configuration providers are often created very early.
-            // For singletons, direct resolution from root provider is usually fine.
+            // Build a temporary service provider only when needed for this specific operation
+            // This avoids the ASP0000 warning about calling BuildServiceProvider from application code
+            using var tempServiceProvider = _services.BuildServiceProvider();
 
-            var dynamicConfigService = _serviceProvider.GetRequiredService<IDynamicConfigurationService>();
+            var dynamicConfigService = tempServiceProvider.GetRequiredService<IDynamicConfigurationService>();
             var initialConfigurationBuilder = new ConfigurationBuilder(); // Temporary builder to get appsettings values
 
             // Add existing sources from the main builder to ensure we can read appsettings.json for defaults

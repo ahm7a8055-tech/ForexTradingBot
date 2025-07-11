@@ -137,18 +137,14 @@ try
         tempServices.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
         tempServices.AddLogging(lb => lb.AddSerilog(Log.Logger)); // Use existing Serilog global logger
 
-        var tempServiceProvider = tempServices.BuildServiceProvider();
-
         // 3. Action to register defined settings (passed to DatabaseConfigurationSource)
         Action<IDynamicConfigurationService, IConfigurationBuilder> registerSettingsAction = (service, currentConfigBuilder) =>
         {
-            var tempLogger = tempServiceProvider.GetRequiredService<ILogger<Program>>();
             // Use the configuration built from sources *before* adding DatabaseConfigurationSource
             // to get default values for registration.
             var configForDefaults = currentConfigBuilder.Build();
 
-
-            tempLogger.LogInformation("Registering defined settings with DynamicConfigurationService (within ConfigureAppConfiguration)...");
+            Log.Information("Registering defined settings with DynamicConfigurationService (within ConfigureAppConfiguration)...");
             void RegisterSetting(string key, bool isSensitive, string description) {
                 service.RegisterSettingDefinition(key, configForDefaults[key], isSensitive, description);
             }
@@ -178,11 +174,11 @@ try
             RegisterSetting("OperationalFlags:GlobalLogLevel", false, "Global log level override.");
             RegisterSetting("OperationalFlags:EnableRssModule", false, "Feature flag for RSS module.");
             RegisterSetting("OperationalFlags:EnableForwardingModule", false, "Feature flag for auto-forwarding module.");
-            tempLogger.LogInformation("All defined settings registered with DynamicConfigurationService (within ConfigureAppConfiguration).");
+            Log.Information("All defined settings registered with DynamicConfigurationService (within ConfigureAppConfiguration).");
         };
 
         // 4. Add the custom configuration source
-        configAppBuilder.Add(new DatabaseConfigurationSource(tempServiceProvider, registerSettingsAction));
+        configAppBuilder.Add(new DatabaseConfigurationSource(tempServices, registerSettingsAction));
         Log.Information("DatabaseConfigurationSource added via ConfigureAppConfiguration.");
     });
     // --- End of Custom Configuration Source Registration ---
@@ -1578,5 +1574,4 @@ public static class SystemInfoHelper
 }
 #endregion
 
-#endregion
 #endregion
