@@ -1457,15 +1457,46 @@ namespace Infrastructure.Services
             // =========================================================================
             try
             {
-                // We only attempt enhancement if there's something to enhance.
+                // We only attempt enhancement if there's a caption/message to enhance.
                 if (!string.IsNullOrWhiteSpace(message))
                 {
-                    _logger.LogDebug("Attempting to enhance final constructed message with AI for Peer {PeerId}.", peerIdForLog);
-                    string? enhancedMessage = await _geminiService.EnhanceMessageAsync(message, cancellationToken).ConfigureAwait(false);
+                    List<byte[]>? imageBytesList = null; // Prepare for potential image data
+
+                    // --- NEW: ATTEMPT TO EXTRACT IMAGE DATA FOR AI ---
+                    try
+                    {
+                        // Check if the single media item is an uploaded photo
+                        if (media is TL.InputMediaUploadedPhoto uploadedPhoto)
+                        {
+                            // The property is 'file' (lowercase)
+                            if (uploadedPhoto.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
+                            {
+                                _logger.LogDebug("Found single image file at path '{ImagePath}' to include in AI enhancement request.", inputFile.Name);
+                                byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken).ConfigureAwait(false);
+                                imageBytesList = new List<byte[]> { imageBytes };
+                                _logger.LogInformation("Successfully read {ByteCount} bytes from single image file for AI multimodal processing.", imageBytes.Length);
+                            }
+                            else
+                            {
+                                _logger.LogDebug("Media is a photo, but no local file path was found. Proceeding with text-only AI enhancement.");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "An error occurred while trying to read single image file for AI enhancement. Falling back to text-only.");
+                        imageBytesList = null; // Ensure it's null on failure
+                    }
+
+                    // --- CALL THE APPROPRIATE AI SERVICE METHOD ---
+                    _logger.LogDebug("Attempting to enhance message/caption with AI for Peer {PeerId}. Multimodal: {IsMultimodal}", peerIdForLog, imageBytesList != null);
+
+                    // Call the multimodal service. It's designed to handle cases where imageBytesList is null.
+                    string? enhancedMessage = await _geminiService.EnhanceMessageAsync(message, imageBytesList, cancellationToken).ConfigureAwait(false);
 
                     if (!string.IsNullOrWhiteSpace(enhancedMessage))
                     {
-                        _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                        _logger.LogInformation("Message/caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
                         // Always parse Gemini output as MarkdownV1
                         var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
                         message = parsedText;
@@ -1473,7 +1504,7 @@ namespace Infrastructure.Services
                     }
                     else
                     {
-                        // FALLBACK: AI service is disabled, failed (e.g., out of quota), or returned empty content.
+                        // FALLBACK: AI service is disabled, failed, or returned empty content.
                         _logger.LogDebug("AI enhancement failed or was disabled. Sending original constructed message.");
                     }
                 }
@@ -1483,6 +1514,7 @@ namespace Infrastructure.Services
                 // CATCH-ALL: This ensures any unexpected error in the AI service does not stop the message from being sent.
                 _logger.LogWarning(ex, "An exception occurred during AI message enhancement. Proceeding with original constructed message.");
             }
+
             // =========================================================================
             // === END OF NEW AI LOGIC BLOCK ===========================================
             // =========================================================================
@@ -1678,64 +1710,6 @@ namespace Infrastructure.Services
                 _logger.LogDebug("SendMediaGroupAsync: Replaced WhatsApp link with @capxi in album caption for Peer {PeerId}.", peerIdForLog);
             }
 
-            // Add advice footer to album caption
-            try
-            {
-
-                string[] adviceEmojis = new[]
-{
-    // --- Ideas, Wisdom & Insight ---
-    "💡", "✨", "🌟", "🌠", "💫", "🧐", "🧠", "⚡", "🔥", "💯", "🤯", "😮", "👀",
-    "👁️", "🕯️", "🔆", "🔎", "🔑", "🗝️", "📜", "📖", "📚", "✍️", "🧮",
-
-    // --- Success, Growth & Achievement ---
-    "🚀", "📈", "💹", "🎯", "🏆", "🏅", "🥇", "🎉", "🎊", "🙌", "💪", "🔝",
-    "👑", "💎", "👍", "✅", "✔️", "☑️", "🏁", "🍾", "🥂", "🎈", "🎇", "🎆",
-    "🎖️", "🎗️", "🤩", "😎", "🥳", "💯", "🎯", "✅", "💥", "👏", "👍",
-
-    // --- Thinking, Planning & Strategy ---
-    "🤔", "🧐", "🧠", "🤓", "👨‍🏫", "👩‍🏫", "🎓", "✍️", "📝", "🗒️", "📋", "📈",
-    "🧭", "🗺️", "♟️", "🧩", "👓", "🔬", "🔭", "🔐", "🏛️", "🏰", "🏗️", "🧠",
-    "⚖️", "⚙️", "🔧", "💡", "🗓️", "📆", "📍", "📌", "📎", "📏", "📐",
-
-    // --- Money, Finance & Investment ---
-    "💰", "💵", "💶", "💷", "💴", "🪙", "💳", "💸", "🤑", "🏦", "📊", "📉",
-    "₿", "💲", "📈", "💹", "💯", "💎", "🤑", "✅", "💼", "📈", "📉", "🧾",
-    "🧾", "💵", "🪙", "💹", "🏦", "🏧", "💰", "💸", "⚖️", "💼", "📈",
-
-    // --- Technology, Data & The Future ---
-    "🤖", "👨‍💻", "👩‍💻", "💻", "🖥️", "🌐", "🌍", "🛰️", "📡", "⚙️", "🔩", "💡",
-    "🔌", "🔋", "⚡", "🚀", "⏳", "⌛", "🔮", "✨", "🧬", "🔢", "🔣", "📶",
-    "📲", "📱", "⌚", "🖱️", "💾", "💿", "📀", "🖨️", "🕹️", "🎮", "🤖",
-
-    // --- Positive, Encouraging & Reactions ---
-    "😊", "🤗", "👍", "🙌", "🙂", "😉", "✅", "🎯", "💪", "💯", "🔥", "🌟",
-
-    "🎉", "👌", "😎", "🤩", "🤝", "🥳", "🙏", "👏", "😌", "😁", "😃", "😄",
-    "😉", "😊", "🙂", "🙃", "😇", "😍", "🤩", "😘", "😗", "😚", "😙", "😋",
-
-    // --- Communication & Information ---
-    "💬", "🗨️", "🗣️", "📣", "📢", "📰", "🗞️", "📈", "📉", "📊", "📮", "📫",
-    "📪", "📬", "📭", "📦", "📧", "📨", "📩", "📤", "📥", "📜", "📃", "📄",
-    
-    // --- Nature & Growth ---
-    "🌱", "🌿", "🌳", "🌲", "🍃", "💧", "🌊", "⛰️", "☀️", "🌤️", "🌈", "🌅",
-    "🌄", "🏞️", "🌊", "💧", "🌱", "🌿", "🍀", "🎍", "🪴", "🌲", "🌳", "🌴",
-
-    // --- Tools & Building ---
-    "🛠️", "🔨", "🔧", "🔩", "🧱", "🏗️", "⛏️", "⚙️", "🧰", "🪜", "⚖️", "🔗",
-    "⛓️", "🛠️", "⛏️", "🔨", "🪓", "🔧", "🔩", "⚙️", "🧱", "🪝", "🧰", "🪜",
-
-    // --- Abstract & Conceptual ---
-    "🔵", "🟢", "🔴", "⚪", "⚫", "➡️", "⬇️", "⬆️", "⬅️", "↔️", "↕️", "🔄",
-    "🔁", "▶️", "◀️", "🔼", "🔽", "🔗", "♾️", "☯️", "⚛️", "✔️", "☑️", "🔘",
-    "⭕", "❗", "❓", "❕", "❔", "‼️", "⁉️", "〰️", "〽️", "❗️", "❓", "❕",
-    "❔", "🔃", "✔️", "✅"
-};
-
-
-
-
                 // =========================================================================
                 // === NEW LOGIC BLOCK: MARKDOWN PARSING FOR ALBUM CAPTION ====
                 // =========================================================================
@@ -1774,53 +1748,83 @@ namespace Infrastructure.Services
                     // CATCH-ALL: This ensures any unexpected error in markdown parsing does not stop the album from being sent
                     _logger.LogWarning(ex, "An exception occurred during markdown parsing for album caption Peer {PeerId}. Proceeding with original caption.", peerIdForLog);
                 }
-                // =========================================================================
-                // === END OF MARKDOWN PARSING BLOCK FOR ALBUM CAPTION ====================
-                // =========================================================================
+            // =========================================================================
+            // === END OF MARKDOWN PARSING BLOCK FOR ALBUM CAPTION ====================
+            // =========================================================================
 
-                // --- STAGE 2: AI ENHANCEMENT ---
-                string captionToSend;
-                TL.MessageEntity[]? entitiesToSend;
+            // --- STAGE 2: AI ENHANCEMENT ---
+            string captionToSend;
+            TL.MessageEntity[]? entitiesToSend;
 
-                try
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(albumCaption))
                 {
-                    if (!string.IsNullOrWhiteSpace(albumCaption))
-                    {
-                        _logger.LogDebug("Attempting to enhance final constructed album caption with AI for Peer {PeerId}.", peerIdForLog);
-                        string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, cancellationToken).ConfigureAwait(false);
+                    List<byte[]>? imageBytesList = null; // Prepare to hold image data
 
-                        if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                    // --- NEW: ATTEMPT TO EXTRACT IMAGE DATA FOR AI ---
+                    try
+                    {
+                        // Find the first photo in the media group to send to the AI
+                        var firstPhoto = media
+                            .OfType<TL.InputMediaUploadedPhoto>()
+                            .FirstOrDefault();
+
+                        // =================== FIX IS HERE ===================
+                        // The property is 'file' (lowercase), not 'File'.
+                        if (firstPhoto?.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
+                        // ===================================================
                         {
-                            _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
-                            // Always parse Gemini output as MarkdownV1
-                            var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
-                            captionToSend = parsedCaption;
-                            entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null;
+                            _logger.LogDebug("Found image file at path '{ImagePath}' to include in AI enhancement request.", inputFile.Name);
+                            byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken).ConfigureAwait(false);
+                            imageBytesList = new List<byte[]> { imageBytes };
+                            _logger.LogInformation("Successfully read {ByteCount} bytes from image file for AI multimodal processing.", imageBytes.Length);
                         }
                         else
                         {
-                            // Fallback to original caption if AI fails or is disabled
-                            _logger.LogDebug("AI enhancement for album caption failed or was disabled. Sending original constructed caption.");
-                            captionToSend = albumCaption;
-                            entitiesToSend = albumEntities;
+                            _logger.LogDebug("No local image file found in the media group for AI enhancement. Proceeding with text-only.");
                         }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "An error occurred while trying to read image file for AI enhancement. Falling back to text-only.");
+                        imageBytesList = null; // Ensure it's null on failure
+                    }
+
+                    // --- CALL THE APPROPRIATE AI SERVICE METHOD ---
+                    _logger.LogDebug("Attempting to enhance album caption with AI for Peer {PeerId}. Multimodal: {IsMultimodal}", peerIdForLog, imageBytesList != null);
+
+                    // Call the multimodal service. It will handle the text-only fallback internally if needed.
+                    string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, imageBytesList, cancellationToken).ConfigureAwait(false);
+
+                    if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                    {
+                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
+                        captionToSend = parsedCaption;
+                        entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null;
                     }
                     else
                     {
-                        // No caption to enhance, use original values
+                        _logger.LogDebug("AI enhancement for album caption failed or was disabled. Sending original constructed caption.");
                         captionToSend = albumCaption;
                         entitiesToSend = albumEntities;
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    // Absolute fallback in case of any unexpected exception in the AI service
-                    _logger.LogWarning(ex, "An exception occurred during AI album caption enhancement. Proceeding with original constructed caption.");
                     captionToSend = albumCaption;
                     entitiesToSend = albumEntities;
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "An exception occurred during AI album caption enhancement. Proceeding with original constructed caption.");
+                captionToSend = albumCaption;
+                entitiesToSend = albumEntities;
+            }
 
-                try
+            try
                 {
                     // Level 3: Acquire a lock for sending media groups to a specific peer.
                     _logger.LogTrace("SendMediaGroupAsync: Attempting to acquire send lock with key: {LockKey}", lockKey);
@@ -1880,11 +1884,7 @@ namespace Infrastructure.Services
                 }
 
             }
-            catch {  }
-            {
-            
-            }
-        }
+
 
             
         /// <summary>
