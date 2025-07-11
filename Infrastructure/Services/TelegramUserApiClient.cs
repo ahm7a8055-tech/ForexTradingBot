@@ -1409,119 +1409,7 @@ namespace Infrastructure.Services
                 _logger.LogDebug("SendMessageAsync: Replaced WhatsApp link with @capxi for Peer {PeerId}.", peerIdForLog);
             }
 
-            // --- Add advice footer to text messages and media captions ---
-            try
-            {
-                // Call the get_random_advice function, which makes the API call.
-                string? randomAdvice = await GetChannelAdviceAsync(cancellationToken).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(randomAdvice))
-                {
-                    // --- START: DYNAMIC EMOJI LOGIC ---
-
-                    // 1. Define your package of emojis right here.
-                    string[] adviceEmojis = new[]
-{
-    // --- Ideas, Wisdom & Insight ---
-    "💡", "✨", "🌟", "🌠", "💫", "🧐", "🧠", "⚡", "🔥", "💯", "🤯", "😮", "👀",
-    "👁️", "🕯️", "🔆", "🔎", "🔑", "🗝️", "📜", "📖", "📚", "✍️", "🧮",
-
-    // --- Success, Growth & Achievement ---
-    "🚀", "📈", "💹", "🎯", "🏆", "🏅", "🥇", "🎉", "🎊", "🙌", "💪", "🔝",
-    "👑", "💎", "👍", "✅", "✔️", "☑️", "🏁", "🍾", "🥂", "🎈", "🎇", "🎆",
-    "🎖️", "🎗️", "🤩", "😎", "🥳", "💯", "🎯", "✅", "💥", "👏", "👍",
-
-    // --- Thinking, Planning & Strategy ---
-    "🤔", "🧐", "🧠", "🤓", "👨‍🏫", "👩‍🏫", "🎓", "✍️", "📝", "🗒️", "📋", "📈",
-    "🧭", "🗺️", "♟️", "🧩", "👓", "🔬", "🔭", "🔐", "🏛️", "🏰", "🏗️", "🧠",
-    "⚖️", "⚙️", "🔧", "💡", "🗓️", "📆", "📍", "📌", "📎", "📏", "📐",
-
-    // --- Money, Finance & Investment ---
-    "💰", "💵", "💶", "💷", "💴", "🪙", "💳", "💸", "🤑", "🏦", "📊", "📉",
-    "₿", "💲", "📈", "💹", "💯", "💎", "🤑", "✅", "💼", "📈", "📉", "🧾",
-    "🧾", "💵", "🪙", "💹", "🏦", "🏧", "💰", "💸", "⚖️", "💼", "📈",
-
-    // --- Technology, Data & The Future ---
-    "🤖", "👨‍💻", "👩‍💻", "💻", "🖥️", "🌐", "🌍", "🛰️", "📡", "⚙️", "🔩", "💡",
-    "🔌", "🔋", "⚡", "🚀", "⏳", "⌛", "🔮", "✨", "🧬", "🔢", "🔣", "📶",
-    "📲", "📱", "⌚", "🖱️", "💾", "💿", "📀", "🖨️", "🕹️", "🎮", "🤖",
-
-    // --- Positive, Encouraging & Reactions ---
-    "😊", "🤗", "👍", "🙌", "🙂", "😉", "✅", "🎯", "💪", "💯", "🔥", "🌟",
-
-    "🎉", "👌", "😎", "🤩", "🤝", "🥳", "🙏", "👏", "😌", "😁", "😃", "😄",
-    "😉", "😊", "🙂", "🙃", "😇", "😍", "🤩", "😘", "😗", "😚", "😙", "😋",
-
-    // --- Communication & Information ---
-    "💬", "🗨️", "🗣️", "📣", "📢", "📰", "🗞️", "📈", "📉", "📊", "📮", "📫",
-    "📪", "📬", "📭", "📦", "📧", "📨", "📩", "📤", "📥", "📜", "📃", "📄",
-    
-    // --- Nature & Growth ---
-    "🌱", "🌿", "🌳", "🌲", "🍃", "💧", "🌊", "⛰️", "☀️", "🌤️", "🌈", "🌅",
-    "🌄", "🏞️", "🌊", "💧", "🌱", "🌿", "🍀", "🎍", "🪴", "🌲", "🌳", "🌴",
-
-    // --- Tools & Building ---
-    "🛠️", "🔨", "🔧", "🔩", "🧱", "🏗️", "⛏️", "⚙️", "🧰", "🪜", "⚖️", "🔗",
-    "⛓️", "🛠️", "⛏️", "🔨", "🪓", "🔧", "🔩", "⚙️", "🧱", "🪝", "🧰", "🪜",
-
-    // --- Abstract & Conceptual ---
-    "🔵", "🟢", "🔴", "⚪", "⚫", "➡️", "⬇️", "⬆️", "⬅️", "↔️", "↕️", "🔄",
-    "🔁", "▶️", "◀️", "🔼", "🔽", "🔗", "♾️", "☯️", "⚛️", "✔️", "☑️", "🔘",
-    "⭕", "❗", "❓", "❕", "❔", "‼️", "⁉️", "〰️", "〽️", "❗️", "❓", "❕",
-    "❔", "🔃", "✔️", "✅"
-};
-
-                    // 2. Create a Random object to pick one.
-                    Random random = new();
-
-                    // 3. Get a random emoji from the list.
-                    string emoji = adviceEmojis[random.Next(adviceEmojis.Length)];
-
-                    // --- END: DYNAMIC EMOJI LOGIC ---
-
-
-                    // Format the footer with the chosen random emoji
-                    string footer = $"\n\n{emoji} {randomAdvice}";
-
-                    // If the original message is null/empty (e.g., for a media caption), the advice becomes the message.
-                    // Otherwise, it's appended to the existing message.
-                    message = string.IsNullOrEmpty(message) ? $"{emoji} {randomAdvice}" : $"{message}{footer}";
-
-                    _logger.LogDebug("SendMessageAsync: Appended random advice footer to the message for Peer {PeerId}.", peerIdForLog);
-                }
-                else
-                {
-                    _logger.LogWarning("SendMessageAsync: Could not retrieve random advice to append as footer. Sending message without it.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to get advice for message footer. Skipping advice.");
-            }
-
-            // --- Add hashtag footer ---
-            try
-            {
-                // Get exactly 3 random hashtags from our dedicated service.
-                string hashtags = _hashtagService.GetRandomHashtags(3);
-
-                if (!string.IsNullOrWhiteSpace(hashtags))
-                {
-                    // Create the footer string.
-                    string footer = $"\n{hashtags}";
-
-                    // Append the footer to the final message.
-                    message += footer;
-
-                    _logger.LogDebug("Appended random hashtag footer to the message for PeerID {PeerId}.", peerIdForLog);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Log the error but do not re-throw. This ensures that if the hashtag service fails for any reason,
-                // the original message can still be sent without the footer.
-                _logger.LogWarning(ex, "Failed to generate hashtag footer due to an exception. Message will be sent without it.");
-            }
-
+     
             // =========================================================================
             // === NEW LOGIC BLOCK: MARKDOWN PARSING (BEFORE AI ENHANCEMENT) ====
             // =========================================================================
@@ -1793,10 +1681,8 @@ namespace Infrastructure.Services
             // Add advice footer to album caption
             try
             {
-                string? randomAdvice = await GetChannelAdviceAsync(cancellationToken).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(randomAdvice))
-                {
-                    string[] adviceEmojis = new[]
+
+                string[] adviceEmojis = new[]
 {
     // --- Ideas, Wisdom & Insight ---
     "💡", "✨", "🌟", "🌠", "💫", "🧐", "🧠", "⚡", "🔥", "💯", "🤯", "😮", "👀",
@@ -1846,181 +1732,161 @@ namespace Infrastructure.Services
     "⭕", "❗", "❓", "❕", "❔", "‼️", "⁉️", "〰️", "〽️", "❗️", "❓", "❕",
     "❔", "🔃", "✔️", "✅"
 };
-                    Random random = new();
-                    string emoji = adviceEmojis[random.Next(adviceEmojis.Length)];
-                    string footer = $"\n\n{emoji} {randomAdvice}";
 
-                    albumCaption = string.IsNullOrEmpty(albumCaption) ? $"{emoji} {randomAdvice}" : $"{albumCaption}{footer}";
-                    _logger.LogDebug("SendMediaGroupAsync: Appended random advice footer to the album caption for Peer {PeerId}.", peerIdForLog);
-                }
-                else
-                {
-                    _logger.LogWarning("SendMediaGroupAsync: Could not retrieve random advice to append as footer. Sending album without it.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to get advice for album caption footer. Skipping advice.");
-            }
 
-            // Add hashtag footer to album caption
-            try
-            {
-                string hashtags = _hashtagService.GetRandomHashtags(3);
-                if (!string.IsNullOrWhiteSpace(hashtags))
-                {
-                    albumCaption += $"\n{hashtags}";
-                    _logger.LogDebug("Appended random hashtag footer to the album caption for PeerID {PeerId}.", peerIdForLog);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to generate hashtag footer for album. Skipping.");
-            }
 
-            // =========================================================================
-            // === NEW LOGIC BLOCK: MARKDOWN PARSING FOR ALBUM CAPTION ====
-            // =========================================================================
-            try
-            {
-                // Only attempt markdown parsing if there's caption content and no existing entities
-                if (!string.IsNullOrWhiteSpace(albumCaption) && (albumEntities == null || !albumEntities.Any()))
+
+                // =========================================================================
+                // === NEW LOGIC BLOCK: MARKDOWN PARSING FOR ALBUM CAPTION ====
+                // =========================================================================
+                try
                 {
-                    _logger.LogDebug("Attempting to parse markdown in album caption for Peer {PeerId}.", peerIdForLog);
-                    
-                    // Parse markdown and convert to Telegram entities
-                    var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(albumCaption);
-                    
-                    if (!string.IsNullOrEmpty(parsedCaption) && parsedEntities.Length > 0)
+                    // Only attempt markdown parsing if there's caption content and no existing entities
+                    if (!string.IsNullOrWhiteSpace(albumCaption) && (albumEntities == null || !albumEntities.Any()))
                     {
-                        // SUCCESS: Markdown was parsed and entities were created
-                        _logger.LogInformation("Successfully parsed markdown for album caption Peer {PeerId}. Found {EntityCount} entities.", 
-                            peerIdForLog, parsedEntities.Length);
-                        
-                        albumCaption = parsedCaption;
-                        albumEntities = parsedEntities;
+                        _logger.LogDebug("Attempting to parse markdown in album caption for Peer {PeerId}.", peerIdForLog);
+
+                        // Parse markdown and convert to Telegram entities
+                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(albumCaption);
+
+                        if (!string.IsNullOrEmpty(parsedCaption) && parsedEntities.Length > 0)
+                        {
+                            // SUCCESS: Markdown was parsed and entities were created
+                            _logger.LogInformation("Successfully parsed markdown for album caption Peer {PeerId}. Found {EntityCount} entities.",
+                                peerIdForLog, parsedEntities.Length);
+
+                            albumCaption = parsedCaption;
+                            albumEntities = parsedEntities;
+                        }
+                        else
+                        {
+                            // No markdown found or parsing failed, keep original caption
+                            _logger.LogDebug("No markdown syntax found in album caption for Peer {PeerId}. Using original text.", peerIdForLog);
+                        }
+                    }
+                    else if (albumEntities != null && albumEntities.Any())
+                    {
+                        _logger.LogDebug("Skipping markdown parsing for album caption Peer {PeerId} as entities are already provided.", peerIdForLog);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // CATCH-ALL: This ensures any unexpected error in markdown parsing does not stop the album from being sent
+                    _logger.LogWarning(ex, "An exception occurred during markdown parsing for album caption Peer {PeerId}. Proceeding with original caption.", peerIdForLog);
+                }
+                // =========================================================================
+                // === END OF MARKDOWN PARSING BLOCK FOR ALBUM CAPTION ====================
+                // =========================================================================
+
+                // --- STAGE 2: AI ENHANCEMENT ---
+                string captionToSend;
+                TL.MessageEntity[]? entitiesToSend;
+
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(albumCaption))
+                    {
+                        _logger.LogDebug("Attempting to enhance final constructed album caption with AI for Peer {PeerId}.", peerIdForLog);
+                        string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, cancellationToken).ConfigureAwait(false);
+
+                        if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                        {
+                            _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                            // Always parse Gemini output as MarkdownV1
+                            var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
+                            captionToSend = parsedCaption;
+                            entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null;
+                        }
+                        else
+                        {
+                            // Fallback to original caption if AI fails or is disabled
+                            _logger.LogDebug("AI enhancement for album caption failed or was disabled. Sending original constructed caption.");
+                            captionToSend = albumCaption;
+                            entitiesToSend = albumEntities;
+                        }
                     }
                     else
                     {
-                        // No markdown found or parsing failed, keep original caption
-                        _logger.LogDebug("No markdown syntax found in album caption for Peer {PeerId}. Using original text.", peerIdForLog);
-                    }
-                }
-                else if (albumEntities != null && albumEntities.Any())
-                {
-                    _logger.LogDebug("Skipping markdown parsing for album caption Peer {PeerId} as entities are already provided.", peerIdForLog);
-                }
-            }
-            catch (Exception ex)
-            {
-                // CATCH-ALL: This ensures any unexpected error in markdown parsing does not stop the album from being sent
-                _logger.LogWarning(ex, "An exception occurred during markdown parsing for album caption Peer {PeerId}. Proceeding with original caption.", peerIdForLog);
-            }
-            // =========================================================================
-            // === END OF MARKDOWN PARSING BLOCK FOR ALBUM CAPTION ====================
-            // =========================================================================
-
-            // --- STAGE 2: AI ENHANCEMENT ---
-            string captionToSend;
-            TL.MessageEntity[]? entitiesToSend;
-
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(albumCaption))
-                {
-                    _logger.LogDebug("Attempting to enhance final constructed album caption with AI for Peer {PeerId}.", peerIdForLog);
-                    string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, cancellationToken).ConfigureAwait(false);
-
-                    if (!string.IsNullOrWhiteSpace(enhancedCaption))
-                    {
-                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
-                        // Always parse Gemini output as MarkdownV1
-                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
-                        captionToSend = parsedCaption;
-                        entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null;
-                    }
-                    else
-                    {
-                        // Fallback to original caption if AI fails or is disabled
-                        _logger.LogDebug("AI enhancement for album caption failed or was disabled. Sending original constructed caption.");
+                        // No caption to enhance, use original values
                         captionToSend = albumCaption;
                         entitiesToSend = albumEntities;
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    // No caption to enhance, use original values
+                    // Absolute fallback in case of any unexpected exception in the AI service
+                    _logger.LogWarning(ex, "An exception occurred during AI album caption enhancement. Proceeding with original constructed caption.");
                     captionToSend = albumCaption;
                     entitiesToSend = albumEntities;
                 }
-            }
-            catch (Exception ex)
-            {
-                // Absolute fallback in case of any unexpected exception in the AI service
-                _logger.LogWarning(ex, "An exception occurred during AI album caption enhancement. Proceeding with original constructed caption.");
-                captionToSend = albumCaption;
-                entitiesToSend = albumEntities;
-            }
 
-            try
-            {
-                // Level 3: Acquire a lock for sending media groups to a specific peer.
-                _logger.LogTrace("SendMediaGroupAsync: Attempting to acquire send lock with key: {LockKey}", lockKey);
-                using IDisposable sendLock = await AsyncLock.LockAsync(lockKey).ConfigureAwait(false);
-                _logger.LogDebug("SendMediaGroupAsync: Acquired send lock with key: {LockKey} for Peer (Type: {PeerType}, LoggedID: {PeerId})",
-                    lockKey, peerTypeForLog, peerIdForLog);
-
-                int replyToMsgIdInt = replyToMsgId.HasValue ? replyToMsgId.Value : 0;
-
-                // Level 4: Resilience Pipeline Execution for sending media group.
-                TL.Message[] sentMessages = await _resiliencePipeline.ExecuteAsync(async (context, token) =>
-                    await _client!.SendAlbumAsync(
-                        peer: peer,
-                        medias: media,
-                        caption: captionToSend,         // Use the final caption
-                        reply_to_msg_id: replyToMsgIdInt,
-                        entities: entitiesToSend,       // Use the final entities
-                        schedule_date: schedule_date ?? default
-                    ).ConfigureAwait(false),
-                    new Polly.Context(nameof(SendMediaGroupAsync)),
-                    cancellationToken
-                ).ConfigureAwait(false);
-
-                // Level 1: Post-API call validation
-                if (sentMessages is null || sentMessages.Length == 0)
+                try
                 {
-                    _logger.LogError("SendMediaGroupAsync: WTelegramClient API call returned null or empty array after Polly retries. This is unexpected. Peer: {PeerId}, Media Items: {MediaItemsInfo}", peerIdForLog, mediaItemsInfo);
-                    throw new InvalidOperationException("Telegram API call to SendAlbumAsync unexpectedly returned null or empty array after all retries.");
+                    // Level 3: Acquire a lock for sending media groups to a specific peer.
+                    _logger.LogTrace("SendMediaGroupAsync: Attempting to acquire send lock with key: {LockKey}", lockKey);
+                    using IDisposable sendLock = await AsyncLock.LockAsync(lockKey).ConfigureAwait(false);
+                    _logger.LogDebug("SendMediaGroupAsync: Acquired send lock with key: {LockKey} for Peer (Type: {PeerType}, LoggedID: {PeerId})",
+                        lockKey, peerTypeForLog, peerIdForLog);
+
+                    int replyToMsgIdInt = replyToMsgId.HasValue ? replyToMsgId.Value : 0;
+
+                    // Level 4: Resilience Pipeline Execution for sending media group.
+                    TL.Message[] sentMessages = await _resiliencePipeline.ExecuteAsync(async (context, token) =>
+                        await _client!.SendAlbumAsync(
+                            peer: peer,
+                            medias: media,
+                            caption: captionToSend,         // Use the final caption
+                            reply_to_msg_id: replyToMsgIdInt,
+                            entities: entitiesToSend,       // Use the final entities
+                            schedule_date: schedule_date ?? default
+                        ).ConfigureAwait(false),
+                        new Polly.Context(nameof(SendMediaGroupAsync)),
+                        cancellationToken
+                    ).ConfigureAwait(false);
+
+                    // Level 1: Post-API call validation
+                    if (sentMessages is null || sentMessages.Length == 0)
+                    {
+                        _logger.LogError("SendMediaGroupAsync: WTelegramClient API call returned null or empty array after Polly retries. This is unexpected. Peer: {PeerId}, Media Items: {MediaItemsInfo}", peerIdForLog, mediaItemsInfo);
+                        throw new InvalidOperationException("Telegram API call to SendAlbumAsync unexpectedly returned null or empty array after all retries.");
+                    }
+
+                    // Level 2: Informational logging for success
+                    _logger.LogInformation("SendMediaGroupAsync: Successfully sent media group of {MediaCount} items to Peer (Type: {PeerType}, LoggedID: {PeerId}). First message ID: {FirstMessageId}.",
+                        media.Count, peerTypeForLog, peerIdForLog, sentMessages.FirstOrDefault()?.id ?? 0);
+                }
+                // Level 6: Consistent Error Handling and Logging
+                catch (OperationCanceledException oce)
+                {
+                    _logger.LogInformation(oce, "SendMediaGroupAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Media Items: {MediaItemsInfo}.",
+                        peerTypeForLog, peerIdForLog, mediaItemsInfo);
+                    throw;
+                }
+                catch (TL.RpcException rpcEx)
+                {
+                    _logger.LogError(rpcEx, "SendMediaGroupAsync: Telegram API (RPC) exception occurred after Polly retries exhausted (or error was not retryable) for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}.",
+                        peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "SendMediaGroupAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
+                        peerTypeForLog, peerIdForLog);
+                    throw;
+                }
+                finally
+                {
+                    _logger.LogTrace("SendMediaGroupAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
                 }
 
-                // Level 2: Informational logging for success
-                _logger.LogInformation("SendMediaGroupAsync: Successfully sent media group of {MediaCount} items to Peer (Type: {PeerType}, LoggedID: {PeerId}). First message ID: {FirstMessageId}.",
-                    media.Count, peerTypeForLog, peerIdForLog, sentMessages.FirstOrDefault()?.id ?? 0);
             }
-            // Level 6: Consistent Error Handling and Logging
-            catch (OperationCanceledException oce)
+            catch {  }
             {
-                _logger.LogInformation(oce, "SendMediaGroupAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Media Items: {MediaItemsInfo}.",
-                    peerTypeForLog, peerIdForLog, mediaItemsInfo);
-                throw;
-            }
-            catch (TL.RpcException rpcEx)
-            {
-                _logger.LogError(rpcEx, "SendMediaGroupAsync: Telegram API (RPC) exception occurred after Polly retries exhausted (or error was not retryable) for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}.",
-                    peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "SendMediaGroupAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
-                    peerTypeForLog, peerIdForLog);
-                throw;
-            }
-            finally
-            {
-                _logger.LogTrace("SendMediaGroupAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
+            
             }
         }
+
+            
         /// <summary>
         /// Forwards messages from one peer to another.
         /// Uses resilience policies.
