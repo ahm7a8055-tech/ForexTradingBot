@@ -224,7 +224,7 @@ namespace WebAPI.Controllers
                     _logger.LogWarning("Log file not found or access denied during view: {SanitizedFileName}", sanitizedFileName);
                     return CreateSecureErrorResponse(
                         StatusCodes.Status404NotFound, 
-                        $"Log file '{validatedFileName}' not found or access denied.");
+                        "Log file not found or access denied.");
                 }
 
                 // SECURITY: Validate content before returning
@@ -254,7 +254,7 @@ namespace WebAPI.Controllers
                 // SECURITY: Return sanitized error response without exposing sensitive information
                 return CreateSecureErrorResponse(
                     StatusCodes.Status500InternalServerError, 
-                    $"An error occurred while viewing log file '{validatedFileName}'. Please try again later.",
+                    "An error occurred while viewing log file. Please try again later.",
                     errorId);
             }
         }

@@ -92,6 +92,27 @@ namespace WebAPI.Controllers
         }
         #endregion
 
+        #region Secure Error Response Methods
+        /// <summary>
+        /// Creates a secure error response that doesn't expose sensitive information to clients.
+        /// </summary>
+        /// <param name="statusCode">The HTTP status code</param>
+        /// <param name="userMessage">User-friendly message (no sensitive data)</param>
+        /// <param name="internalErrorId">Optional internal error ID for tracking</param>
+        /// <returns>Secure error response</returns>
+        private IActionResult CreateSecureErrorResponse(int statusCode, string userMessage, string? internalErrorId = null)
+        {
+            var response = new
+            {
+                Error = userMessage,
+                ErrorId = internalErrorId ?? Guid.NewGuid().ToString("N")[..8], // Short error ID for tracking
+                Timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            };
+
+            return StatusCode(statusCode, response);
+        }
+        #endregion
+
         #region DTOs
         public class TestConfigRequestModel
         {
@@ -243,9 +264,10 @@ namespace WebAPI.Controllers
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Database connection test failed.");
+                var errorId = Guid.NewGuid().ToString("N")[..8];
+                _logger.LogError(sanitizedException, "Database connection test failed. ErrorId: {ErrorId}", errorId);
                 response.DatabaseStatus = "Error";
-                response.DatabaseError = "Database connection failed. Check your connection string and network connectivity.";
+                response.DatabaseError = "Database connection failed. Please check your connection string and network connectivity.";
             }
 
             // Test Redis Connection
@@ -284,9 +306,10 @@ namespace WebAPI.Controllers
                 {
                     // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                     var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                    _logger.LogError(sanitizedException, "Redis connection test failed.");
+                    var errorId = Guid.NewGuid().ToString("N")[..8];
+                    _logger.LogError(sanitizedException, "Redis connection test failed. ErrorId: {ErrorId}", errorId);
                     response.RedisStatus = "Error";
-                    response.RedisError = "Redis connection failed. Check your connection string and network connectivity.";
+                    response.RedisError = "Redis connection failed. Please check your connection string and network connectivity.";
                 }
             }
             else
@@ -329,10 +352,11 @@ namespace WebAPI.Controllers
                         var errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
                         // SECURITY: Sanitize error content before logging
                         var sanitizedErrorContent = SanitizeForLogging(errorContent);
-                        _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {SanitizedErrorContent}", 
-                            telegramApiResponse.StatusCode, sanitizedErrorContent);
+                        var errorId = Guid.NewGuid().ToString("N")[..8];
+                        _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {SanitizedErrorContent}, ErrorId: {ErrorId}", 
+                            telegramApiResponse.StatusCode, sanitizedErrorContent, errorId);
                         response.TelegramStatus = "Error";
-                        response.TelegramError = $"Telegram API returned {telegramApiResponse.StatusCode}. Details: {errorContent}";
+                        response.TelegramError = "Telegram API test failed. Please check your bot token.";
                     }
                 }
             }
@@ -340,9 +364,10 @@ namespace WebAPI.Controllers
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Telegram Bot Token test failed.");
+                var errorId = Guid.NewGuid().ToString("N")[..8];
+                _logger.LogError(sanitizedException, "Telegram Bot Token test failed. ErrorId: {ErrorId}", errorId);
                 response.TelegramStatus = "Error";
-                response.TelegramError = "Telegram bot token test failed. Check your token and network connectivity.";
+                response.TelegramError = "Telegram bot token test failed. Please check your token and network connectivity.";
             }
 
             return Ok(response);
@@ -364,7 +389,9 @@ namespace WebAPI.Controllers
 
             if (validatedDbConn == null)
             {
-                return BadRequest(new { Error = "Invalid database connection string format." });
+                return CreateSecureErrorResponse(
+                    StatusCodes.Status400BadRequest, 
+                    "Invalid database connection string format.");
             }
 
             // CRITICAL SECURITY NOTE:
@@ -395,8 +422,12 @@ namespace WebAPI.Controllers
             _logger.LogWarning("DbConn: {SanitizedDbConn}", sanitizedDbConn);
             _logger.LogWarning("RedisConn: {SanitizedRedisConn}", sanitizedRedisConn);
 
-            // Simulate successful save
-            return Ok(new { Message = "Configuration received (placeholder save). See server logs for details. Ensure real-world implementation uses secure configuration stores." });
+            // SECURITY: Return a secure response without exposing sensitive information
+            return Ok(new { 
+                Message = "Configuration received successfully. This is a placeholder implementation. In production, use secure configuration stores.",
+                Status = "Success",
+                Timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            });
         }
     }
 }

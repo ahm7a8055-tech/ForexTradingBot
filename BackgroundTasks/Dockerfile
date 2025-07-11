@@ -1,4 +1,4 @@
-# Stage 1: Build the Application (Unified Stage)
+﻿# Stage 1: Build the Application (Unified Stage)
 # This approach mirrors the existing WebAPI Dockerfile for robustness.
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
@@ -20,15 +20,18 @@ RUN dotnet publish "BackgroundTasks/BackgroundTasks.csproj" -c Release -o /app/p
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
 
-# curl is not typically needed for a worker service unless it has a specific HTTP diagnostic endpoint.
-# If procps is needed for a process-based healthcheck, it would be installed here.
-# RUN apt-get update && apt-get install -y --no-install-recommends procps && rm -rf /var/lib/apt/lists/*
-
 COPY --from=build /app/publish .
 
+# ✅ Create the dedicated non-root user first.
 RUN adduser --system --group --disabled-password --gecos "" --home /app appuser
-USER appuser
 
+# ✅ NEW: Now that the user exists, create a secure directory for it.
+# This ensures consistency with your other services and prepares for any
+# files the worker might need to write securely.
+RUN mkdir -p /app/keys && chown appuser:appuser /app/keys && chmod 700 /app/keys
+
+# Switch to our new, non-root user for enhanced security.
+USER appuser
 # Worker services do not typically listen on HTTP ports.
 # ENV ASPNETCORE_URLS=http://+:80
 # EXPOSE 80
