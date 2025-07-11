@@ -225,13 +225,13 @@ namespace Infrastructure.Services.Admin
                 using var memoryStream = new MemoryStream();
                 using var archive = new System.IO.Compression.ZipArchive(memoryStream, System.IO.Compression.ZipArchiveMode.Create, true);
 
-                foreach (var fileName in logFiles)
+                foreach (var logFileName in logFiles)
                 {
                     // SECURITY: Validate file name before processing
-                    var validatedFileName = ValidateFileName(fileName);
+                    var validatedFileName = ValidateFileName(logFileName);
                     if (validatedFileName == null)
                     {
-                        _logger.LogWarning("Skipping invalid log file name: {SanitizedFileName}", SanitizeForLogging(fileName));
+                        _logger.LogWarning("Skipping invalid log file name: {SanitizedFileName}", SanitizeForLogging(logFileName));
                         continue;
                     }
 
@@ -245,8 +245,8 @@ namespace Infrastructure.Services.Admin
                     }
                 }
 
-                var fileName = $"logs_{DateTime.UtcNow:yyyyMMdd_HHmmss}.zip";
-                return (memoryStream.ToArray(), fileName, null);
+                var zipFileName = $"logs_{DateTime.UtcNow:yyyyMMdd_HHmmss}.zip";
+                return (memoryStream.ToArray(), zipFileName, null);
             }
             catch (Exception ex)
             {
@@ -467,10 +467,13 @@ namespace Infrastructure.Services.Admin
                     {
                         foreach (var stat in stats)
                         {
-                            if (DateTime.TryParse(stat.GetProperty("Date").GetString(), out DateTime date) &&
-                                int.TryParse(stat.GetProperty("Count").GetString(), out int count))
+                            if (DateTime.TryParse(stat.GetProperty("Date").GetString(), out DateTime date))
                             {
-                                userJoinStats.Add((date, count));
+                                var countStr = stat.GetProperty("Count").GetString();
+                                if (int.TryParse(countStr, out int dailyCount))
+                                {
+                                    userJoinStats.Add((date, dailyCount));
+                                }
                             }
                         }
                     }
@@ -508,13 +511,23 @@ namespace Infrastructure.Services.Admin
                         (SELECT COUNT(*) FROM public.""Transactions"" WHERE ""Status"" = 'Completed' AND ""CreatedAt"" >= CURRENT_DATE - INTERVAL '30 days') as CompletedTransactionsLast30Days,
                         (SELECT COALESCE(SUM(""Amount""), 0) FROM public.""Transactions"" WHERE ""Status"" = 'Completed' AND ""CreatedAt"" >= CURRENT_DATE - INTERVAL '30 days') as TotalRevenueLast30Days;";
 
-                var result = await connection.QuerySingleAsync<AdminDashboardStatsDto>(
+                // Create a custom result type that matches the SQL query
+                var result = await connection.QuerySingleAsync<dynamic>(
                     new CommandDefinition(sql, cancellationToken: cancellationToken));
 
-                _logger.LogInformation("Admin dashboard statistics retrieved successfully. Total Users: {TotalUsers}, Active Subscriptions: {ActiveSubscriptions}", 
-                    result.TotalUsers, result.ActiveSubscriptions);
+                // Map the result to the AdminDashboardStatsDto
+                var statsDto = new AdminDashboardStatsDto
+                {
+                    TotalUsers = result.TotalUsers,
+                    SignalsToday = result.NewNewsItemsToday, // Map to existing property
+                    UserGrowthLast7Days = new List<DailyCountDto>(), // Initialize empty list
+                    SignalsPerDayLast7Days = new List<DailyCountDto>() // Initialize empty list
+                };
 
-                return result;
+                _logger.LogInformation("Admin dashboard statistics retrieved successfully. Total Users: {TotalUsers}, Active Subscriptions: {ActiveSubscriptions}", 
+                    statsDto.TotalUsers, (int)result.ActiveSubscriptions);
+
+                return statsDto;
             }
             catch (Exception ex)
             {
