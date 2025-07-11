@@ -296,15 +296,14 @@ namespace Application.Services
         }
 
         /// <summary>
-        /// Registers a new user with their associated token wallet.
-        /// This method expects a pre-constructed User entity, including its TokenWallet,
-        /// to ensure correct Guid generation and prevent duplicates.
+        /// Asynchronously registers a new user with the provided information.
+        /// Invalidates the user's cache entry if the registration is successful.
         /// </summary>
-        /// <param name="registerDto">User registration details.</param>
+        /// <param name="registerDto">User registration information.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        /// <param name="userEntityToRegister">The pre-constructed User entity with its wallet.</param>
-        /// <returns>The DTO of the newly registered user.</returns>
-        /// <exception cref="InvalidOperationException">Thrown if user with given email or Telegram ID already exists, or if provided entity is invalid.</exception>
+        /// <param name="userEntityToRegister">Optional pre-constructed User entity. If null, one will be created from the DTO.</param>
+        /// <returns>The registered user's DTO.</returns>
+        /// <exception cref="InvalidOperationException">Thrown if a user with the same email already exists or if business validation fails.</exception>
         /// <exception cref="ApplicationException">Thrown on critical technical errors during registration.</exception>
         public async Task<UserDto> RegisterUserAsync(RegisterUserDto registerDto, CancellationToken cancellationToken = default, User? userEntityToRegister = null)
         {
@@ -312,26 +311,21 @@ namespace Application.Services
             {
                 throw new ArgumentNullException(nameof(registerDto));
             }
-            if (userEntityToRegister == null)
-            {
-                // This should not happen if called correctly from StartCommandHandler.
-                // If it happens, it means the pre-construction logic failed or wasn't called.
-                _logger.LogError("UserService.RegisterUserAsync called without a pre-constructed User entity. TelegramId: {TelegramId}, Email: {Email}",
-                    registerDto.TelegramId, registerDto.Email);
-                throw new ArgumentException("A pre-constructed User entity is required for registration.");
-            }
 
-            if (await _userRepository.ExistsByEmailAsync(registerDto.Email, cancellationToken))
-            {
-                throw new InvalidOperationException($"A user with email '{registerDto.Email}' already exists.");
-            }
-
+            // --- Sanitize Sensitive Data for Logging ---
+            // SECURITY: Sanitize all sensitive information before logging to prevent exposure of private information
             string sanitizedTelegramId = _logSanitizer.Sanitize(registerDto.TelegramId);
             string sanitizedUsername = _logSanitizer.Sanitize(registerDto.Username);
             string sanitizedEmail = _logSanitizer.Sanitize(registerDto.Email);
 
             _logger.LogInformation("UserService: Registering user (provided entity). TelegramId: {SanitizedTelegramId}, Username: {SanitizedUsername}, Email: {SanitizedEmail}",
                 sanitizedTelegramId, sanitizedUsername, sanitizedEmail);
+
+            // Check if user already exists by email
+            if (await _userRepository.ExistsByEmailAsync(registerDto.Email, cancellationToken))
+            {
+                throw new InvalidOperationException($"A user with email '{sanitizedEmail}' already exists.");
+            }
 
             try
             {
@@ -374,8 +368,10 @@ namespace Application.Services
                 await _cacheService.SetAsync($"user:telegram_id:{registeredUserDto.TelegramId}", registeredUserDto, TimeSpan.FromHours(1));
                 await _cacheService.SetAsync($"user:id:{registeredUserDto.Id}", registeredUserDto, TimeSpan.FromHours(1));
 
-                _logger.LogInformation("User {Username} (ID: {UserId}) registered and saved successfully. TokenWallet ID: {TokenWalletId}",
-                    registeredUserDto.Username, registeredUserDto.Id, registeredUserDto.TokenWallet?.Id);
+                // SECURITY: Sanitize username in success log
+                var sanitizedRegisteredUsername = _logSanitizer.Sanitize(registeredUserDto.Username);
+                _logger.LogInformation("User {SanitizedUsername} (ID: {UserId}) registered and saved successfully. TokenWallet ID: {TokenWalletId}",
+                    sanitizedRegisteredUsername, registeredUserDto.Id, registeredUserDto.TokenWallet?.Id);
 
                 return registeredUserDto;
             }

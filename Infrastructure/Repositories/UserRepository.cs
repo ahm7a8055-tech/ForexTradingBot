@@ -718,30 +718,49 @@ namespace Infrastructure.Repositories
         }
 
 
+        /// <inheritdoc />
         public async Task<User?> GetByEmailAsync(string email, CancellationToken cancellationToken = default)
         {
+            #region Input Validation and Preparation
+
+            // --- Validate Email Input ---
+            // Check if the provided email is null, empty, or consists only of whitespace characters.
             if (string.IsNullOrWhiteSpace(email))
             {
+                // Log a warning for invalid input, as an empty/null email cannot match any user.
                 _logger.LogWarning("UserRepository: GetByEmailAsync called with null or empty email.");
+                // Return null immediately since no user can exist with invalid criteria.
                 return null;
             }
 
-            string lowerEmail = email.ToLowerInvariant();
+            // --- Sanitize Email for Logging ---
+            // SECURITY: Sanitize email before logging to prevent exposure of private information
+            var sanitizedEmail = _logSanitizer.Sanitize(email);
 
-            string sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
-            _logger.LogTrace("UserRepository: Fetching user by Email: {SanitizedEmail}.", sanitizedEmail);
+            // --- Log Operation Details ---
+            // Log the sanitized email being searched at a trace level for detailed operational diagnostics.
+            _logger.LogTrace("UserRepository: Fetching user by email: {SanitizedEmail}.", sanitizedEmail);
+
+            #endregion
 
             try
             {
+                // --- Apply Resilience Policy ---
+                // Execute the core database operation within the retry policy.
+                // This makes the operation resilient to transient issues like temporary network disruptions or database load.
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
+                    // --- Database Connection and Query Execution ---
+                    // Obtain a database connection instance using the helper method.
                     using IDbConnection connection = CreateConnection();
+                    // Asynchronously open the database connection to the data source.
+                    // Using System.Data.Common.DbConnection for generality.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
                     // --- MODIFIED LINE ---
                     // The query is now fetched from the provider, ensuring correct syntax.
                     string userIdQuery = _sql.GetUserIdByEmailSql;
-                    Guid? userId = await connection.ExecuteScalarAsync<Guid?>(userIdQuery, new { Email = lowerEmail });
+                    Guid? userId = await connection.ExecuteScalarAsync<Guid?>(userIdQuery, new { Email = email });
 
                     if (!userId.HasValue)
                     {
@@ -755,6 +774,7 @@ namespace Infrastructure.Repositories
             }
             catch (Exception ex)
             {
+                // SECURITY: Log the error with sanitized email and exception message
                 _logger.LogError(ex, "UserRepository: Error fetching user by email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
 
@@ -1261,39 +1281,41 @@ namespace Infrastructure.Repositories
             #region Input Validation and Preparation
 
             // --- Validate Email Input ---
-            // If the provided email is null, empty, or only whitespace, it cannot exist in the database.
+            // Check if the provided email is null, empty, or consists only of whitespace characters.
             if (string.IsNullOrWhiteSpace(email))
             {
-                // Return false immediately as no valid email was provided.
+                // Log a warning for invalid input, as an empty/null email cannot match any user.
+                _logger.LogWarning("UserRepository: Checking existence by email: Input is null or empty.");
+                // Return false immediately since no user can exist with invalid criteria.
                 return false;
             }
 
-            // --- Prepare Email for Database Query and Logging ---
-            // Convert the email to lowercase for a case-insensitive database comparison.
-            string lowerEmail = email.ToLowerInvariant();
-            // Sanitize the email for safe logging, preventing potential data leakage.
-            string sanitizedEmail = _logSanitizer.Sanitize(lowerEmail);
-            // Log the intent to check for user existence, including the sanitized email for traceability.
-            _logger.LogTrace("UserRepository: Checking existence by Email: {SanitizedEmail}.", sanitizedEmail);
+            // --- Sanitize Email for Logging ---
+            // SECURITY: Sanitize email before logging to prevent exposure of private information
+            var sanitizedEmail = _logSanitizer.Sanitize(email);
+
+            // --- Log Operation Details ---
+            // Log the sanitized email being checked at a trace level for detailed operational diagnostics.
+            _logger.LogTrace("UserRepository: Checking existence by email: {SanitizedEmail}.", sanitizedEmail);
 
             #endregion
 
             try
             {
-                // --- Apply Retry Policy ---
-                // Execute the database check operation using the configured retry policy to handle transient failures.
-                // The policy will retry the operation up to a specified limit if certain exceptions occur.
+                // --- Apply Resilience Policy ---
+                // Execute the core database operation within the retry policy.
+                // This makes the operation resilient to transient issues like temporary network disruptions or database load.
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
                     // --- Database Connection and Query Execution ---
-                    // Obtain a database connection using the factory method (_CreateConnection), ensuring the correct provider is used.
-                    // Use synchronous 'using' for IDbConnection as it is only IDisposable.
+                    // Obtain a database connection instance using the helper method.
                     using IDbConnection connection = CreateConnection();
-                    // Asynchronously open the database connection.
+                    // Asynchronously open the database connection to the data source.
+                    // Using System.Data.Common.DbConnection for generality.
                     await (connection as System.Data.Common.DbConnection)!.OpenAsync(cancellationToken);
 
-                    // --- Retrieve Provider-Specific SQL ---
-                    // Fetch the SQL statement for checking email existence from the UserSqlProvider.
+                    // --- MODIFIED LINE: Retrieve SQL from Provider ---
+                    // Fetch the SQL statement for checking user existence by email from the UserSqlProvider.
                     // This ensures that the query uses the correct syntax and parameter naming conventions for the target database.
                     string sql = _sql.CheckExistsByEmailSql;
 
@@ -1301,7 +1323,7 @@ namespace Infrastructure.Repositories
                     // Execute the SQL query which is expected to return a single scalar value (the count of matching emails).
                     // Dapper's ExecuteScalarAsync is used for this purpose.
                     // The lowercased email is passed as a parameter to the query.
-                    int count = await connection.ExecuteScalarAsync<int>(sql, new { Email = lowerEmail });
+                    int count = await connection.ExecuteScalarAsync<int>(sql, new { Email = email });
 
                     // --- Determine Existence ---
                     // The user exists if the count of matching emails returned from the database is greater than zero.
@@ -1313,7 +1335,7 @@ namespace Infrastructure.Repositories
             // --- Handle General Exceptions During Operation ---
             catch (Exception ex)
             {
-                // Log the error, including both the sanitized original email and a sanitized version of the exception message for security.
+                // SECURITY: Log the error with sanitized email and exception message
                 _logger.LogError(ex, "UserRepository: Error checking existence for email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
 
@@ -1335,14 +1357,18 @@ namespace Infrastructure.Repositories
             if (string.IsNullOrWhiteSpace(telegramId))
             {
                 // Log a warning for invalid input, as an empty/null ID cannot match any user.
-                _logger.LogWarning("UserRepository: Checking existence by TelegramID: {TelegramId}. Input is invalid.", telegramId);
+                _logger.LogWarning("UserRepository: Checking existence by TelegramID: Input is null or empty.");
                 // Return false immediately since no user can exist with invalid criteria.
                 return false;
             }
 
+            // --- Sanitize Telegram ID for Logging ---
+            // SECURITY: Sanitize Telegram ID before logging to prevent exposure of private information
+            var sanitizedTelegramId = _logSanitizer.Sanitize(telegramId);
+
             // --- Log Operation Details ---
-            // Log the Telegram ID being checked at a trace level for detailed operational diagnostics.
-            _logger.LogTrace("UserRepository: Checking existence by TelegramID: {TelegramId}.", telegramId);
+            // Log the sanitized Telegram ID being checked at a trace level for detailed operational diagnostics.
+            _logger.LogTrace("UserRepository: Checking existence by TelegramID: {SanitizedTelegramId}.", sanitizedTelegramId);
 
             #endregion
 
@@ -1381,14 +1407,13 @@ namespace Infrastructure.Repositories
             // Catch any exceptions that occur during the execution of the retry policy or the database operation itself.
             catch (Exception ex)
             {
-                // Log the error, including the problematic Telegram ID and a sanitized version of the exception message for security.
-                // Sanitizing the exception message helps prevent accidental leakage of sensitive information.
-                _logger.LogError(ex, "UserRepository: Error checking existence by TelegramID {TelegramId}. Exception (Sanitized): {SanitizedException}",
-                    telegramId, _logSanitizer.Sanitize(ex.Message));
+                // SECURITY: Log the error with sanitized Telegram ID and exception message
+                _logger.LogError(ex, "UserRepository: Error checking existence by TelegramID {SanitizedTelegramId}. Exception (Sanitized): {SanitizedException}",
+                    sanitizedTelegramId, _logSanitizer.Sanitize(ex.Message));
 
                 // Wrap the original exception in a custom RepositoryException.
                 // This provides a consistent error type for consumers of the repository and abstracts away the underlying data access details.
-                throw new RepositoryException($"Failed to check existence by TelegramID '{telegramId}'.", ex);
+                throw new RepositoryException($"Failed to check existence by TelegramID '{sanitizedTelegramId}'.", ex);
             }
 
             #endregion

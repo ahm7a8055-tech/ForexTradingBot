@@ -12,9 +12,8 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Application.Interfaces; // Required for IDiagnosticsService if used directly
 using Shared.Security; // For SecureExceptionSanitizer
-using Npgsql; // For NpgsqlConnectionStringBuilder
-using StackExchange.Redis; // For ConnectionMultiplexer
 using System.Linq; // For Select
+using System.Text.RegularExpressions;
 
 namespace WebAPI.Controllers
 {
@@ -23,6 +22,7 @@ namespace WebAPI.Controllers
     [Authorize(Roles = "Admin")]
     public class ConfigController : ControllerBase
     {
+        #region Fields and Constructor
         private readonly IConfiguration _configuration;
         private readonly ILogger<ConfigController> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
@@ -39,7 +39,60 @@ namespace WebAPI.Controllers
             _httpClientFactory = httpClientFactory;
             // _diagnosticsService = diagnosticsService; // Option
         }
+        #endregion
 
+        #region Security Validation Methods
+        /// <summary>
+        /// Sanitizes user input for safe logging by removing newlines and other problematic characters.
+        /// </summary>
+        /// <param name="input">The user input to sanitize</param>
+        /// <returns>Sanitized string safe for logging</returns>
+        private static string SanitizeForLogging(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "[EMPTY_INPUT]";
+
+            // Remove newlines, carriage returns, and other problematic characters
+            var sanitized = input
+                .Replace("\r", "")
+                .Replace("\n", "")
+                .Replace("\t", " ")
+                .Replace("\0", ""); // Null characters
+
+            // Remove any remaining control characters
+            sanitized = Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
+
+            // Limit length to prevent log flooding
+            if (sanitized.Length > 100)
+            {
+                sanitized = sanitized.Substring(0, 97) + "...";
+            }
+
+            return sanitized;
+        }
+
+        /// <summary>
+        /// Sanitizes sensitive data for logging by masking most of the content.
+        /// </summary>
+        /// <param name="sensitiveInput">The sensitive input to sanitize</param>
+        /// <returns>Masked string safe for logging</returns>
+        private static string SanitizeSensitiveData(string? sensitiveInput)
+        {
+            if (string.IsNullOrWhiteSpace(sensitiveInput))
+                return "[EMPTY_SENSITIVE_INPUT]";
+
+            // For sensitive data like tokens and connection strings, mask most of the content
+            if (sensitiveInput.Length <= 8)
+            {
+                return "[MASKED_SENSITIVE_DATA]";
+            }
+
+            // Show first 4 and last 4 characters, mask the rest
+            return $"{sensitiveInput.Substring(0, 4)}...{sensitiveInput.Substring(sensitiveInput.Length - 4)}";
+        }
+        #endregion
+
+        #region DTOs
         public class TestConfigRequestModel
         {
             [Required]
@@ -61,6 +114,16 @@ namespace WebAPI.Controllers
             public string? TelegramError { get; set; }
             public string? BotUsername { get; set; }
         }
+
+        public class SaveConfigRequestModel
+        {
+            [Required]
+            public string? BotToken { get; set; }
+            [Required]
+            public string? DbConn { get; set; }
+            public string? RedisConn { get; set; }
+        }
+        #endregion
 
         #region Secure Connection String Validation
         /// <summary>
@@ -88,8 +151,8 @@ namespace WebAPI.Controllers
                     return null;
                 }
 
-                // Log only safe parts of the connection string
-                var safeConnectionInfo = $"Host={builder.Host}, Port={builder.Port}, Database={builder.Database}";
+                // SECURITY: Log only safe parts of the connection string, mask sensitive data
+                var safeConnectionInfo = $"Host={SanitizeForLogging(builder.Host)}, Port={builder.Port}, Database={SanitizeForLogging(builder.Database)}";
                 _logger.LogInformation("Validated database connection string: {SafeConnectionInfo}", safeConnectionInfo);
                 
                 return builder.ConnectionString;
@@ -127,8 +190,8 @@ namespace WebAPI.Controllers
                     return null;
                 }
 
-                // Log only safe parts of the connection string
-                var endpoints = string.Join(", ", options.EndPoints.Select(ep => ep.ToString()));
+                // SECURITY: Log only safe parts of the connection string, mask sensitive data
+                var endpoints = string.Join(", ", options.EndPoints.Select(ep => SanitizeForLogging(ep.ToString())));
                 _logger.LogInformation("Validated Redis connection string: Endpoints={Endpoints}", endpoints);
                 
                 return connectionString; // Return original as ConfigurationOptions doesn't have a ConnectionString property
@@ -257,12 +320,17 @@ namespace WebAPI.Controllers
                             response.BotUsername = usernameElement.GetString();
                         }
                         response.TelegramStatus = "OK";
-                        _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {BotUsername}", response.BotUsername);
+                        // SECURITY: Sanitize bot username before logging
+                        var sanitizedBotUsername = SanitizeForLogging(response.BotUsername);
+                        _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {SanitizedBotUsername}", sanitizedBotUsername);
                     }
                     else
                     {
                         var errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
-                        _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {ErrorContent}", telegramApiResponse.StatusCode, errorContent);
+                        // SECURITY: Sanitize error content before logging
+                        var sanitizedErrorContent = SanitizeForLogging(errorContent);
+                        _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {SanitizedErrorContent}", 
+                            telegramApiResponse.StatusCode, sanitizedErrorContent);
                         response.TelegramStatus = "Error";
                         response.TelegramError = $"Telegram API returned {telegramApiResponse.StatusCode}. Details: {errorContent}";
                     }
@@ -278,15 +346,6 @@ namespace WebAPI.Controllers
             }
 
             return Ok(response);
-        }
-
-        public class SaveConfigRequestModel
-        {
-            [Required]
-            public string? BotToken { get; set; }
-            [Required]
-            public string? DbConn { get; set; }
-            public string? RedisConn { get; set; }
         }
 
         [HttpPost("save")]
@@ -325,10 +384,16 @@ namespace WebAPI.Controllers
             //    potentially via a secure management API or a signaling mechanism (e.g., Azure App Configuration).
             //
             // This current logging is for demonstration purposes only for this project.
+            
+            // SECURITY: Sanitize all user inputs before logging to prevent log forging
+            var sanitizedBotToken = SanitizeSensitiveData(model.BotToken);
+            var sanitizedDbConn = SanitizeSensitiveData(validatedDbConn);
+            var sanitizedRedisConn = SanitizeSensitiveData(validatedRedisConn);
+            
             _logger.LogWarning("Received configuration to save (PLACEHOLDER - NOT SAVING TO APPSETTINGS.JSON):");
-            _logger.LogWarning("BotToken: {BotToken}", model.BotToken); // Be cautious logging tokens, even here.
-            _logger.LogWarning("DbConn: {DbConn}", validatedDbConn);
-            _logger.LogWarning("RedisConn: {RedisConn}", validatedRedisConn);
+            _logger.LogWarning("BotToken: {SanitizedBotToken}", sanitizedBotToken);
+            _logger.LogWarning("DbConn: {SanitizedDbConn}", sanitizedDbConn);
+            _logger.LogWarning("RedisConn: {SanitizedRedisConn}", sanitizedRedisConn);
 
             // Simulate successful save
             return Ok(new { Message = "Configuration received (placeholder save). See server logs for details. Ensure real-world implementation uses secure configuration stores." });

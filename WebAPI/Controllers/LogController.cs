@@ -19,6 +19,7 @@ namespace WebAPI.Controllers
     [Authorize(Roles = "Admin")]
     public class LogController : ControllerBase
     {
+        #region Fields and Constructor
         private readonly IAdminService _adminService;
         private readonly ILogger<LogController> _logger;
 
@@ -27,6 +28,7 @@ namespace WebAPI.Controllers
             _adminService = adminService;
             _logger = logger;
         }
+        #endregion
 
         #region Security Validation Methods
         /// <summary>
@@ -56,6 +58,25 @@ namespace WebAPI.Controllers
             }
 
             return sanitized;
+        }
+
+        /// <summary>
+        /// Creates a secure error response that doesn't expose sensitive information to clients.
+        /// </summary>
+        /// <param name="statusCode">The HTTP status code</param>
+        /// <param name="userMessage">User-friendly message (no sensitive data)</param>
+        /// <param name="internalErrorId">Optional internal error ID for tracking</param>
+        /// <returns>Secure error response</returns>
+        private IActionResult CreateSecureErrorResponse(int statusCode, string userMessage, string? internalErrorId = null)
+        {
+            var response = new
+            {
+                Error = userMessage,
+                ErrorId = internalErrorId ?? Guid.NewGuid().ToString("N")[..8], // Short error ID for tracking
+                Timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            };
+
+            return StatusCode(statusCode, response);
         }
 
         /// <summary>
@@ -115,6 +136,7 @@ namespace WebAPI.Controllers
         }
         #endregion
 
+        #region API Endpoints
         /// <summary>
         /// Lists available log files.
         /// </summary>
@@ -138,8 +160,14 @@ namespace WebAPI.Controllers
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Error listing log files.");
-                return StatusCode(StatusCodes.Status500InternalServerError, "An error occurred while listing log files.");
+                var errorId = Guid.NewGuid().ToString("N")[..8];
+                _logger.LogError(sanitizedException, "Error listing log files. ErrorId: {ErrorId}", errorId);
+                
+                // SECURITY: Return sanitized error response without exposing sensitive information
+                return CreateSecureErrorResponse(
+                    StatusCodes.Status500InternalServerError, 
+                    "An error occurred while listing log files. Please try again later.",
+                    errorId);
             }
         }
 
@@ -169,12 +197,16 @@ namespace WebAPI.Controllers
 
             if (validatedFileName == null)
             {
-                return BadRequest("Invalid file name format. File name must be in format: log-YYYYMMDD.txt");
+                return CreateSecureErrorResponse(
+                    StatusCodes.Status400BadRequest, 
+                    "Invalid file name format. File name must be in format: log-YYYYMMDD.txt");
             }
 
             if (lineCount.HasValue && validatedLineCount == null)
             {
-                return BadRequest("Invalid line count. Must be between 1 and 10000.");
+                return CreateSecureErrorResponse(
+                    StatusCodes.Status400BadRequest, 
+                    "Invalid line count. Must be between 1 and 10000.");
             }
 
             // SECURITY: Use sanitized values for logging
@@ -190,7 +222,9 @@ namespace WebAPI.Controllers
                 if (content == null)
                 {
                     _logger.LogWarning("Log file not found or access denied during view: {SanitizedFileName}", sanitizedFileName);
-                    return NotFound($"Log file '{validatedFileName}' not found or access denied.");
+                    return CreateSecureErrorResponse(
+                        StatusCodes.Status404NotFound, 
+                        $"Log file '{validatedFileName}' not found or access denied.");
                 }
 
                 // SECURITY: Validate content before returning
@@ -198,7 +232,9 @@ namespace WebAPI.Controllers
                 {
                     _logger.LogWarning("Log file content too large: {SanitizedFileName}, Size: {Size} bytes", 
                         sanitizedFileName, content.Length);
-                    return BadRequest("Log file content is too large to display.");
+                    return CreateSecureErrorResponse(
+                        StatusCodes.Status400BadRequest, 
+                        "Log file content is too large to display.");
                 }
 
                 _logger.LogInformation("Successfully retrieved log file content: {SanitizedFileName}, Size: {Size} bytes", 
@@ -211,8 +247,15 @@ namespace WebAPI.Controllers
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Error viewing log file: {SanitizedFileName}", sanitizedFileName);
-                return StatusCode(StatusCodes.Status500InternalServerError, $"An error occurred while viewing log file '{validatedFileName}'.");
+                var errorId = Guid.NewGuid().ToString("N")[..8];
+                _logger.LogError(sanitizedException, "Error viewing log file: {SanitizedFileName}. ErrorId: {ErrorId}", 
+                    sanitizedFileName, errorId);
+                
+                // SECURITY: Return sanitized error response without exposing sensitive information
+                return CreateSecureErrorResponse(
+                    StatusCodes.Status500InternalServerError, 
+                    $"An error occurred while viewing log file '{validatedFileName}'. Please try again later.",
+                    errorId);
             }
         }
 
@@ -235,7 +278,11 @@ namespace WebAPI.Controllers
                     // SECURITY: Sanitize error message before logging
                     var sanitizedErrorMessage = SanitizeForLogging(errorMessage);
                     _logger.LogWarning("Failed to get log files for ZIP download: {SanitizedErrorMessage}", sanitizedErrorMessage);
-                    return NotFound(errorMessage ?? "No log files found or an error occurred.");
+                    
+                    // SECURITY: Return sanitized error response without exposing sensitive information
+                    return CreateSecureErrorResponse(
+                        StatusCodes.Status404NotFound, 
+                        "No log files found or an error occurred while preparing the download.");
                 }
 
                 // SECURITY: Sanitize file name before logging
@@ -248,7 +295,9 @@ namespace WebAPI.Controllers
                 {
                     _logger.LogWarning("ZIP file too large for download: {SanitizedFileName}, Size: {Size} bytes", 
                         sanitizedFileName, zipContents.Length);
-                    return BadRequest("ZIP file is too large for download.");
+                    return CreateSecureErrorResponse(
+                        StatusCodes.Status400BadRequest, 
+                        "ZIP file is too large for download.");
                 }
 
                 return File(zipContents, "application/zip", fileName);
@@ -257,9 +306,16 @@ namespace WebAPI.Controllers
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Error downloading log files as ZIP.");
-                return StatusCode(StatusCodes.Status500InternalServerError, "An error occurred while preparing log files for download.");
+                var errorId = Guid.NewGuid().ToString("N")[..8];
+                _logger.LogError(sanitizedException, "Error downloading log files as ZIP. ErrorId: {ErrorId}", errorId);
+                
+                // SECURITY: Return sanitized error response without exposing sensitive information
+                return CreateSecureErrorResponse(
+                    StatusCodes.Status500InternalServerError, 
+                    "An error occurred while preparing log files for download. Please try again later.",
+                    errorId);
             }
         }
+        #endregion
     }
 }
