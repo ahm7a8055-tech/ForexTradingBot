@@ -1,16 +1,19 @@
 using Application.Common.Interfaces;
 using Application.DTOs.Admin; // For DynamicSettingDto
+using Application.Interfaces;
 using Domain.Entities;
 using Infrastructure.Data; // For AppDbContext
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection; // For IServiceScopeFactory
 using Microsoft.Extensions.Logging;
+using Shared.Security; // For SecureExceptionSanitizer
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 
 namespace Infrastructure.Services
 {
@@ -21,7 +24,7 @@ namespace Infrastructure.Services
         private readonly IConfiguration _configuration; // To check environment variables and appsettings.json
         private readonly ILogger<DynamicConfigurationService> _logger;
 
-        // In-memory registry of defined settings (key, sensitivity, description, appsettings.json default)
+        // Cache of all defined settings with their metadata
         private readonly Dictionary<string, SettingDefinition> _definedSettings = new Dictionary<string, SettingDefinition>(StringComparer.OrdinalIgnoreCase);
 
         private record SettingDefinition(string Key, string? DefaultValueFromConfig, bool IsSensitive, string? Description);
@@ -36,17 +39,92 @@ namespace Infrastructure.Services
             _protectionService = protectionService;
             _configuration = configuration;
             _logger = logger;
-
-            // Populate defined settings (this could also be done via DI or a config file)
-            // For now, it's empty; settings need to be registered via RegisterSettingDefinition.
-            // In a real app, you'd call RegisterSettingDefinition for all known configurable settings at startup.
         }
+
+        #region Security Validation Methods
+        /// <summary>
+        /// Sanitizes user input for safe logging by removing newlines and other problematic characters.
+        /// </summary>
+        /// <param name="input">The user input to sanitize</param>
+        /// <returns>Sanitized string safe for logging</returns>
+        private static string SanitizeForLogging(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "[EMPTY_INPUT]";
+
+            // Remove newlines, carriage returns, and other problematic characters
+            var sanitized = input
+                .Replace("\r", "")
+                .Replace("\n", "")
+                .Replace("\t", " ")
+                .Replace("\0", ""); // Null characters
+
+            // Remove any remaining control characters
+            sanitized = Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
+
+            // Limit length to prevent log flooding
+            if (sanitized.Length > 100)
+            {
+                sanitized = sanitized.Substring(0, 97) + "...";
+            }
+
+            return sanitized;
+        }
+
+        /// <summary>
+        /// Validates setting keys to prevent injection attacks.
+        /// </summary>
+        /// <param name="key">The setting key to validate</param>
+        /// <returns>Validated key or null if invalid</returns>
+        private string? ValidateSettingKey(string? key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                _logger.LogWarning("Setting key is null or empty.");
+                return null;
+            }
+
+            var sanitizedKey = SanitizeForLogging(key);
+
+            // Check for potentially dangerous characters
+            if (sanitizedKey.Contains("..") || 
+                sanitizedKey.Contains("\\") || 
+                sanitizedKey.Contains("/") ||
+                sanitizedKey.Contains(":") ||
+                sanitizedKey.Contains(";") ||
+                sanitizedKey.Contains("'") ||
+                sanitizedKey.Contains("\"") ||
+                sanitizedKey.Contains("<") ||
+                sanitizedKey.Contains(">"))
+            {
+                _logger.LogWarning("Potentially dangerous characters detected in setting key: {SanitizedKey}", sanitizedKey);
+                return null;
+            }
+
+            // Validate key format (should be alphanumeric with dots and underscores)
+            if (!Regex.IsMatch(sanitizedKey, @"^[a-zA-Z0-9._-]+$"))
+            {
+                _logger.LogWarning("Invalid setting key format: {SanitizedKey}", sanitizedKey);
+                return null;
+            }
+
+            return sanitizedKey;
+        }
+        #endregion
 
         public void RegisterSettingDefinition(string key, string? defaultValueFromConfig, bool isSensitive, string? description)
         {
-            if (string.IsNullOrWhiteSpace(key)) throw new ArgumentNullException(nameof(key));
-            _definedSettings[key] = new SettingDefinition(key, defaultValueFromConfig, isSensitive, description);
-            _logger.LogDebug("Registered setting definition for key: {SettingKey}", key);
+            // SECURITY: Validate setting key before registration
+            var validatedKey = ValidateSettingKey(key);
+            if (validatedKey == null)
+            {
+                _logger.LogError("Cannot register setting definition: Invalid key format.");
+                return;
+            }
+
+            _definedSettings[validatedKey] = new SettingDefinition(validatedKey, defaultValueFromConfig, isSensitive, description);
+            _logger.LogDebug("Setting definition registered: {SanitizedKey}, Sensitive: {IsSensitive}", 
+                SanitizeForLogging(validatedKey), isSensitive);
         }
 
         public IEnumerable<string> GetAllDefinedSettingKeys()
@@ -56,13 +134,21 @@ namespace Infrastructure.Services
 
         public async Task<IDynamicSetting?> GetSettingAsync(string key, CancellationToken cancellationToken = default)
         {
-            if (!_definedSettings.TryGetValue(key, out var definition))
+            // SECURITY: Validate setting key before processing
+            var validatedKey = ValidateSettingKey(key);
+            if (validatedKey == null)
             {
-                _logger.LogWarning("Attempted to get undefined setting: {SettingKey}", key);
-                return null; // Or throw, depending on desired behavior for undefined keys
+                _logger.LogWarning("GetSettingAsync called with invalid key format.");
+                return null;
             }
 
-            string? envVarValue = _configuration[key.Replace(":", "__")]; // Env vars use __ for :
+            if (!_definedSettings.TryGetValue(validatedKey, out var definition))
+            {
+                _logger.LogWarning("GetSettingAsync called for undefined setting: {SanitizedKey}", SanitizeForLogging(validatedKey));
+                return null;
+            }
+
+            string? envVarValue = _configuration[validatedKey.Replace(":", "__")];
             bool isOverriddenByEnv = !string.IsNullOrEmpty(envVarValue);
 
             ApplicationSetting? dbSetting = null;
@@ -71,13 +157,12 @@ namespace Infrastructure.Services
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 dbSetting = await dbContext.ApplicationSettings
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+                    .FirstOrDefaultAsync(s => s.SettingKey == validatedKey, cancellationToken);
             }
 
             string? currentValueInDb = dbSetting?.SettingValue;
-            string? effectiveValue; // This is the raw value (possibly encrypted) the app would use or has from DB/Config
-            string? displayValue;   // This is for the UI
-
+            string? effectiveValue;
+            string? displayValue;
             bool isPersistedInDb = dbSetting != null;
             DateTime? lastModifiedUtc = dbSetting?.LastModifiedUtc;
 
@@ -88,16 +173,8 @@ namespace Infrastructure.Services
             }
             else if (isPersistedInDb && currentValueInDb != null)
             {
-                effectiveValue = currentValueInDb; // This is still raw from DB (might be encrypted)
-                if (definition.IsSensitive)
-                {
-                    displayValue = "***** (Set in Database)";
-                }
-                else
-                {
-                    // Non-sensitive value from DB is shown directly
-                    displayValue = currentValueInDb;
-                }
+                effectiveValue = currentValueInDb; // Raw from DB
+                displayValue = definition.IsSensitive ? "***** (Set in Database)" : currentValueInDb;
             }
             else // Not in Env, Not in DB - use appsettings.json default
             {
@@ -106,7 +183,7 @@ namespace Infrastructure.Services
             }
 
             return new DynamicSettingDto(
-                key,
+                validatedKey,
                 effectiveValue, // Raw value for internal logic, might be encrypted if from DB and sensitive
                 displayValue,
                 definition.IsSensitive,
@@ -119,17 +196,26 @@ namespace Infrastructure.Services
 
         public async Task<string?> GetDecryptedValueAsync(string key, CancellationToken cancellationToken = default)
         {
-            if (!_definedSettings.TryGetValue(key, out var definition))
+            // SECURITY: Validate setting key before processing
+            var validatedKey = ValidateSettingKey(key);
+            if (validatedKey == null)
+            {
+                _logger.LogWarning("GetDecryptedValueAsync called with invalid key format.");
+                return null;
+            }
+
+            if (!_definedSettings.TryGetValue(validatedKey, out var definition))
             {
                 // For internal consumption, if a key isn't defined but is requested,
                 // it might imply an issue or an ad-hoc key.
                 // Fallback to direct configuration lookup for maximum flexibility,
                 // assuming it's not a UI-managed dynamic setting.
-                _logger.LogDebug("GetDecryptedValueAsync called for key '{SettingKey}' not explicitly defined. Checking IConfiguration.", key);
-                return _configuration[key.Replace(":", "__")] ?? _configuration[key];
+                _logger.LogDebug("GetDecryptedValueAsync called for key '{SanitizedKey}' not explicitly defined. Checking IConfiguration.", 
+                    SanitizeForLogging(validatedKey));
+                return _configuration[validatedKey.Replace(":", "__")] ?? _configuration[validatedKey];
             }
 
-            string? envVarValue = _configuration[key.Replace(":", "__")];
+            string? envVarValue = _configuration[validatedKey.Replace(":", "__")];
             if (!string.IsNullOrEmpty(envVarValue))
             {
                 return envVarValue; // Environment variables are king and assumed plaintext
@@ -141,7 +227,7 @@ namespace Infrastructure.Services
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 dbSetting = await dbContext.ApplicationSettings
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+                    .FirstOrDefaultAsync(s => s.SettingKey == validatedKey, cancellationToken);
             }
 
             if (dbSetting?.SettingValue != null)
@@ -154,7 +240,10 @@ namespace Infrastructure.Services
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Failed to decrypt setting '{SettingKey}' from database. Returning null or default.", key);
+                        // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                        var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                        _logger.LogError(sanitizedException, "Failed to decrypt setting '{SanitizedKey}' from database. Returning null or default.", 
+                            SanitizeForLogging(validatedKey));
                         // Fallback to default from config if decryption fails
                         return definition.DefaultValueFromConfig;
                     }
@@ -240,20 +329,29 @@ namespace Infrastructure.Services
                     var key = kvp.Key;
                     var newValue = kvp.Value; // This is the raw, plaintext new value from UI
 
-                    if (!_definedSettings.TryGetValue(key, out var definition))
+                    // SECURITY: Validate setting key before processing
+                    var validatedKey = ValidateSettingKey(key);
+                    if (validatedKey == null)
                     {
-                        _logger.LogWarning("Attempted to update undefined setting: {SettingKey}. Skipping.", key);
+                        _logger.LogWarning("Attempted to update setting with invalid key format. Skipping.");
+                        continue;
+                    }
+
+                    if (!_definedSettings.TryGetValue(validatedKey, out var definition))
+                    {
+                        _logger.LogWarning("Attempted to update undefined setting: {SanitizedKey}. Skipping.", 
+                            SanitizeForLogging(validatedKey));
                         continue; // Or throw, based on strictness
                     }
 
                     ApplicationSetting? dbSetting = await dbContext.ApplicationSettings
-                        .FirstOrDefaultAsync(s => s.SettingKey == key, cancellationToken);
+                        .FirstOrDefaultAsync(s => s.SettingKey == validatedKey, cancellationToken);
 
                     if (dbSetting == null)
                     {
                         dbSetting = new ApplicationSetting
                         {
-                            SettingKey = key,
+                            SettingKey = validatedKey,
                             Description = definition.Description,
                             IsEncrypted = definition.IsSensitive
                         };
@@ -270,7 +368,11 @@ namespace Infrastructure.Services
                         dbSetting.SettingValue = newValue;
                     }
                     dbSetting.LastModifiedUtc = DateTime.UtcNow;
-                    _logger.LogInformation("Setting '{SettingKey}' updated in database (value {IsSensitive}).", key, definition.IsSensitive ? "is sensitive and was encrypted" : "is not sensitive");
+                    
+                    // SECURITY: Use sanitized key for logging
+                    _logger.LogInformation("Setting '{SanitizedKey}' updated in database (value {IsSensitive}).", 
+                        SanitizeForLogging(validatedKey), 
+                        definition.IsSensitive ? "is sensitive and was encrypted" : "is not sensitive");
                 }
 
                 await dbContext.SaveChangesAsync(cancellationToken);
@@ -286,7 +388,9 @@ namespace Infrastructure.Services
             catch (Exception ex)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                _logger.LogError(ex, "Error updating settings in database. Transaction rolled back.");
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error updating settings in database. Transaction rolled back.");
                 throw; // Re-throw to indicate failure
             }
         }

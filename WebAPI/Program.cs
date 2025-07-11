@@ -46,6 +46,7 @@ using Infrastructure.Services; // For DynamicConfigurationService, SettingsServi
 using Infrastructure.Configuration; // For DatabaseConfigurationSource/Provider
 using Application.Interfaces;
 using Application.Services; // For IDiagnosticsService, ISettingsService
+using Shared.Security; // For SecureExceptionSanitizer
 
 #endregion
 
@@ -67,7 +68,10 @@ Log.Logger = new LoggerConfiguration()
 // Add a global handler for unhandled exceptions. This is our safety net.
 AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
 {
-    Log.Fatal((Exception)eventArgs.ExceptionObject, "FATAL UNHANDLED EXCEPTION");
+    // SECURITY: Sanitize exception details to prevent sensitive data exposure
+    var exception = (Exception)eventArgs.ExceptionObject;
+    var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(exception); // High security for Telegram
+    Log.Fatal(sanitizedDetails, "FATAL UNHANDLED EXCEPTION");
     Log.CloseAndFlush(); // Ensure the fatal log is sent before the app dies
 };
 
@@ -86,7 +90,6 @@ try
         minWorker,
         minIo
     );
-    #endregion
 
     #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -317,6 +320,7 @@ try
     #region AutoMapper and LoggingSanitizer (region master)
     builder.Services.AddAutoMapper(typeof(Program));
     builder.Services.AddSingleton<Application.Common.Interfaces.ILoggingSanitizer, Infrastructure.Security.PiiLoggingSanitizer>();
+    builder.Services.AddSingleton<Shared.Security.IExceptionSanitizer, Shared.Security.ExceptionSanitizer>();
     #endregion
 
     #region Add Core ASP.NET Core Services (region master)
@@ -449,7 +453,10 @@ try
     Log.Information("Application services registered.");
 
     // Configure Data Protection - Keys persisted to file system.
-    // IMPORTANT: For production, ensure this 'keys' directory is properly secured and backed up.
+    // #region Data Protection Key Security
+    // IMPORTANT: For production, store keys in a secure location (Azure Key Vault, AWS KMS, or a locked-down network share).
+    // The /keys folder must be accessible ONLY to the app's service account. Do not allow other users or admins access.
+    // #endregion
     // Consider using Azure Blob Storage, Redis, or another provider for key persistence in a distributed environment.
     var keysFolder = Path.Combine(builder.Environment.ContentRootPath, "keys");
     Directory.CreateDirectory(keysFolder); // Ensure the directory exists
@@ -583,11 +590,21 @@ try
     bool isAutoForwardingEnabled = !string.IsNullOrEmpty(apiId) && !string.IsNullOrEmpty(apiHash);
     try
     {
+        #region Restrict Interactive Prompts to Development Only
         if (Environment.UserInteractive)
         {
-            // This helper class is defined at the bottom of Program.cs
-            ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
+            if (builder.Environment.IsDevelopment())
+            {
+                Log.Information("Development mode: Prompting for missing secrets for local debug session.");
+                ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
+            }
+            else
+            {
+                Log.Fatal("FATAL: Application started in interactive mode in a non-Development environment. This is a security risk and is forbidden. Aborting.");
+                Environment.Exit(1);
+            }
         }
+        #endregion
 
 
         if (isAutoForwardingEnabled)
@@ -676,7 +693,9 @@ try
         {
             // This is not a fatal error, so we just log it and continue.
             // The app might be connecting to a remote or non-service SQL instance.
-            Log.Warning(exSql, "Could not ensure local SQL Server services are running. This may be expected.");
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
+            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(exSql); // High security for Telegram
+            Log.Warning(sanitizedDetails, "Could not ensure local SQL Server services are running. This may be expected.");
         }
     }
     else
@@ -825,7 +844,9 @@ try
         catch (Exception ex)
         {
             // --- THIS IS THE FALLBACK LOGIC ---
-            Log.Error(ex, "FAILED to configure Hangfire with the specified database storage. FALLING BACK TO IN-MEMORY STORAGE.");
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
+            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            Log.Error(sanitizedDetails, "FAILED to configure Hangfire with the specified database storage. FALLING BACK TO IN-MEMORY STORAGE.");
             Log.Warning("Hangfire jobs will NOT be persisted and will be lost if the application restarts.");
 
             // CORRECTED: Do NOT call AddHangfire again. Just configure the existing 'config' object.
@@ -972,13 +993,17 @@ try
             }
             catch (Exception createEx)
             {
-                Log.Error(createEx, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
+                // SECURITY: Sanitize exception details to prevent sensitive data exposure
+                var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(createEx); // High security for Telegram
+                Log.Error(sanitizedDetails, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
                 throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
             }
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Failed to apply database migrations or create database. Connection string may be invalid.");
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
+            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            Log.Error(sanitizedDetails, "Failed to apply database migrations or create database. Connection string may be invalid.");
             throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
         }
     }
@@ -1013,7 +1038,9 @@ try
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "An error occurred while trying to enqueue startup maintenance jobs.");
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
+            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            Log.Error(sanitizedDetails, "An error occurred while trying to enqueue startup maintenance jobs.");
         }
     });
 
@@ -1048,7 +1075,9 @@ try
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
+            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            Log.Warning(sanitizedDetails, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
 
             // In release mode, prompt user for options
             if (!app.Environment.IsDevelopment())
@@ -1244,7 +1273,9 @@ try
         {
             // Use the ILogger from the dependency injection container
             ILogger<Program> logger = app.Services.GetRequiredService<ILogger<Program>>();
-            logger.LogError(ex, "Caught a test exception.");
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
+            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            logger.LogError(sanitizedDetails, "Caught a test exception.");
             return Results.Problem("A test error was logged. Check your Telegram and console.");
         }
     });
@@ -1255,7 +1286,9 @@ try
 catch (Exception ex)
 {
     //  لاگ کردن خطاهای بسیار بحرانی که مانع از اجرای برنامه شده‌اند.
-    Log.Fatal(ex, "Application host very much terminated unexpectedly.");
+    // SECURITY: Sanitize exception details to prevent sensitive data exposure
+    var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+    Log.Fatal(sanitizedDetails, "Application host very much terminated unexpectedly.");
     // Environment.ExitCode = 1; //  برای نشان دادن خروج ناموفق به سیستم عامل یا اسکریپت‌های دیگر
 }
 finally
@@ -1546,4 +1579,4 @@ public static class SystemInfoHelper
 #endregion
 
 #endregion
-
+#endregion

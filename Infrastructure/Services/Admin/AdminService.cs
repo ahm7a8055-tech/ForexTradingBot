@@ -1,23 +1,36 @@
 ﻿// --- START OF FILE: Infrastructure/Services/AdminService.cs ---
 
+#region Usings
 using Application.DTOs.Admin;
 using Application.DTOs.Settings;
 using Application.Interfaces;
+using Application.Common.Interfaces;
 using Dapper;
 using Domain.Entities;
+using Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using Shared.Security; // For SecureExceptionSanitizer
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
-using Application.Common.Interfaces; // For IUserRepository, ISignalRepository
-using Domain.Entities; // For User, Signal entities if needed directly, though DTOs are preferred
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+#endregion
 
 namespace Infrastructure.Services.Admin
 {
     public class AdminService : IAdminService
     {
+        #region Fields and Constructor
         private readonly string _connectionString;
         private readonly ILogger<AdminService> _logger;
         private const int CommandTimeoutSeconds = 180; // Increased timeout for admin queries
@@ -39,10 +52,85 @@ namespace Infrastructure.Services.Admin
             _userRepository = userRepository;
             _signalRepository = signalRepository;
         }
+        #endregion
+
+        #region Security Validation Methods
+        /// <summary>
+        /// Sanitizes user input for safe logging by removing newlines and other problematic characters.
+        /// </summary>
+        /// <param name="input">The user input to sanitize</param>
+        /// <returns>Sanitized string safe for logging</returns>
+        private static string SanitizeForLogging(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "[EMPTY_INPUT]";
+
+            // Remove newlines, carriage returns, and other problematic characters
+            var sanitized = input
+                .Replace("\r", "")
+                .Replace("\n", "")
+                .Replace("\t", " ")
+                .Replace("\0", ""); // Null characters
+
+            // Remove any remaining control characters
+            sanitized = Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
+
+            // Limit length to prevent log flooding
+            if (sanitized.Length > 100)
+            {
+                sanitized = sanitized.Substring(0, 97) + "...";
+            }
+
+            return sanitized;
+        }
+
+        /// <summary>
+        /// Validates file names to prevent path traversal and other injection attacks.
+        /// </summary>
+        /// <param name="fileName">The file name to validate</param>
+        /// <returns>Validated file name or null if invalid</returns>
+        private string? ValidateFileName(string? fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                _logger.LogWarning("File name is null or empty.");
+                return null;
+            }
+
+            var sanitizedFileName = SanitizeForLogging(fileName);
+
+            // Check for path traversal attempts
+            if (sanitizedFileName.Contains("..") || 
+                sanitizedFileName.Contains("\\") || 
+                sanitizedFileName.Contains("/") ||
+                sanitizedFileName.Contains(":") ||
+                sanitizedFileName.Contains(";") ||
+                sanitizedFileName.Contains("'") ||
+                sanitizedFileName.Contains("\"") ||
+                sanitizedFileName.Contains("<") ||
+                sanitizedFileName.Contains(">"))
+            {
+                _logger.LogWarning("Potentially dangerous characters detected in file name: {SanitizedFileName}", sanitizedFileName);
+                return null;
+            }
+
+            // Validate file name format (should be alphanumeric with dots, hyphens, and underscores)
+            if (!Regex.IsMatch(sanitizedFileName, @"^[a-zA-Z0-9._-]+$"))
+            {
+                _logger.LogWarning("Invalid file name format: {SanitizedFileName}", sanitizedFileName);
+                return null;
+            }
+
+            return sanitizedFileName;
+        }
+        #endregion
+
+        #region Database Connection
         private NpgsqlConnection CreateConnection()
         {
             return new(_connectionString);
         }
+        #endregion
 
         public async Task<(int UserCount, int NewsItemCount)> GetDashboardStatsAsync(CancellationToken cancellationToken = default)
         {
@@ -113,7 +201,9 @@ namespace Infrastructure.Services.Admin
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create log archive for admin download.");
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Failed to create log archive for admin download.");
                 return (null, "", $"An unexpected error occurred: {ex.Message}");
             }
         }
@@ -121,7 +211,9 @@ namespace Infrastructure.Services.Admin
         // In AdminService.cs
         public async Task<string> ExecuteRawSqlQueryAsync(string sqlQuery, CancellationToken cancellationToken = default)
         {
-            _logger.LogWarning("Admin is executing a raw SQL query. THIS IS A HIGH-RISK OPERATION. Query: {Query}", sqlQuery);
+            // SECURITY: Sanitize SQL query before logging to prevent log forging
+            var sanitizedQuery = SanitizeForLogging(sqlQuery);
+            _logger.LogWarning("Admin is executing a raw SQL query. THIS IS A HIGH-RISK OPERATION. Query: {SanitizedQuery}", sanitizedQuery);
 
             // CORRECTED: Using NpgsqlConnection
             await using NpgsqlConnection connection = CreateConnection();
@@ -140,12 +232,16 @@ namespace Infrastructure.Services.Admin
             }
             catch (PostgresException pgEx) // CORRECTED: Catch specific PostgreSQL exceptions
             {
-                _logger.LogError(pgEx, "Error executing raw SQL query. SQLSTATE: {SqlState}", pgEx.SqlState);
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(pgEx);
+                _logger.LogError(sanitizedException, "Error executing raw SQL query. SQLSTATE: {SqlState}", pgEx.SqlState);
                 return $"❌ **PostgreSQL Execution Error (Code: {pgEx.SqlState}):**\n`{pgEx.Message}`";
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error executing raw SQL query.");
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error executing raw SQL query.");
                 return $"❌ **General Execution Error:**\n`{ex.Message}`";
             }
         }
@@ -154,7 +250,9 @@ namespace Infrastructure.Services.Admin
         // ✅ This is the single, correct implementation for the detailed user lookup.
         public async Task<AdminUserDetailDto?> GetUserDetailByTelegramIdAsync(long telegramId, CancellationToken cancellationToken = default)
         {
-            _logger.LogInformation("Fetching detailed profile for Telegram ID: {TelegramId} using optimized PG query.", telegramId);
+            // SECURITY: Sanitize telegramId before logging (though it's a long, it's still user input)
+            var sanitizedTelegramId = SanitizeForLogging(telegramId.ToString());
+            _logger.LogInformation("Fetching detailed profile for Telegram ID: {SanitizedTelegramId} using optimized PG query.", sanitizedTelegramId);
 
             // CORRECTED: A single, optimized query using PostgreSQL's JSON aggregation functions.
             const string sql = @"
@@ -343,7 +441,9 @@ namespace Infrastructure.Services.Admin
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error fetching user statistics for admin dashboard.");
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error fetching user statistics for admin dashboard.");
                 // Optionally set default/error values or rethrow
                 stats.TotalUsers = -1; // Indicate error or unavailable
             }
@@ -395,7 +495,9 @@ namespace Infrastructure.Services.Admin
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error fetching signal statistics for admin dashboard.");
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error fetching signal statistics for admin dashboard.");
                 stats.SignalsToday = -1; // Indicate error or unavailable
             }
 
@@ -405,6 +507,7 @@ namespace Infrastructure.Services.Admin
             return stats;
         }
 
+        #region Log File Operations
         public async Task<List<string>> ListLogFilesAsync(CancellationToken cancellationToken = default)
         {
             try
@@ -425,35 +528,46 @@ namespace Infrastructure.Services.Admin
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error listing log files.");
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error listing log files.");
                 return new List<string>(); // Return empty list on error
             }
         }
 
         public async Task<string?> GetLogFileContentAsync(string fileName, int? lineCount = null, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(fileName)
-                || fileName.Contains("..") // Basic directory traversal prevention
-                || !fileName.StartsWith("log-") // Ensure it's one of our log files
-                || !fileName.EndsWith(".txt"))
+            // SECURITY: Validate file name before processing
+            var validatedFileName = ValidateFileName(fileName);
+            if (validatedFileName == null)
             {
-                _logger.LogWarning("Invalid or potentially malicious log file name requested: {FileName}", fileName);
-                return null; // Or throw an ArgumentException
+                _logger.LogWarning("GetLogFileContentAsync called with invalid file name format.");
+                return null;
+            }
+
+            // Additional validation for log file format
+            if (!validatedFileName.StartsWith("log-") || !validatedFileName.EndsWith(".txt"))
+            {
+                _logger.LogWarning("Invalid log file name format requested: {SanitizedFileName}", SanitizeForLogging(validatedFileName));
+                return null;
             }
 
             try
             {
                 string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
                 // Securely combine path and ensure it's still within the logDirectory
-                string filePath = Path.Combine(logDirectory, Path.GetFileName(fileName)); // Use GetFileName to sanitize
+                string filePath = Path.Combine(logDirectory, Path.GetFileName(validatedFileName)); // Use GetFileName to sanitize
 
                 if (!File.Exists(filePath) || !Path.GetFullPath(filePath).StartsWith(Path.GetFullPath(logDirectory), StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogWarning("Log file not found or access denied (path traversal attempt?): {FilePath}", filePath);
+                    _logger.LogWarning("Log file not found or access denied (path traversal attempt?): {SanitizedFilePath}", SanitizeForLogging(filePath));
                     return null;
                 }
 
-                _logger.LogInformation("Reading log file: {FilePath}. Line count: {LineCount}", filePath, lineCount.HasValue ? lineCount.Value.ToString() : "All");
+                // SECURITY: Sanitize all user inputs before logging
+                var sanitizedFilePath = SanitizeForLogging(filePath);
+                var sanitizedLineCount = lineCount.HasValue ? lineCount.Value.ToString() : "All";
+                _logger.LogInformation("Reading log file: {SanitizedFilePath}. Line count: {SanitizedLineCount}", sanitizedFilePath, sanitizedLineCount);
 
                 if (lineCount.HasValue && lineCount > 0)
                 {
@@ -472,9 +586,13 @@ namespace Infrastructure.Services.Admin
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error reading log file content for {FileName}.", fileName);
-                return $"Error reading log file '{fileName}': {ex.Message}"; // Return error message as content for user
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                var sanitizedFileName = SanitizeForLogging(validatedFileName);
+                _logger.LogError(sanitizedException, "Error reading log file content for {SanitizedFileName}.", sanitizedFileName);
+                return $"Error reading log file '{validatedFileName}': {ex.Message}"; // Return error message as content for user
             }
         }
+        #endregion
     }
 }
