@@ -1,19 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using StackExchange.Redis;
-using System;
 using System.ComponentModel.DataAnnotations;
-using System.Net.Http;
 using System.Text.Json;
-using System.Threading.Tasks;
-using Application.Interfaces; // Required for IDiagnosticsService if used directly
 using Shared.Security; // For SecureExceptionSanitizer
-using System.Linq; // For Select
-using System.Text.RegularExpressions;
 
 namespace WebAPI.Controllers
 {
@@ -26,7 +18,6 @@ namespace WebAPI.Controllers
         private readonly IConfiguration _configuration;
         private readonly ILogger<ConfigController> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
-        // private readonly IDiagnosticsService _diagnosticsService; // Option to use existing service
 
         public ConfigController(
             IConfiguration configuration,
@@ -37,7 +28,6 @@ namespace WebAPI.Controllers
             _configuration = configuration;
             _logger = logger;
             _httpClientFactory = httpClientFactory;
-            // _diagnosticsService = diagnosticsService; // Option
         }
         #endregion
 
@@ -60,52 +50,64 @@ namespace WebAPI.Controllers
                 .Replace("\0", ""); // Null characters
 
             // Remove any remaining control characters
-            sanitized = Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
 
             // Limit length to prevent log flooding
-            if (sanitized.Length > 100)
+            if (sanitized.Length > 200)
             {
-                sanitized = sanitized.Substring(0, 97) + "...";
+                sanitized = sanitized[..200] + "...";
             }
 
             return sanitized;
         }
 
         /// <summary>
-        /// Sanitizes sensitive data for logging by masking most of the content.
+        /// Sanitizes sensitive data by redacting sensitive patterns while preserving structure.
         /// </summary>
         /// <param name="sensitiveInput">The sensitive input to sanitize</param>
-        /// <returns>Masked string safe for logging</returns>
+        /// <returns>Sanitized string with sensitive data redacted</returns>
         private static string SanitizeSensitiveData(string? sensitiveInput)
         {
             if (string.IsNullOrWhiteSpace(sensitiveInput))
-                return "[EMPTY_SENSITIVE_INPUT]";
+                return "[EMPTY_INPUT]";
 
-            // For sensitive data like tokens and connection strings, mask most of the content
-            if (sensitiveInput.Length <= 8)
-            {
-                return "[MASKED_SENSITIVE_DATA]";
-            }
+            var sanitized = sensitiveInput;
 
-            // Show first 4 and last 4 characters, mask the rest
-            return $"{sensitiveInput.Substring(0, 4)}...{sensitiveInput.Substring(sensitiveInput.Length - 4)}";
+            // Redact connection string patterns
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"(?:password|pwd)\s*=\s*[^;\s]+", "password=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "userid=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Redact bot token patterns
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"[0-9]+:[a-zA-Z0-9\-_]{35}", "***:***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Redact API keys and tokens
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"[a-zA-Z0-9\-_]{20,}", "***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            return sanitized;
         }
-        #endregion
 
-        #region Secure Error Response Methods
         /// <summary>
-        /// Creates a secure error response that doesn't expose sensitive information to clients.
+        /// Creates a secure error response that doesn't expose sensitive information.
         /// </summary>
-        /// <param name="statusCode">The HTTP status code</param>
-        /// <param name="userMessage">User-friendly message (no sensitive data)</param>
+        /// <param name="statusCode">HTTP status code</param>
+        /// <param name="userMessage">User-friendly message</param>
         /// <param name="internalErrorId">Optional internal error ID for tracking</param>
         /// <returns>Secure error response</returns>
         private IActionResult CreateSecureErrorResponse(int statusCode, string userMessage, string? internalErrorId = null)
         {
             var response = new
             {
-                Error = userMessage,
-                ErrorId = internalErrorId ?? Guid.NewGuid().ToString("N")[..8], // Short error ID for tracking
+                Message = userMessage,
+                ErrorId = internalErrorId ?? Guid.NewGuid().ToString("N")[..8],
                 Timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
             };
 
@@ -113,14 +115,14 @@ namespace WebAPI.Controllers
         }
         #endregion
 
-        #region DTOs
+        #region Request/Response Models
         public class TestConfigRequestModel
         {
             [Required]
-            public string? BotToken { get; set; }
+            public string DbConn { get; set; } = string.Empty;
 
             [Required]
-            public string? DbConn { get; set; }
+            public string BotToken { get; set; } = string.Empty;
 
             public string? RedisConn { get; set; } // Optional
         }
@@ -139,94 +141,109 @@ namespace WebAPI.Controllers
         public class SaveConfigRequestModel
         {
             [Required]
-            public string? BotToken { get; set; }
+            public string DbConn { get; set; } = string.Empty;
+
             [Required]
-            public string? DbConn { get; set; }
+            public string BotToken { get; set; } = string.Empty;
+
             public string? RedisConn { get; set; }
         }
         #endregion
 
-        #region Secure Connection String Validation
+        #region Validation Methods
         /// <summary>
-        /// Validates and sanitizes database connection strings to prevent resource injection attacks.
+        /// Validates and sanitizes database connection string.
         /// </summary>
-        /// <param name="connectionString">The raw connection string from user input</param>
+        /// <param name="connectionString">The connection string to validate</param>
         /// <returns>Validated connection string or null if invalid</returns>
         private string? ValidateDatabaseConnectionString(string? connectionString)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
-            {
-                _logger.LogWarning("Database connection string is null or empty.");
                 return null;
-            }
 
+            // SECURITY: Sanitize input before any processing
+            var sanitizedInput = SanitizeForLogging(connectionString);
+            
             try
             {
-                // Use NpgsqlConnectionStringBuilder to safely parse and validate the connection string
-                var builder = new NpgsqlConnectionStringBuilder(connectionString);
-                
-                // Additional security checks
-                if (string.IsNullOrWhiteSpace(builder.Host))
+                // Basic validation - check for required components
+                if (!connectionString.Contains("Server=", StringComparison.OrdinalIgnoreCase) &&
+                    !connectionString.Contains("Host=", StringComparison.OrdinalIgnoreCase) &&
+                    !connectionString.Contains("Data Source=", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogWarning("Database connection string missing host.");
+                    _logger.LogWarning("Database connection string validation failed: Missing server/host information. Input: {SanitizedInput}", sanitizedInput);
                     return null;
                 }
 
-                // SECURITY: Log only safe parts of the connection string, mask sensitive data
-                var safeConnectionInfo = $"Host={SanitizeForLogging(builder.Host)}, Port={builder.Port}, Database={SanitizeForLogging(builder.Database)}";
-                _logger.LogInformation("Validated database connection string: {SafeConnectionInfo}", safeConnectionInfo);
-                
-                return builder.ConnectionString;
+                if (!connectionString.Contains("Database=", StringComparison.OrdinalIgnoreCase) &&
+                    !connectionString.Contains("Initial Catalog=", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("Database connection string validation failed: Missing database information. Input: {SanitizedInput}", sanitizedInput);
+                    return null;
+                }
+
+                // Additional validation for PostgreSQL
+                if (connectionString.Contains("PostgreSQL", StringComparison.OrdinalIgnoreCase) ||
+                    connectionString.Contains("postgres", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!connectionString.Contains("Username=", StringComparison.OrdinalIgnoreCase) &&
+                        !connectionString.Contains("User Id=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning("PostgreSQL connection string validation failed: Missing username. Input: {SanitizedInput}", sanitizedInput);
+                        return null;
+                    }
+                }
+
+                _logger.LogInformation("Database connection string validation successful. Input: {SanitizedInput}", sanitizedInput);
+                return connectionString;
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Invalid database connection string format.");
+                _logger.LogError(sanitizedException, "Database connection string validation failed. Input: {SanitizedInput}", sanitizedInput);
                 return null;
             }
         }
 
         /// <summary>
-        /// Validates and sanitizes Redis connection strings to prevent resource injection attacks.
+        /// Validates and sanitizes Redis connection string.
         /// </summary>
-        /// <param name="connectionString">The raw connection string from user input</param>
+        /// <param name="connectionString">The connection string to validate</param>
         /// <returns>Validated connection string or null if invalid</returns>
         private string? ValidateRedisConnectionString(string? connectionString)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
-            {
                 return null;
-            }
 
+            // SECURITY: Sanitize input before any processing
+            var sanitizedInput = SanitizeForLogging(connectionString);
+            
             try
             {
-                // Use ConfigurationOptions to safely parse and validate the connection string
-                var options = ConfigurationOptions.Parse(connectionString);
-                
-                // Additional security checks
-                if (options.EndPoints.Count == 0)
+                // Basic Redis connection string validation
+                if (!connectionString.Contains(":", StringComparison.OrdinalIgnoreCase) &&
+                    !connectionString.Contains("localhost", StringComparison.OrdinalIgnoreCase) &&
+                    !connectionString.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogWarning("Redis connection string missing endpoints.");
+                    _logger.LogWarning("Redis connection string validation failed: Invalid format. Input: {SanitizedInput}", sanitizedInput);
                     return null;
                 }
 
-                // SECURITY: Log only safe parts of the connection string, mask sensitive data
-                var endpoints = string.Join(", ", options.EndPoints.Select(ep => SanitizeForLogging(ep.ToString())));
-                _logger.LogInformation("Validated Redis connection string: Endpoints={Endpoints}", endpoints);
-                
-                return connectionString; // Return original as ConfigurationOptions doesn't have a ConnectionString property
+                _logger.LogInformation("Redis connection string validation successful. Input: {SanitizedInput}", sanitizedInput);
+                return connectionString;
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Invalid Redis connection string format.");
+                _logger.LogError(sanitizedException, "Redis connection string validation failed. Input: {SanitizedInput}", sanitizedInput);
                 return null;
             }
         }
         #endregion
 
+        #region API Endpoints
         [HttpPost("test")]
         [ProducesResponseType(typeof(TestConfigResponseModel), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -429,5 +446,6 @@ namespace WebAPI.Controllers
                 Timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
             });
         }
+        #endregion
     }
 }

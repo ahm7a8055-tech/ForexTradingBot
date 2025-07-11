@@ -28,9 +28,12 @@ using System.Threading.Tasks;
 
 namespace Infrastructure.Services.Admin
 {
+    /// <summary>
+    /// Service for administrative operations with secure logging and data handling.
+    /// Provides dashboard statistics, user management, and system administration features.
+    /// </summary>
     public class AdminService : IAdminService
     {
-        #region Fields and Constructor
         private readonly string _connectionString;
         private readonly ILogger<AdminService> _logger;
         private const int CommandTimeoutSeconds = 180; // Increased timeout for admin queries
@@ -45,20 +48,18 @@ namespace Infrastructure.Services.Admin
             IUserRepository userRepository,
             ISignalRepository signalRepository)
         {
-            _connectionString = configuration.GetConnectionString("DefaultConnection")
-                                ?? throw new InvalidOperationException("DefaultConnection string is not found in configuration.");
-            _logger = logger;
-            _cacheService = cacheService;
-            _userRepository = userRepository;
-            _signalRepository = signalRepository;
+            _connectionString = configuration.GetConnectionString("DefaultConnection") ?? throw new ArgumentNullException(nameof(configuration), "DefaultConnection string not found");
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
+            _userRepository = userRepository ?? throw new ArgumentNullException(nameof(userRepository));
+            _signalRepository = signalRepository ?? throw new ArgumentNullException(nameof(signalRepository));
         }
-        #endregion
 
-        #region Security Validation Methods
+        #region Security Methods
         /// <summary>
-        /// Sanitizes user input for safe logging by removing newlines and other problematic characters.
+        /// Sanitizes input for safe logging by removing newlines and other problematic characters.
         /// </summary>
-        /// <param name="input">The user input to sanitize</param>
+        /// <param name="input">The input to sanitize</param>
         /// <returns>Sanitized string safe for logging</returns>
         private static string SanitizeForLogging(string? input)
         {
@@ -73,130 +74,178 @@ namespace Infrastructure.Services.Admin
                 .Replace("\0", ""); // Null characters
 
             // Remove any remaining control characters
-            sanitized = Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
 
             // Limit length to prevent log flooding
-            if (sanitized.Length > 100)
+            if (sanitized.Length > 200)
             {
-                sanitized = sanitized.Substring(0, 97) + "...";
+                sanitized = sanitized[..200] + "...";
             }
 
             return sanitized;
         }
 
         /// <summary>
-        /// Validates file names to prevent path traversal and other injection attacks.
+        /// Sanitizes sensitive data by redacting sensitive patterns while preserving structure.
+        /// </summary>
+        /// <param name="sensitiveInput">The sensitive input to sanitize</param>
+        /// <returns>Sanitized string with sensitive data redacted</returns>
+        private static string SanitizeSensitiveData(string? sensitiveInput)
+        {
+            if (string.IsNullOrWhiteSpace(sensitiveInput))
+                return "[EMPTY_INPUT]";
+
+            var sanitized = sensitiveInput;
+
+            // Redact connection string patterns
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"(?:password|pwd)\s*=\s*[^;\s]+", "password=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "userid=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Redact bot token patterns
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"[0-9]+:[a-zA-Z0-9\-_]{35}", "***:***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Redact API keys and tokens
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"[a-zA-Z0-9\-_]{20,}", "***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            return sanitized;
+        }
+
+        /// <summary>
+        /// Validates file name to prevent path traversal attacks.
         /// </summary>
         /// <param name="fileName">The file name to validate</param>
         /// <returns>Validated file name or null if invalid</returns>
         private string? ValidateFileName(string? fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName))
-            {
-                _logger.LogWarning("File name is null or empty.");
                 return null;
-            }
 
+            // SECURITY: Sanitize input before validation
             var sanitizedFileName = SanitizeForLogging(fileName);
-
+            
             // Check for path traversal attempts
-            if (sanitizedFileName.Contains("..") || 
-                sanitizedFileName.Contains("\\") || 
-                sanitizedFileName.Contains("/") ||
-                sanitizedFileName.Contains(":") ||
-                sanitizedFileName.Contains(";") ||
-                sanitizedFileName.Contains("'") ||
-                sanitizedFileName.Contains("\"") ||
-                sanitizedFileName.Contains("<") ||
-                sanitizedFileName.Contains(">"))
+            if (fileName.Contains("..") || fileName.Contains("\\") || fileName.Contains("/"))
             {
-                _logger.LogWarning("Potentially dangerous characters detected in file name: {SanitizedFileName}", sanitizedFileName);
+                _logger.LogWarning("Path traversal attempt detected in file name: {SanitizedFileName}", sanitizedFileName);
                 return null;
             }
 
-            // Validate file name format (should be alphanumeric with dots, hyphens, and underscores)
-            if (!Regex.IsMatch(sanitizedFileName, @"^[a-zA-Z0-9._-]+$"))
+            // Validate log file format (log-YYYYMMDD.txt)
+            if (!System.Text.RegularExpressions.Regex.IsMatch(fileName, @"^log-\d{8}\.txt$"))
             {
-                _logger.LogWarning("Invalid file name format: {SanitizedFileName}", sanitizedFileName);
+                _logger.LogWarning("Invalid log file name format: {SanitizedFileName}. Expected format: log-YYYYMMDD.txt", sanitizedFileName);
                 return null;
             }
 
-            return sanitizedFileName;
+            return fileName;
         }
-        #endregion
 
-        #region Database Connection
+        /// <summary>
+        /// Creates a database connection with proper error handling.
+        /// </summary>
+        /// <returns>NpgsqlConnection instance</returns>
         private NpgsqlConnection CreateConnection()
         {
-            return new(_connectionString);
+            return new NpgsqlConnection(_connectionString);
         }
         #endregion
 
         public async Task<(int UserCount, int NewsItemCount)> GetDashboardStatsAsync(CancellationToken cancellationToken = default)
         {
-            // CORRECTED: Using NpgsqlConnection and PostgreSQL-compliant quoted identifiers.
-            await using NpgsqlConnection connection = CreateConnection();
+            _logger.LogInformation("Fetching dashboard statistics.");
+            try
+            {
+                await using NpgsqlConnection connection = CreateConnection();
+                const string sql = @"
+                    SELECT 
+                        (SELECT COUNT(*) FROM public.""Users"") as UserCount,
+                        (SELECT COUNT(*) FROM public.""NewsItems"") as NewsItemCount;";
 
-            const string sql = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
+                var result = await connection.QuerySingleAsync<(int UserCount, int NewsItemCount)>(
+                    new CommandDefinition(sql, cancellationToken: cancellationToken));
 
-            using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(new CommandDefinition(sql, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
-            return (await multi.ReadSingleAsync<int>(), await multi.ReadSingleAsync<int>());
+                _logger.LogInformation("Dashboard statistics retrieved successfully. Users: {UserCount}, News Items: {NewsItemCount}", 
+                    result.UserCount, result.NewsItemCount);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error fetching dashboard statistics.");
+                throw;
+            }
         }
 
         public async Task<List<long>> GetAllActiveUserChatIdsAsync(CancellationToken cancellationToken = default)
         {
-            // CORRECTED: Using NpgsqlConnection and PostgreSQL-compliant quoted identifiers.
-            // Also, directly querying for the 'bigint' type is more efficient than parsing strings.
-            await using NpgsqlConnection connection = CreateConnection();
+            _logger.LogInformation("Fetching all active user chat IDs.");
+            try
+            {
+                await using NpgsqlConnection connection = CreateConnection();
+                const string sql = @"SELECT ""TelegramId"" FROM public.""Users"" WHERE ""EnableGeneralNotifications"" = true;";
 
-            const string sql = @"SELECT ""TelegramId""::bigint FROM public.""Users"" WHERE ""TelegramId"" IS NOT NULL AND ""TelegramId"" <> '';";
+                var telegramIds = await connection.QueryAsync<string>(
+                    new CommandDefinition(sql, cancellationToken: cancellationToken));
 
-            IEnumerable<long> ids = await connection.QueryAsync<long>(new CommandDefinition(sql, cancellationToken: cancellationToken));
-            return ids.ToList();
+                var result = telegramIds.Select(id => long.Parse(id)).ToList();
+                _logger.LogInformation("Retrieved {Count} active user chat IDs.", result.Count);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error fetching active user chat IDs.");
+                throw;
+            }
         }
 
         public async Task<(byte[]? ZipContents, string FileName, string? ErrorMessage)> GetLogFilesAsZipAsync(CancellationToken cancellationToken = default)
         {
+            _logger.LogInformation("Creating log files ZIP archive.");
             try
             {
-                // Assuming logs are in a 'logs' folder at the application root.
-                string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
-
-                if (!Directory.Exists(logDirectory))
-                {
-                    _logger.LogWarning("Admin requested log download, but the 'logs' directory was not found at {LogPath}", logDirectory);
-                    return (null, "", "Log directory not found.");
-                }
-
-                List<string> logFiles = Directory.GetFiles(logDirectory, "log-*.txt").OrderByDescending(f => f).ToList();
-
+                var logFiles = await ListLogFilesAsync(cancellationToken);
                 if (!logFiles.Any())
                 {
-                    return (null, "", "No log files found in the directory.");
+                    return (null, "", "No log files found.");
                 }
 
-                // Create a zip file in memory
-                await using MemoryStream memoryStream = new();
-                using (ZipArchive archive = new(memoryStream, ZipArchiveMode.Create, true))
+                using var memoryStream = new MemoryStream();
+                using var archive = new System.IO.Compression.ZipArchive(memoryStream, System.IO.Compression.ZipArchiveMode.Create, true);
+
+                foreach (var fileName in logFiles)
                 {
-                    foreach (string? logFile in logFiles)
+                    // SECURITY: Validate file name before processing
+                    var validatedFileName = ValidateFileName(fileName);
+                    if (validatedFileName == null)
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
+                        _logger.LogWarning("Skipping invalid log file name: {SanitizedFileName}", SanitizeForLogging(fileName));
+                        continue;
+                    }
 
-                        string entryName = Path.GetFileName(logFile);
-                        ZipArchiveEntry zipEntry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
-
-                        await using Stream entryStream = zipEntry.Open();
-                        // Use FileShare.ReadWrite to avoid locking issues with the logger
-                        await using FileStream fileStream = new(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                        await fileStream.CopyToAsync(entryStream, cancellationToken);
+                    var logContent = await GetLogFileContentAsync(validatedFileName, null, cancellationToken);
+                    if (!string.IsNullOrEmpty(logContent))
+                    {
+                        var entry = archive.CreateEntry(validatedFileName);
+                        using var entryStream = entry.Open();
+                        using var writer = new StreamWriter(entryStream);
+                        await writer.WriteAsync(logContent);
                     }
                 }
 
-                // Reset stream position to be read from the beginning
-                memoryStream.Position = 0;
-                string fileName = $"logs_archive_{DateTime.UtcNow:yyyy-MM-dd_HH-mm-ss}.zip";
-
+                var fileName = $"logs_{DateTime.UtcNow:yyyyMMdd_HHmmss}.zip";
                 return (memoryStream.ToArray(), fileName, null);
             }
             catch (Exception ex)
@@ -245,7 +294,6 @@ namespace Infrastructure.Services.Admin
                 return $"❌ **General Execution Error:**\n`{ex.Message}`";
             }
         }
-
 
         // ✅ This is the single, correct implementation for the detailed user lookup.
         public async Task<AdminUserDetailDto?> GetUserDetailByTelegramIdAsync(long telegramId, CancellationToken cancellationToken = default)
@@ -357,8 +405,6 @@ namespace Infrastructure.Services.Admin
             public string? TransactionsJson { get; set; }
         }
 
-
-
         private const string ForceJoinSettingsKey = "settings:force_join";
         public async Task<ForceJoinSettingsDto> GetForceJoinSettingsAsync(CancellationToken cancellationToken = default)
         {
@@ -397,141 +443,119 @@ namespace Infrastructure.Services.Admin
 
         public async Task<(int UserCount, int NewsItemCount, List<(DateTime Date, int Count)> UserJoinStats)> GetDashboardStatsWithUserJoinsAsync(CancellationToken cancellationToken = default)
         {
-            await using NpgsqlConnection connection = CreateConnection();
-            // Get total user count and news item count
-            const string sqlCounts = @"SELECT COUNT(1) FROM public.""Users""; SELECT COUNT(1) FROM public.""NewsItems"";";
-            using SqlMapper.GridReader multi = await connection.QueryMultipleAsync(new CommandDefinition(sqlCounts, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds));
-            int userCount = await multi.ReadSingleAsync<int>();
-            int newsItemCount = await multi.ReadSingleAsync<int>();
-
-            // Get user join stats for the last 30 days
-            const string sqlJoins = @"SELECT date_trunc('day', ""CreatedAt"" ) AS join_date, COUNT(*) AS count FROM public.""Users"" WHERE ""CreatedAt"" >= (CURRENT_DATE - INTERVAL '29 days') GROUP BY join_date ORDER BY join_date;";
-            var joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
-
-            // Fill missing days with 0
-            List<(DateTime Date, int Count)> userJoinStats = new();
-            DateTime today = DateTime.UtcNow.Date;
-            for (int i = 29; i >= 0; i--)
+            _logger.LogInformation("Fetching dashboard statistics with user join data.");
+            try
             {
-                DateTime day = today.AddDays(-i);
-                var found = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
-                int count = found != default ? found.count : 0;
-                userJoinStats.Add((day, count));
-            }
+                await using NpgsqlConnection connection = CreateConnection();
+                const string sql = @"
+                    SELECT 
+                        (SELECT COUNT(*) FROM public.""Users"") as UserCount,
+                        (SELECT COUNT(*) FROM public.""NewsItems"") as NewsItemCount,
+                        (SELECT jsonb_agg(jsonb_build_object('Date', DATE(""CreatedAt""), 'Count', COUNT(*)))
+                         FROM (SELECT ""CreatedAt"" FROM public.""Users"" 
+                               WHERE ""CreatedAt"" >= CURRENT_DATE - INTERVAL '30 days'
+                               ORDER BY DATE(""CreatedAt"")) daily_users) as UserJoinStats;";
 
-            return (userCount, newsItemCount, userJoinStats);
+                var result = await connection.QuerySingleAsync<(int UserCount, int NewsItemCount, string? UserJoinStatsJson)>(
+                    new CommandDefinition(sql, cancellationToken: cancellationToken));
+
+                List<(DateTime Date, int Count)> userJoinStats = new();
+                if (!string.IsNullOrEmpty(result.UserJoinStatsJson) && result.UserJoinStatsJson != "[]")
+                {
+                    var stats = JsonSerializer.Deserialize<List<dynamic>>(result.UserJoinStatsJson);
+                    if (stats != null)
+                    {
+                        foreach (var stat in stats)
+                        {
+                            if (DateTime.TryParse(stat.GetProperty("Date").GetString(), out DateTime date) &&
+                                int.TryParse(stat.GetProperty("Count").GetString(), out int count))
+                            {
+                                userJoinStats.Add((date, count));
+                            }
+                        }
+                    }
+                }
+
+                _logger.LogInformation("Dashboard statistics with user joins retrieved successfully. Users: {UserCount}, News Items: {NewsItemCount}, Join Stats: {StatsCount} entries", 
+                    result.UserCount, result.NewsItemCount, userJoinStats.Count);
+
+                return (result.UserCount, result.NewsItemCount, userJoinStats);
+            }
+            catch (Exception ex)
+            {
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Error fetching dashboard statistics with user joins.");
+                throw;
+            }
         }
 
         public async Task<AdminDashboardStatsDto> GetAdminDashboardStatsAsync(CancellationToken cancellationToken = default)
         {
-            _logger.LogInformation("Fetching admin dashboard statistics.");
-            var stats = new AdminDashboardStatsDto();
-
-            // Get User Stats
+            _logger.LogInformation("Fetching comprehensive admin dashboard statistics.");
             try
             {
-                var userStatsData = await GetDashboardStatsWithUserJoinsAsync(cancellationToken);
-                stats.TotalUsers = userStatsData.UserCount;
-                stats.UserGrowthLast7Days = userStatsData.UserJoinStats
-                    .Select(s => new DailyCountDto { Date = s.Date, Count = s.Count })
-                    .OrderByDescending(d => d.Date) // Ensure it's for the last 7 days from the GetDashboardStatsWithUserJoinsAsync logic
-                    .Take(7) // Take last 7, assuming GetDashboardStatsWithUserJoinsAsync provides enough data
-                    .OrderBy(d => d.Date) // Re-order for chart
-                    .ToList();
+                await using NpgsqlConnection connection = CreateConnection();
+                const string sql = @"
+                    SELECT 
+                        (SELECT COUNT(*) FROM public.""Users"") as TotalUsers,
+                        (SELECT COUNT(*) FROM public.""Users"" WHERE ""CreatedAt"" >= CURRENT_DATE) as NewUsersToday,
+                        (SELECT COUNT(*) FROM public.""Users"" WHERE ""CreatedAt"" >= CURRENT_DATE - INTERVAL '7 days') as NewUsersThisWeek,
+                        (SELECT COUNT(*) FROM public.""NewsItems"") as TotalNewsItems,
+                        (SELECT COUNT(*) FROM public.""NewsItems"" WHERE ""CreatedAt"" >= CURRENT_DATE) as NewNewsItemsToday,
+                        (SELECT COUNT(*) FROM public.""NewsItems"" WHERE ""CreatedAt"" >= CURRENT_DATE - INTERVAL '7 days') as NewNewsItemsThisWeek,
+                        (SELECT COUNT(*) FROM public.""Subscriptions"" WHERE ""Status"" = 'Active') as ActiveSubscriptions,
+                        (SELECT COUNT(*) FROM public.""Transactions"" WHERE ""Status"" = 'Completed' AND ""CreatedAt"" >= CURRENT_DATE - INTERVAL '30 days') as CompletedTransactionsLast30Days,
+                        (SELECT COALESCE(SUM(""Amount""), 0) FROM public.""Transactions"" WHERE ""Status"" = 'Completed' AND ""CreatedAt"" >= CURRENT_DATE - INTERVAL '30 days') as TotalRevenueLast30Days;";
+
+                var result = await connection.QuerySingleAsync<AdminDashboardStatsDto>(
+                    new CommandDefinition(sql, cancellationToken: cancellationToken));
+
+                _logger.LogInformation("Admin dashboard statistics retrieved successfully. Total Users: {TotalUsers}, Active Subscriptions: {ActiveSubscriptions}", 
+                    result.TotalUsers, result.ActiveSubscriptions);
+
+                return result;
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Error fetching user statistics for admin dashboard.");
-                // Optionally set default/error values or rethrow
-                stats.TotalUsers = -1; // Indicate error or unavailable
+                _logger.LogError(sanitizedException, "Error fetching admin dashboard statistics.");
+                throw;
             }
-
-            // Get Signal Stats
-            try
-            {
-                DateTime utcNow = DateTime.UtcNow;
-                DateTime todayStart = utcNow.Date;
-                DateTime sevenDaysAgoStart = todayStart.AddDays(-6); // -6 to include today as the 7th day
-
-                // This requires ISignalRepository to have methods to query by date ranges
-                // or to fetch all and filter in memory if the dataset isn't too large.
-                // For demonstration, assuming ISignalRepository might need new methods like:
-                // - GetSignalsCountAsync(DateTime from, DateTime to, CancellationToken token)
-                // - GetSignalsCountPerDayAsync(DateTime from, DateTime to, CancellationToken token) -> returns List<DailyCountDto>
-
-                // Placeholder: Efficient way would be direct DB queries via repository.
-                // Fetching all signals and filtering in memory is inefficient for large datasets.
-                // Using GetAllWithCategoryAsync as it's the closest available method in ISignalRepository.
-                var allSignals = await _signalRepository.GetAllWithCategoryAsync(cancellationToken);
-
-                stats.SignalsToday = allSignals.Count(s => s.PublishedAt.Date == todayStart);
-
-                stats.SignalsPerDayLast7Days = allSignals
-                    .Where(s => s.PublishedAt.Date >= sevenDaysAgoStart && s.PublishedAt.Date <= todayStart)
-                    .GroupBy(s => s.PublishedAt.Date)
-                    .Select(g => new DailyCountDto { Date = g.Key, Count = g.Count() })
-                    .OrderBy(d => d.Date)
-                    .ToList();
-
-                // Fill missing days for signals
-                var signalsPerDayFilled = new List<DailyCountDto>();
-                for (int i = 0; i < 7; i++)
-                {
-                    DateTime day = sevenDaysAgoStart.AddDays(i);
-                    var existingStat = stats.SignalsPerDayLast7Days.FirstOrDefault(s => s.Date == day);
-                    if (existingStat != null)
-                    {
-                        signalsPerDayFilled.Add(existingStat);
-                    }
-                    else
-                    {
-                        signalsPerDayFilled.Add(new DailyCountDto { Date = day, Count = 0 });
-                    }
-                }
-                stats.SignalsPerDayLast7Days = signalsPerDayFilled.OrderBy(d => d.Date).ToList();
-
-            }
-            catch (Exception ex)
-            {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Error fetching signal statistics for admin dashboard.");
-                stats.SignalsToday = -1; // Indicate error or unavailable
-            }
-
-            // MessagesToday is deferred as per plan.
-
-            _logger.LogInformation("Admin dashboard statistics compiled successfully.");
-            return stats;
         }
 
-        #region Log File Operations
         public async Task<List<string>> ListLogFilesAsync(CancellationToken cancellationToken = default)
         {
+            _logger.LogInformation("Listing available log files.");
             try
             {
-                string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+                var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
                 if (!Directory.Exists(logDirectory))
                 {
-                    _logger.LogWarning("Log directory not found at {LogPath} when listing files.", logDirectory);
+                    _logger.LogWarning("Log directory does not exist: {LogDirectory}", logDirectory);
                     return new List<string>();
                 }
 
                 var logFiles = Directory.GetFiles(logDirectory, "log-*.txt")
-                                        .Select(Path.GetFileName)
-                                        .OfType<string>() // Ensure GetFileName doesn't return nulls that break ToList()
-                                        .OrderByDescending(f => f) // Show newest first
-                                        .ToList();
-                return await Task.FromResult(logFiles); // Directory.GetFiles is sync, wrap in Task.FromResult for async signature
+                    .Select(Path.GetFileName)
+                    .Where(fileName => !string.IsNullOrEmpty(fileName))
+                    .Cast<string>()
+                    .OrderByDescending(f => f)
+                    .ToList();
+
+                // SECURITY: Sanitize file names before logging
+                var sanitizedFileNames = logFiles.Select(f => SanitizeForLogging(f)).ToList();
+                _logger.LogInformation("Found {Count} log files: {SanitizedFileNames}", logFiles.Count, string.Join(", ", sanitizedFileNames));
+
+                return logFiles;
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Error listing log files.");
-                return new List<string>(); // Return empty list on error
+                throw;
             }
         }
 
@@ -541,58 +565,52 @@ namespace Infrastructure.Services.Admin
             var validatedFileName = ValidateFileName(fileName);
             if (validatedFileName == null)
             {
-                _logger.LogWarning("GetLogFileContentAsync called with invalid file name format.");
+                _logger.LogWarning("Invalid file name provided for log file content: {SanitizedFileName}", SanitizeForLogging(fileName));
                 return null;
             }
 
-            // Additional validation for log file format
-            if (!validatedFileName.StartsWith("log-") || !validatedFileName.EndsWith(".txt"))
-            {
-                _logger.LogWarning("Invalid log file name format requested: {SanitizedFileName}", SanitizeForLogging(validatedFileName));
-                return null;
-            }
+            // SECURITY: Use sanitized file name for logging
+            var sanitizedFileName = SanitizeForLogging(validatedFileName);
+            _logger.LogInformation("Reading log file content: {SanitizedFileName}, LineCount: {LineCount}", sanitizedFileName, lineCount?.ToString() ?? "all");
 
             try
             {
-                string logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
-                // Securely combine path and ensure it's still within the logDirectory
-                string filePath = Path.Combine(logDirectory, Path.GetFileName(validatedFileName)); // Use GetFileName to sanitize
+                var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+                var filePath = Path.Combine(logDirectory, validatedFileName);
 
-                if (!File.Exists(filePath) || !Path.GetFullPath(filePath).StartsWith(Path.GetFullPath(logDirectory), StringComparison.OrdinalIgnoreCase))
+                if (!File.Exists(filePath))
                 {
-                    _logger.LogWarning("Log file not found or access denied (path traversal attempt?): {SanitizedFilePath}", SanitizeForLogging(filePath));
+                    _logger.LogWarning("Log file not found: {SanitizedFileName}", sanitizedFileName);
                     return null;
                 }
 
-                // SECURITY: Sanitize all user inputs before logging
-                var sanitizedFilePath = SanitizeForLogging(filePath);
-                var sanitizedLineCount = lineCount.HasValue ? lineCount.Value.ToString() : "All";
-                _logger.LogInformation("Reading log file: {SanitizedFilePath}. Line count: {SanitizedLineCount}", sanitizedFilePath, sanitizedLineCount);
+                // SECURITY: Validate file size before reading
+                var fileInfo = new FileInfo(filePath);
+                if (fileInfo.Length > 10 * 1024 * 1024) // 10MB limit
+                {
+                    _logger.LogWarning("Log file too large: {SanitizedFileName}, Size: {Size} bytes", sanitizedFileName, fileInfo.Length);
+                    return null;
+                }
 
-                if (lineCount.HasValue && lineCount > 0)
+                var lines = await File.ReadAllLinesAsync(filePath, cancellationToken);
+                
+                if (lineCount.HasValue && lineCount.Value > 0)
                 {
-                    var lines = new List<string>();
-                    // File.ReadLines allows efficient reading for large files if we only need a few lines from the end.
-                    // However, getting LAST N lines efficiently requires reading from end or keeping track.
-                    // A simpler approach for moderate log files:
-                    var allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
-                    lines = allLines.TakeLast(lineCount.Value).ToList();
-                    return string.Join(Environment.NewLine, lines);
+                    lines = lines.TakeLast(lineCount.Value).ToArray();
                 }
-                else
-                {
-                    return await File.ReadAllTextAsync(filePath, cancellationToken);
-                }
+
+                var content = string.Join(Environment.NewLine, lines);
+                _logger.LogInformation("Successfully read log file content: {SanitizedFileName}, Lines: {LineCount}", sanitizedFileName, lines.Length);
+
+                return content;
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                var sanitizedFileName = SanitizeForLogging(validatedFileName);
-                _logger.LogError(sanitizedException, "Error reading log file content for {SanitizedFileName}.", sanitizedFileName);
-                return $"Error reading log file '{validatedFileName}': {ex.Message}"; // Return error message as content for user
+                _logger.LogError(sanitizedException, "Error reading log file content: {SanitizedFileName}", sanitizedFileName);
+                return null;
             }
         }
-        #endregion
     }
 }

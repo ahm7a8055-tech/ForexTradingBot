@@ -17,6 +17,10 @@ using System.Text.RegularExpressions;
 
 namespace Infrastructure.Services
 {
+    /// <summary>
+    /// Service for managing dynamic configuration settings with encryption support.
+    /// Provides secure storage and retrieval of application settings.
+    /// </summary>
     public class DynamicConfigurationService : IDynamicConfigurationService
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -24,7 +28,7 @@ namespace Infrastructure.Services
         private readonly IConfiguration _configuration; // To check environment variables and appsettings.json
         private readonly ILogger<DynamicConfigurationService> _logger;
 
-        // Cache of all defined settings with their metadata
+        // Store defined settings with their metadata
         private readonly Dictionary<string, SettingDefinition> _definedSettings = new Dictionary<string, SettingDefinition>(StringComparer.OrdinalIgnoreCase);
 
         private record SettingDefinition(string Key, string? DefaultValueFromConfig, bool IsSensitive, string? Description);
@@ -35,17 +39,17 @@ namespace Infrastructure.Services
             IConfiguration configuration,
             ILogger<DynamicConfigurationService> logger)
         {
-            _serviceScopeFactory = serviceScopeFactory;
-            _protectionService = protectionService;
-            _configuration = configuration;
-            _logger = logger;
+            _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
+            _protectionService = protectionService ?? throw new ArgumentNullException(nameof(protectionService));
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        #region Security Validation Methods
+        #region Security Methods
         /// <summary>
-        /// Sanitizes user input for safe logging by removing newlines and other problematic characters.
+        /// Sanitizes input for safe logging by removing newlines and other problematic characters.
         /// </summary>
-        /// <param name="input">The user input to sanitize</param>
+        /// <param name="input">The input to sanitize</param>
         /// <returns>Sanitized string safe for logging</returns>
         private static string SanitizeForLogging(string? input)
         {
@@ -60,55 +64,79 @@ namespace Infrastructure.Services
                 .Replace("\0", ""); // Null characters
 
             // Remove any remaining control characters
-            sanitized = Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
 
             // Limit length to prevent log flooding
-            if (sanitized.Length > 100)
+            if (sanitized.Length > 200)
             {
-                sanitized = sanitized.Substring(0, 97) + "...";
+                sanitized = sanitized[..200] + "...";
             }
 
             return sanitized;
         }
 
         /// <summary>
-        /// Validates setting keys to prevent injection attacks.
+        /// Sanitizes sensitive data by redacting sensitive patterns while preserving structure.
+        /// </summary>
+        /// <param name="sensitiveInput">The sensitive input to sanitize</param>
+        /// <returns>Sanitized string with sensitive data redacted</returns>
+        private static string SanitizeSensitiveData(string? sensitiveInput)
+        {
+            if (string.IsNullOrWhiteSpace(sensitiveInput))
+                return "[EMPTY_INPUT]";
+
+            var sanitized = sensitiveInput;
+
+            // Redact connection string patterns
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"(?:password|pwd)\s*=\s*[^;\s]+", "password=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "userid=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Redact bot token patterns
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"[0-9]+:[a-zA-Z0-9\-_]{35}", "***:***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Redact API keys and tokens
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
+                @"[a-zA-Z0-9\-_]{20,}", "***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            return sanitized;
+        }
+
+        /// <summary>
+        /// Validates setting key format to prevent injection attacks.
         /// </summary>
         /// <param name="key">The setting key to validate</param>
         /// <returns>Validated key or null if invalid</returns>
         private string? ValidateSettingKey(string? key)
         {
             if (string.IsNullOrWhiteSpace(key))
+                return null;
+
+            // SECURITY: Sanitize input before validation
+            var sanitizedKey = SanitizeForLogging(key);
+            
+            // Basic validation - check for required format
+            if (!key.Contains(":") || key.Length > 100)
             {
-                _logger.LogWarning("Setting key is null or empty.");
+                _logger.LogWarning("Invalid setting key format: {SanitizedKey}. Key must contain ':' and be less than 100 characters.", sanitizedKey);
                 return null;
             }
-
-            var sanitizedKey = SanitizeForLogging(key);
 
             // Check for potentially dangerous characters
-            if (sanitizedKey.Contains("..") || 
-                sanitizedKey.Contains("\\") || 
-                sanitizedKey.Contains("/") ||
-                sanitizedKey.Contains(":") ||
-                sanitizedKey.Contains(";") ||
-                sanitizedKey.Contains("'") ||
-                sanitizedKey.Contains("\"") ||
-                sanitizedKey.Contains("<") ||
-                sanitizedKey.Contains(">"))
+            if (key.Contains("..") || key.Contains("\\") || key.Contains("/"))
             {
-                _logger.LogWarning("Potentially dangerous characters detected in setting key: {SanitizedKey}", sanitizedKey);
+                _logger.LogWarning("Setting key contains potentially dangerous characters: {SanitizedKey}", sanitizedKey);
                 return null;
             }
 
-            // Validate key format (should be alphanumeric with dots and underscores)
-            if (!Regex.IsMatch(sanitizedKey, @"^[a-zA-Z0-9._-]+$"))
-            {
-                _logger.LogWarning("Invalid setting key format: {SanitizedKey}", sanitizedKey);
-                return null;
-            }
-
-            return sanitizedKey;
+            return key;
         }
         #endregion
 
@@ -118,23 +146,27 @@ namespace Infrastructure.Services
             var validatedKey = ValidateSettingKey(key);
             if (validatedKey == null)
             {
-                _logger.LogError("Cannot register setting definition: Invalid key format.");
+                _logger.LogWarning("Cannot register setting definition: Invalid key format.");
                 return;
             }
 
+            // SECURITY: Sanitize description before logging
+            var sanitizedDescription = SanitizeForLogging(description);
+            var sanitizedDefaultValue = isSensitive ? "[SENSITIVE_DEFAULT]" : SanitizeForLogging(defaultValueFromConfig);
+            
+            _logger.LogDebug("Registering setting definition: {SanitizedKey}, IsSensitive: {IsSensitive}, Description: {SanitizedDescription}, Default: {SanitizedDefaultValue}", 
+                SanitizeForLogging(validatedKey), isSensitive, sanitizedDescription, sanitizedDefaultValue);
+
             _definedSettings[validatedKey] = new SettingDefinition(validatedKey, defaultValueFromConfig, isSensitive, description);
-            _logger.LogDebug("Setting definition registered: {SanitizedKey}, Sensitive: {IsSensitive}", 
-                SanitizeForLogging(validatedKey), isSensitive);
         }
 
         public IEnumerable<string> GetAllDefinedSettingKeys()
         {
-            return _definedSettings.Keys.ToList();
+            return _definedSettings.Keys.OrderBy(k => k).ToList();
         }
 
         public async Task<IDynamicSetting?> GetSettingAsync(string key, CancellationToken cancellationToken = default)
         {
-            // SECURITY: Validate setting key before processing
             var validatedKey = ValidateSettingKey(key);
             if (validatedKey == null)
             {
@@ -144,7 +176,9 @@ namespace Infrastructure.Services
 
             if (!_definedSettings.TryGetValue(validatedKey, out var definition))
             {
-                _logger.LogWarning("GetSettingAsync called for undefined setting: {SanitizedKey}", SanitizeForLogging(validatedKey));
+                // SECURITY: Sanitize key before logging
+                var sanitizedKey = SanitizeForLogging(validatedKey);
+                _logger.LogDebug("GetSettingAsync called for key '{SanitizedKey}' not explicitly defined. Checking IConfiguration.", sanitizedKey);
                 return null;
             }
 
@@ -176,7 +210,7 @@ namespace Infrastructure.Services
                 effectiveValue = currentValueInDb; // Raw from DB
                 displayValue = definition.IsSensitive ? "***** (Set in Database)" : currentValueInDb;
             }
-            else // Not in Env, Not in DB - use appsettings.json default
+            else
             {
                 effectiveValue = definition.DefaultValueFromConfig;
                 displayValue = definition.IsSensitive && !string.IsNullOrEmpty(effectiveValue) ? "***** (From Default Config)" : effectiveValue;
@@ -184,7 +218,7 @@ namespace Infrastructure.Services
 
             return new DynamicSettingDto(
                 validatedKey,
-                effectiveValue, // Raw value for internal logic, might be encrypted if from DB and sensitive
+                effectiveValue, // Raw value for internal logic
                 displayValue,
                 definition.IsSensitive,
                 definition.Description,
@@ -196,7 +230,6 @@ namespace Infrastructure.Services
 
         public async Task<string?> GetDecryptedValueAsync(string key, CancellationToken cancellationToken = default)
         {
-            // SECURITY: Validate setting key before processing
             var validatedKey = ValidateSettingKey(key);
             if (validatedKey == null)
             {
@@ -254,7 +287,6 @@ namespace Infrastructure.Services
             // Not in Env, Not in DB - return appsettings.json default
             return definition.DefaultValueFromConfig;
         }
-
 
         public async Task<IEnumerable<IDynamicSetting>> GetAllSettingsAsync(CancellationToken cancellationToken = default)
         {
