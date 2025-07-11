@@ -1,80 +1,112 @@
-﻿// --- File: Infrastructure/Logging/TelegramMessageBuilder.cs (V8.2 - FINAL FIX) ---
+﻿// --- File: Infrastructure/Logging/TelegramMessageBuilder.cs (V9.0 - POWERFUL UPGRADE) ---
 
 using Serilog.Events;
 using System.Text;
 using System.Text.RegularExpressions;
 using Telegram.Bot.Types.ReplyMarkups;
+using Shared.Security; // For enhanced exception sanitization
 
 namespace TelegramPanel.Infrastructure.Logging
 {
     /// <summary>
-    /// The intelligent "brain" of the God Mode sink. This class is responsible for
-    /// parsing, analyzing, and formatting log events into beautiful, actionable Telegram messages.
+    /// 🚀 POWERFUL UPGRADE: Enhanced intelligent "brain" of the God Mode sink with advanced error analysis,
+    /// detailed debugging information, and smart categorization while maintaining security.
+    /// This version provides comprehensive error details while protecting sensitive data.
     /// </summary>
     public class TelegramMessageBuilder
     {
-        #region Regex Definitions
+        #region Enhanced Regex Definitions
         private static readonly Regex CallerRegex = new(@"^(?<method>.*) in (?<path>.*?):line (?<line>\d+)$", RegexOptions.Compiled);
         private static readonly Regex SensitiveDataRegex = new(@"(password|token|secret|key|auth|bearer|credential)s?[""':=\s]+[\w\-.~/+=]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex HttpErrorRegex = new(@"(status code|StatusCode)\s?(\d{3})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex ExceptionTypeRegex = new(@"^([A-Za-z_][A-Za-z0-9_]*Exception)", RegexOptions.Compiled);
+        private static readonly Regex ErrorCodeRegex = new(@"(?:Error Code|Code):\s*([A-Z]+-\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         #endregion
 
         private readonly string _dashboardUrl;
+        private readonly IExceptionSanitizer _exceptionSanitizer;
 
         public TelegramMessageBuilder(string dashboardUrl)
         {
             _dashboardUrl = dashboardUrl;
+            _exceptionSanitizer = new ExceptionSanitizer(); // Use enhanced sanitizer
         }
 
         public (string message, Telegram.Bot.Types.ReplyMarkups.ReplyMarkup keyboard) Build(LogEvent logEvent, int occurrenceCount)
         {
             StringBuilder sb = new();
 
-            BuildHeader(sb, logEvent, occurrenceCount);
-            BuildMessageAndException(sb, logEvent);
-            BuildCodeLocation(sb, logEvent);
-            BuildSystemContext(sb, logEvent);
-            BuildIntelligentAnalysis(sb, logEvent);
-            BuildTimestamp(sb, logEvent);
+            BuildEnhancedHeader(sb, logEvent, occurrenceCount);
+            BuildEnhancedMessageAndException(sb, logEvent);
+            BuildEnhancedCodeLocation(sb, logEvent);
+            BuildEnhancedSystemContext(sb, logEvent);
+            BuildEnhancedIntelligentAnalysis(sb, logEvent);
+            BuildEnhancedTimestamp(sb, logEvent);
 
-            string sanitizedMessage = Sanitize(sb.ToString());
+            string sanitizedMessage = ApplySmartSanitization(sb.ToString());
             Telegram.Bot.Types.ReplyMarkups.ReplyMarkup keyboard = BuildActionButtons(logEvent);
 
             return (sanitizedMessage, keyboard);
         }
 
-        #region Message Building Components
-        private void BuildHeader(StringBuilder sb, LogEvent logEvent, int occurrenceCount)
+        #region 🆕 NEW: Enhanced Message Building Components
+        private void BuildEnhancedHeader(StringBuilder sb, LogEvent logEvent, int occurrenceCount)
         {
             string env = GetProperty(logEvent, "EnvironmentName");
             string headerEmoji = env.Equals("Production", StringComparison.OrdinalIgnoreCase) ? "🚨🔥🚨" : "🔬🐞🔬";
 
-            // --- THIS IS THE FIX ---
-            // We now call a helper method to correctly format the level instead of using ":u3".
+            // 🆕 NEW: Enhanced level formatting
             string formattedLevel = FormatLevelToString(logEvent.Level);
-            _ = sb.AppendLine($"{headerEmoji} *{formattedLevel} | {GetProperty(logEvent, "Application")}*");
+            string severityEmoji = GetSeverityEmoji(logEvent.Level);
+            
+            _ = sb.AppendLine($"{headerEmoji} *{severityEmoji} {formattedLevel} | {GetProperty(logEvent, "Application")}*");
 
+            // 🆕 NEW: Enhanced occurrence tracking
             if (occurrenceCount > 1)
             {
-                _ = sb.AppendLine($"*This error has now occurred {occurrenceCount} times!*");
+                string occurrenceEmoji = occurrenceCount > 5 ? "🚨" : occurrenceCount > 3 ? "⚠️" : "🔄";
+                _ = sb.AppendLine($"*{occurrenceEmoji} This error has now occurred {occurrenceCount} times!*");
             }
             _ = sb.AppendLine();
         }
 
-        // The rest of the methods are unchanged, but included for completeness.
-        private void BuildMessageAndException(StringBuilder sb, LogEvent logEvent)
+        private void BuildEnhancedMessageAndException(StringBuilder sb, LogEvent logEvent)
         {
             _ = sb.AppendLine("📄 *Message*");
-            _ = sb.AppendLine($"`{logEvent.RenderMessage()}`");
-
+            string message = logEvent.RenderMessage();
+            
+            // 🆕 NEW: Enhanced message analysis
             if (logEvent.Exception != null)
             {
-                _ = sb.AppendLine($"💣 *Exception:* `{logEvent.Exception.GetType().Name}`");
+                // Use enhanced sanitizer for better error details
+                string enhancedExceptionInfo = _exceptionSanitizer.Sanitize(logEvent.Exception, includeHash: true);
+                
+                // Extract key information from enhanced sanitizer output
+                var exceptionAnalysis = AnalyzeEnhancedExceptionInfo(enhancedExceptionInfo);
+                
+                _ = sb.AppendLine($"`{message}`");
+                _ = sb.AppendLine();
+                
+                _ = sb.AppendLine("💣 *Exception Details*");
+                _ = sb.AppendLine($"🔹 Type: `{exceptionAnalysis.ExceptionType}`");
+                _ = sb.AppendLine($"🔹 Category: `{exceptionAnalysis.Category}`");
+                _ = sb.AppendLine($"🔹 Severity: {exceptionAnalysis.Severity}");
+                _ = sb.AppendLine($"🔹 Error Code: `{exceptionAnalysis.ErrorCode}`");
+                
+                // 🆕 NEW: Show sanitized exception message
+                if (!string.IsNullOrEmpty(exceptionAnalysis.SanitizedMessage))
+                {
+                    _ = sb.AppendLine($"🔹 Message: `{exceptionAnalysis.SanitizedMessage}`");
+                }
+            }
+            else
+            {
+                _ = sb.AppendLine($"`{message}`");
             }
             _ = sb.AppendLine();
         }
 
-        private void BuildCodeLocation(StringBuilder sb, LogEvent logEvent)
+        private void BuildEnhancedCodeLocation(StringBuilder sb, LogEvent logEvent)
         {
             string caller = GetProperty(logEvent, "Caller");
             Match match = CallerRegex.Match(caller ?? "");
@@ -87,12 +119,14 @@ namespace TelegramPanel.Infrastructure.Logging
             _ = sb.AppendLine("🗺️ *Code Location*");
             string filePath = match.Groups["path"].Value;
             int line = int.Parse(match.Groups["line"].Value);
+            string methodName = match.Groups["method"].Value;
 
-            _ = sb.AppendLine($"📂 `File:` *{Path.GetFileName(filePath)}*");
-            _ = sb.AppendLine($"#️⃣ `Line:` *{line}*");
-            _ = sb.AppendLine($"🔧 `Method:` `{match.Groups["method"].Value}`");
+            _ = sb.AppendLine($"📂 File: `{Path.GetFileName(filePath)}`");
+            _ = sb.AppendLine($"#️⃣ Line: `{line}`");
+            _ = sb.AppendLine($"🔧 Method: `{methodName}`");
 
-            string codeSnippet = ExtractCodeSnippet(filePath, line);
+            // 🆕 NEW: Enhanced code snippet with better context
+            string codeSnippet = ExtractEnhancedCodeSnippet(filePath, line);
             if (!string.IsNullOrEmpty(codeSnippet))
             {
                 _ = sb.AppendLine("\n```csharp\n" + codeSnippet + "\n```");
@@ -100,74 +134,72 @@ namespace TelegramPanel.Infrastructure.Logging
             _ = sb.AppendLine();
         }
 
-        private void BuildSystemContext(StringBuilder sb, LogEvent logEvent)
+        private void BuildEnhancedSystemContext(StringBuilder sb, LogEvent logEvent)
         {
             _ = sb.AppendLine("🌐 *System & Request Context*");
-            _ = sb.AppendLine($"📍 `Env:` {GetProperty(logEvent, "EnvironmentName")}");
-            _ = sb.AppendLine($"💻 `Machine:` {GetProperty(logEvent, "MachineName")}");
-            _ = sb.AppendLine($"🔗 `RequestId:` {GetProperty(logEvent, "RequestId") ?? "N/A"}");
+            _ = sb.AppendLine($"📍 Environment: `{GetProperty(logEvent, "EnvironmentName")}`");
+            _ = sb.AppendLine($"💻 Machine: `{GetProperty(logEvent, "MachineName")}`");
+            _ = sb.AppendLine($"🔗 Request ID: `{GetProperty(logEvent, "RequestId") ?? "N/A"}`");
+            
+            // 🆕 NEW: Additional context information
+            string processId = Environment.ProcessId.ToString();
+            _ = sb.AppendLine($"🆔 Process ID: `{processId}`");
+            _ = sb.AppendLine($"⏰ Time: `{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC`");
             _ = sb.AppendLine();
         }
 
-        private void BuildIntelligentAnalysis(StringBuilder sb, LogEvent logEvent)
+        private void BuildEnhancedIntelligentAnalysis(StringBuilder sb, LogEvent logEvent)
         {
             if (logEvent.Exception == null)
             {
                 return;
             }
 
-            _ = sb.AppendLine("🤖 *Robo-Analyst Suggestions*");
-            bool suggestionMade = false;
-
-            if (logEvent.Exception is HttpRequestException)
+            _ = sb.AppendLine("🤖 *AI-Powered Analysis*");
+            
+            // 🆕 NEW: Use enhanced sanitizer for intelligent analysis
+            string enhancedExceptionInfo = _exceptionSanitizer.Sanitize(logEvent.Exception, includeHash: false);
+            var analysis = ExtractIntelligentSuggestions(enhancedExceptionInfo);
+            
+            foreach (var suggestion in analysis.Suggestions)
             {
-                Match match = HttpErrorRegex.Match(logEvent.Exception.Message);
-                if (match.Success)
+                _ = sb.AppendLine($"- {suggestion}");
+            }
+            
+            // 🆕 NEW: Add error patterns and trends
+            if (analysis.ErrorPatterns.Any())
+            {
+                _ = sb.AppendLine();
+                _ = sb.AppendLine("📊 *Error Patterns Detected*");
+                foreach (var pattern in analysis.ErrorPatterns)
                 {
-                    _ = sb.AppendLine($"- 💡 Detected HTTP Error `{match.Groups[2].Value}`. Check endpoint availability, firewalls, and DNS.");
-                    suggestionMade = true;
+                    _ = sb.AppendLine($"- {pattern}");
                 }
-            }
-
-            string exType = logEvent.Exception.GetType().Name;
-            if (exType.Contains("Npgsql") || exType.Contains("Sql"))
-            {
-                _ = sb.AppendLine("- 💡 This is a database error. Verify connection strings, database server status, and user permissions.");
-                suggestionMade = true;
-            }
-
-            if (!suggestionMade)
-            {
-                _ = sb.AppendLine("- 💡 No specific suggestions. Please review the attached stack trace for details.");
             }
             _ = sb.AppendLine();
         }
 
-        private void BuildTimestamp(StringBuilder sb, LogEvent logEvent)
+        private void BuildEnhancedTimestamp(StringBuilder sb, LogEvent logEvent)
         {
-            _ = sb.AppendLine($"🕰️ `Timestamp (UTC):` {logEvent.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
-        }
-
-        private Telegram.Bot.Types.ReplyMarkups.ReplyMarkup BuildActionButtons(LogEvent logEvent)
-        {
-            List<InlineKeyboardButton> buttons = new();
-            if (!string.IsNullOrEmpty(_dashboardUrl))
-            {
-                string url = _dashboardUrl;
-                if (logEvent.Properties.TryGetValue("RequestId", out LogEventPropertyValue? reqId))
-                {
-                    url += Uri.EscapeDataString(reqId.ToString("l", null));
-                }
-                buttons.Add(InlineKeyboardButton.WithUrl("🔍 Open Dashboard", url));
-            }
-
-            return new InlineKeyboardMarkup(buttons);
+            _ = sb.AppendLine($"🕰️ *Timestamp (UTC):* `{logEvent.Timestamp:yyyy-MM-dd HH:mm:ss.fff}`");
         }
         #endregion
 
-        #region Utility Methods
+        #region 🆕 NEW: Enhanced Utility Methods
+        private string GetSeverityEmoji(LogEventLevel level)
+        {
+            return level switch
+            {
+                LogEventLevel.Verbose => "🔵",
+                LogEventLevel.Debug => "🔵",
+                LogEventLevel.Information => "🟢",
+                LogEventLevel.Warning => "🟡",
+                LogEventLevel.Error => "🔴",
+                LogEventLevel.Fatal => "💀",
+                _ => "⚪"
+            };
+        }
 
-        // --- NEW HELPER METHOD TO FIX THE BUG ---
         private string FormatLevelToString(LogEventLevel level)
         {
             return level switch
@@ -187,16 +219,26 @@ namespace TelegramPanel.Infrastructure.Logging
             return logEvent.Properties.TryGetValue(name, out LogEventPropertyValue? p) && p is ScalarValue sv ? sv.Value?.ToString() ?? "" : "";
         }
 
-        private string Sanitize(string message)
+        private string ApplySmartSanitization(string message)
         {
-            return SensitiveDataRegex.Replace(message, "$1: \"[REDACTED]\"");
+            // 🆕 NEW: Smarter sanitization that preserves important error details
+            string sanitized = message;
+            
+            // Only redact truly sensitive patterns, not entire error messages
+            sanitized = SensitiveDataRegex.Replace(sanitized, "$1: \"[REDACTED]\"");
+            
+            // Preserve important error information
+            sanitized = sanitized.Replace("[EMPTY_MESSAGE]", "No message available");
+            sanitized = sanitized.Replace("[NULL_EXCEPTION]", "Exception object was null");
+            
+            return sanitized;
         }
 
-        private string ExtractCodeSnippet(string filePath, int errorLine, int contextLines = 2)
+        private string ExtractEnhancedCodeSnippet(string filePath, int errorLine, int contextLines = 3)
         {
             if (!File.Exists(filePath))
             {
-                return null;
+                return "// File not found or not accessible";
             }
 
             try
@@ -210,11 +252,143 @@ namespace TelegramPanel.Infrastructure.Logging
                 for (int i = startLine; i <= endLine; i++)
                 {
                     string linePrefix = i == errorLine - 1 ? ">> " : "   ";
-                    _ = sb.AppendLine($"{linePrefix}{lines[i]}");
+                    string lineNumber = $"{i + 1:D3}";
+                    _ = sb.AppendLine($"{linePrefix}{lineNumber}: {lines[i]}");
                 }
                 return sb.ToString();
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                return $"// Error reading file: {ex.Message}";
+            }
+        }
+
+        private Telegram.Bot.Types.ReplyMarkups.ReplyMarkup BuildActionButtons(LogEvent logEvent)
+        {
+            List<InlineKeyboardButton> buttons = new();
+            if (!string.IsNullOrEmpty(_dashboardUrl))
+            {
+                string url = _dashboardUrl;
+                if (logEvent.Properties.TryGetValue("RequestId", out LogEventPropertyValue? reqId))
+                {
+                    url += Uri.EscapeDataString(reqId.ToString("l", null));
+                }
+                buttons.Add(InlineKeyboardButton.WithUrl("🔍 Open Dashboard", url));
+            }
+
+            // 🆕 NEW: Add action buttons based on error type
+            if (logEvent.Exception != null)
+            {
+                string exceptionType = logEvent.Exception.GetType().Name;
+                if (exceptionType.Contains("Database") || exceptionType.Contains("Sql"))
+                {
+                    buttons.Add(InlineKeyboardButton.WithUrl("🗄️ Database Status", $"{_dashboardUrl}/database"));
+                }
+                if (exceptionType.Contains("Http") || exceptionType.Contains("Network"))
+                {
+                    buttons.Add(InlineKeyboardButton.WithUrl("🌐 Network Status", $"{_dashboardUrl}/network"));
+                }
+            }
+
+            return new InlineKeyboardMarkup(buttons);
+        }
+        #endregion
+
+        #region 🆕 NEW: Enhanced Analysis Methods
+        private (string ExceptionType, string Category, string Severity, string ErrorCode, string SanitizedMessage) AnalyzeEnhancedExceptionInfo(string enhancedExceptionInfo)
+        {
+            var lines = enhancedExceptionInfo.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            
+            string exceptionType = "Unknown";
+            string category = "UNKNOWN_ERROR";
+            string severity = "🔵 INFO";
+            string errorCode = "GEN-0000";
+            string sanitizedMessage = "";
+
+            foreach (var line in lines)
+            {
+                if (line.Contains("Exception Type:"))
+                {
+                    exceptionType = ExtractValue(line, "Exception Type:");
+                }
+                else if (line.Contains("Error Code:"))
+                {
+                    errorCode = ExtractValue(line, "Error Code:");
+                }
+                else if (line.Contains("MESSAGE"))
+                {
+                    // Get the next line as the message
+                    var messageIndex = Array.IndexOf(lines, line) + 1;
+                    if (messageIndex < lines.Length)
+                    {
+                        sanitizedMessage = lines[messageIndex].Trim('`');
+                    }
+                }
+            }
+
+            // Extract category and severity from the header
+            var headerMatch = Regex.Match(enhancedExceptionInfo, @"🚨\s*(.+?)\s*\|\s*(.+?)(?:\r|\n|$)");
+            if (headerMatch.Success)
+            {
+                severity = headerMatch.Groups[1].Value.Trim();
+                category = headerMatch.Groups[2].Value.Trim();
+            }
+
+            return (exceptionType, category, severity, errorCode, sanitizedMessage);
+        }
+
+        private (List<string> Suggestions, List<string> ErrorPatterns) ExtractIntelligentSuggestions(string enhancedExceptionInfo)
+        {
+            var suggestions = new List<string>();
+            var errorPatterns = new List<string>();
+
+            var lines = enhancedExceptionInfo.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            bool inSuggestions = false;
+
+            foreach (var line in lines)
+            {
+                if (line.Contains("INTELLIGENT ANALYSIS"))
+                {
+                    inSuggestions = true;
+                    continue;
+                }
+                else if (line.Contains("CONTEXT INFO") || line.Contains("Security Hash"))
+                {
+                    inSuggestions = false;
+                    continue;
+                }
+
+                if (inSuggestions && line.Trim().StartsWith("-"))
+                {
+                    suggestions.Add(line.Trim());
+                }
+            }
+
+            // Add dynamic patterns based on exception content
+            if (enhancedExceptionInfo.Contains("connection", StringComparison.OrdinalIgnoreCase))
+            {
+                errorPatterns.Add("🔗 Connection-related error detected");
+            }
+            if (enhancedExceptionInfo.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            {
+                errorPatterns.Add("⏱️ Timeout-related error detected");
+            }
+            if (enhancedExceptionInfo.Contains("permission", StringComparison.OrdinalIgnoreCase))
+            {
+                errorPatterns.Add("🔐 Permission-related error detected");
+            }
+
+            return (suggestions, errorPatterns);
+        }
+
+        private string ExtractValue(string line, string prefix)
+        {
+            int index = line.IndexOf(prefix);
+            if (index >= 0)
+            {
+                return line.Substring(index + prefix.Length).Trim();
+            }
+            return "";
         }
         #endregion
     }

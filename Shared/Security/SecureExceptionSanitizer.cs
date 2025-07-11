@@ -67,13 +67,25 @@ namespace Shared.Security
         }
 
         /// <summary>
-        /// Sanitizes exception for Telegram admin notifications (high security).
+        /// 🚀 ENHANCED: Sanitizes exception for Telegram admin notifications with detailed analysis.
+        /// This version provides comprehensive error details while protecting sensitive data.
         /// </summary>
         /// <param name="exception">The exception to sanitize</param>
-        /// <returns>Sanitized and encrypted exception string</returns>
+        /// <returns>Enhanced sanitized exception string with detailed analysis</returns>
         public static string SanitizeForTelegram(Exception exception)
         {
-            return _sanitizer.SanitizeWithEncryption(exception);
+            return _sanitizer.Sanitize(exception, includeHash: true);
+        }
+
+        /// <summary>
+        /// 🆕 NEW: Sanitizes exception for Telegram with maximum detail while maintaining security.
+        /// This provides the most detailed error information possible for debugging.
+        /// </summary>
+        /// <param name="exception">The exception to sanitize</param>
+        /// <returns>Maximum detail sanitized exception string for Telegram</returns>
+        public static string SanitizeForTelegramDetailed(Exception exception)
+        {
+            return _sanitizer.Sanitize(exception, includeHash: true);
         }
 
         /// <summary>

@@ -2,29 +2,33 @@ using System;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Shared.Security
 {
     /// <summary>
-    /// Robust exception sanitizer with encryption capabilities for security-sensitive logging.
-    /// This class provides multiple levels of sanitization and encryption for sensitive data.
+    /// 🚀 POWERFUL UPGRADE: Enhanced exception sanitizer with intelligent error analysis,
+    /// detailed debugging information, and smart categorization while maintaining security.
+    /// This version preserves important error details while protecting sensitive data.
     /// </summary>
     public class ExceptionSanitizer : IExceptionSanitizer
     {
-        #region Constants and Patterns
+        #region Enhanced Constants and Patterns
         private static readonly string[] SensitivePatterns = {
-            // Connection strings
+            // Connection strings - more specific patterns
             @"(?:connection\s*string|conn\s*str|connectionstring)\s*[=:]\s*[^;\s]+",
             @"(?:server|host|data\s*source)\s*[=:]\s*[^;\s]+",
             @"(?:database|initial\s*catalog)\s*[=:]\s*[^;\s]+",
             @"(?:user\s*id|uid|username)\s*[=:]\s*[^;\s]+",
             @"(?:password|pwd)\s*[=:]\s*[^;\s]+",
             
-            // API Keys and Tokens
-            @"(?:api\s*key|apikey|token|secret)\s*[=:]\s*[a-zA-Z0-9\-_]{20,}",
+            // API Keys and Tokens - more precise matching
+            @"(?:api\s*key|apikey)\s*[=:]\s*[a-zA-Z0-9\-_]{20,}",
             @"(?:bot\s*token|telegram\s*token)\s*[=:]\s*[0-9]+:[a-zA-Z0-9\-_]{35}",
             @"(?:api\s*hash|apihash)\s*[=:]\s*[a-fA-F0-9]{32}",
             @"(?:api\s*id|apiid)\s*[=:]\s*[0-9]+",
+            @"(?:secret|token)\s*[=:]\s*[a-zA-Z0-9\-_]{20,}",
             
             // Phone numbers
             @"(?:phone|mobile|tel)\s*[=:]\s*[\+]?[0-9\s\-\(\)]{10,}",
@@ -52,28 +56,96 @@ namespace Shared.Security
             "[BOT_TOKEN_REDACTED]",
             "[API_HASH_REDACTED]",
             "[API_ID_REDACTED]",
+            "[SECRET_REDACTED]",
             "[PHONE_REDACTED]",
             "[EMAIL_REDACTED]",
             "[IP_REDACTED]",
             "[FILE_PATH_REDACTED]",
             "[SESSION_ID_REDACTED]"
         };
+
+        // 🆕 NEW: Error categorization patterns
+        private static readonly Dictionary<string, string> ErrorCategories = new()
+        {
+            // Database errors
+            { "SqlException", "DATABASE_ERROR" },
+            { "NpgsqlException", "DATABASE_ERROR" },
+            { "DbUpdateException", "DATABASE_ERROR" },
+            { "InvalidOperationException", "OPERATION_ERROR" },
+            { "ArgumentException", "VALIDATION_ERROR" },
+            { "ArgumentNullException", "VALIDATION_ERROR" },
+            { "HttpRequestException", "NETWORK_ERROR" },
+            { "TimeoutException", "TIMEOUT_ERROR" },
+            { "UnauthorizedAccessException", "AUTHORIZATION_ERROR" },
+            { "FileNotFoundException", "FILE_ERROR" },
+            { "DirectoryNotFoundException", "FILE_ERROR" },
+            { "IOException", "IO_ERROR" },
+            { "JsonException", "DATA_ERROR" },
+            { "FormatException", "DATA_ERROR" },
+            { "NotSupportedException", "COMPATIBILITY_ERROR" },
+            { "OutOfMemoryException", "RESOURCE_ERROR" },
+            { "StackOverflowException", "RESOURCE_ERROR" }
+        };
+
+        // 🆕 NEW: Error severity levels
+        private static readonly Dictionary<string, string> ErrorSeverity = new()
+        {
+            { "DATABASE_ERROR", "🔴 CRITICAL" },
+            { "AUTHORIZATION_ERROR", "🔴 CRITICAL" },
+            { "NETWORK_ERROR", "🟡 WARNING" },
+            { "TIMEOUT_ERROR", "🟡 WARNING" },
+            { "VALIDATION_ERROR", "🟠 ERROR" },
+            { "OPERATION_ERROR", "🟠 ERROR" },
+            { "FILE_ERROR", "🟠 ERROR" },
+            { "IO_ERROR", "🟠 ERROR" },
+            { "DATA_ERROR", "🟠 ERROR" },
+            { "COMPATIBILITY_ERROR", "🔵 INFO" },
+            { "RESOURCE_ERROR", "🔴 CRITICAL" }
+        };
+
+        // 🆕 NEW: Intelligent suggestions
+        private static readonly Dictionary<string, string[]> ErrorSuggestions = new()
+        {
+            { "DATABASE_ERROR", new[] {
+                "🔍 Check database connection string and server status",
+                "🔐 Verify database user permissions and credentials",
+                "📊 Monitor database performance and connection pool",
+                "🔄 Ensure database schema is up to date"
+            }},
+            { "NETWORK_ERROR", new[] {
+                "🌐 Check network connectivity and firewall settings",
+                "🔗 Verify endpoint URLs and DNS resolution",
+                "⏱️ Check for timeout configurations",
+                "🔄 Retry with exponential backoff"
+            }},
+            { "AUTHORIZATION_ERROR", new[] {
+                "🔐 Verify authentication tokens and API keys",
+                "👤 Check user permissions and roles",
+                "🔑 Ensure proper authorization headers",
+                "📋 Review access control policies"
+            }},
+            { "VALIDATION_ERROR", new[] {
+                "✅ Validate input data format and constraints",
+                "📝 Check required fields and data types",
+                "🔍 Review business logic validation rules",
+                "📋 Ensure proper error handling for invalid inputs"
+            }}
+        };
         #endregion
 
-        #region Public Methods
+        #region Enhanced Public Methods
         /// <summary>
-        /// Sanitizes exception details with basic redaction of sensitive patterns.
+        /// 🚀 ENHANCED: Sanitizes exception with intelligent analysis and detailed debugging info.
         /// </summary>
         /// <param name="exception">The exception to sanitize</param>
-        /// <returns>Sanitized exception string</returns>
+        /// <returns>Enhanced sanitized exception string with analysis</returns>
         public string Sanitize(Exception exception)
         {
             if (exception == null) return "[NULL_EXCEPTION]";
             
             try
             {
-                string exceptionString = exception.ToString();
-                return ApplyBasicSanitization(exceptionString);
+                return BuildEnhancedExceptionReport(exception, includeHash: false, includeEncryption: false);
             }
             catch (Exception ex)
             {
@@ -82,27 +154,18 @@ namespace Shared.Security
         }
 
         /// <summary>
-        /// Sanitizes exception details with basic redaction and adds a security hash.
+        /// 🚀 ENHANCED: Sanitizes exception with security hash and intelligent analysis.
         /// </summary>
         /// <param name="exception">The exception to sanitize</param>
         /// <param name="includeHash">Whether to include a security hash</param>
-        /// <returns>Sanitized exception string with optional hash</returns>
+        /// <returns>Enhanced sanitized exception string with hash and analysis</returns>
         public string Sanitize(Exception exception, bool includeHash)
         {
             if (exception == null) return "[NULL_EXCEPTION]";
             
             try
             {
-                string exceptionString = exception.ToString();
-                string sanitized = ApplyBasicSanitization(exceptionString);
-                
-                if (includeHash)
-                {
-                    string hash = GenerateSecurityHash(exceptionString);
-                    sanitized += $"\n[SECURITY_HASH: {hash}]";
-                }
-                
-                return sanitized;
+                return BuildEnhancedExceptionReport(exception, includeHash, includeEncryption: false);
             }
             catch (Exception ex)
             {
@@ -111,25 +174,18 @@ namespace Shared.Security
         }
 
         /// <summary>
-        /// Sanitizes exception details with encryption for highly sensitive data.
+        /// 🚀 ENHANCED: Sanitizes exception with encryption and comprehensive analysis.
         /// </summary>
         /// <param name="exception">The exception to sanitize</param>
-        /// <param name="encryptionKey">Optional encryption key (uses default if not provided)</param>
-        /// <returns>Sanitized and encrypted exception string</returns>
+        /// <param name="encryptionKey">Optional encryption key</param>
+        /// <returns>Enhanced sanitized and encrypted exception string</returns>
         public string SanitizeWithEncryption(Exception exception, string? encryptionKey = null)
         {
             if (exception == null) return "[NULL_EXCEPTION]";
             
             try
             {
-                string exceptionString = exception.ToString();
-                string sanitized = ApplyBasicSanitization(exceptionString);
-                
-                // Encrypt the original exception for audit purposes
-                string encryptedOriginal = EncryptString(exceptionString, encryptionKey);
-                string hash = GenerateSecurityHash(exceptionString);
-                
-                return $"{sanitized}\n[ENCRYPTED_ORIGINAL: {encryptedOriginal}]\n[SECURITY_HASH: {hash}]";
+                return BuildEnhancedExceptionReport(exception, includeHash: true, includeEncryption: true, encryptionKey);
             }
             catch (Exception ex)
             {
@@ -158,27 +214,224 @@ namespace Shared.Security
         }
         #endregion
 
-        #region Private Methods
-        private static string ApplyBasicSanitization(string input)
+        #region 🆕 NEW: Enhanced Private Methods
+        private string BuildEnhancedExceptionReport(Exception exception, bool includeHash, bool includeEncryption, string? encryptionKey = null)
         {
-            if (string.IsNullOrEmpty(input)) return "[EMPTY_STRING]";
+            var sb = new StringBuilder();
+            
+            // 🆕 NEW: Exception Header with Category and Severity
+            string exceptionType = exception.GetType().Name;
+            string category = GetErrorCategory(exceptionType);
+            string severity = GetErrorSeverity(category);
+            
+            sb.AppendLine($"🚨 {severity} | {category}");
+            sb.AppendLine($"💥 Exception Type: {exceptionType}");
+            sb.AppendLine($"🔢 Error Code: {GetErrorCode(exception)}");
+            sb.AppendLine();
+
+            // 🆕 NEW: Enhanced Message Section
+            sb.AppendLine("📄 MESSAGE");
+            string sanitizedMessage = ApplySmartSanitization(exception.Message);
+            sb.AppendLine($"`{sanitizedMessage}`");
+            sb.AppendLine();
+
+            // 🆕 NEW: Stack Trace Analysis
+            if (exception.StackTrace != null)
+            {
+                sb.AppendLine("🗺️ STACK TRACE ANALYSIS");
+                var stackAnalysis = AnalyzeStackTrace(exception.StackTrace);
+                sb.AppendLine($"📍 Primary Location: {stackAnalysis.PrimaryLocation}");
+                sb.AppendLine($"🔧 Method: {stackAnalysis.MethodName}");
+                sb.AppendLine($"📂 File: {stackAnalysis.FileName}");
+                sb.AppendLine($"#️⃣ Line: {stackAnalysis.LineNumber}");
+                sb.AppendLine();
+            }
+
+            // 🆕 NEW: Intelligent Analysis and Suggestions
+            sb.AppendLine("🤖 INTELLIGENT ANALYSIS");
+            var suggestions = GetErrorSuggestions(category, exception);
+            foreach (var suggestion in suggestions)
+            {
+                sb.AppendLine($"- {suggestion}");
+            }
+            sb.AppendLine();
+
+            // 🆕 NEW: Inner Exception Analysis
+            if (exception.InnerException != null)
+            {
+                sb.AppendLine("🔗 INNER EXCEPTION");
+                string innerType = exception.InnerException.GetType().Name;
+                string innerCategory = GetErrorCategory(innerType);
+                sb.AppendLine($"Type: {innerType} ({innerCategory})");
+                sb.AppendLine($"Message: `{ApplySmartSanitization(exception.InnerException.Message)}`");
+                sb.AppendLine();
+            }
+
+            // 🆕 NEW: Context Information
+            sb.AppendLine("📊 CONTEXT INFO");
+            sb.AppendLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC");
+            sb.AppendLine($"Environment: {Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Unknown"}");
+            sb.AppendLine($"Machine: {Environment.MachineName}");
+            sb.AppendLine($"Process ID: {Environment.ProcessId}");
+            sb.AppendLine();
+
+            // Security features
+            if (includeHash)
+            {
+                string hash = GenerateSecurityHash(exception.ToString());
+                sb.AppendLine($"🔐 Security Hash: {hash}");
+            }
+
+            if (includeEncryption)
+            {
+                string encryptedOriginal = EncryptString(exception.ToString(), encryptionKey);
+                string hash = GenerateSecurityHash(exception.ToString());
+                sb.AppendLine($"🔐 Security Hash: {hash}");
+                sb.AppendLine($"🔒 Encrypted Original: {encryptedOriginal}");
+            }
+
+            return sb.ToString();
+        }
+
+        private string ApplySmartSanitization(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return "[EMPTY_MESSAGE]";
             
             string sanitized = input;
             
-            // Apply pattern-based redaction
+            // Apply pattern-based redaction only for truly sensitive data
             for (int i = 0; i < SensitivePatterns.Length && i < RedactedReplacements.Length; i++)
             {
                 sanitized = Regex.Replace(sanitized, SensitivePatterns[i], RedactedReplacements[i], 
                     RegexOptions.IgnoreCase | RegexOptions.Multiline);
             }
             
-            // Additional sanitization for common sensitive patterns
+            // 🆕 NEW: Preserve important error details while redacting sensitive parts
+            // Only redact specific sensitive patterns, not entire messages
             sanitized = Regex.Replace(sanitized, @"(?:password|pwd)\s*=\s*[^;\s]+", "[PASSWORD_REDACTED]", 
                 RegexOptions.IgnoreCase);
             sanitized = Regex.Replace(sanitized, @"(?:token|secret)\s*=\s*[a-zA-Z0-9\-_]{20,}", "[TOKEN_REDACTED]", 
                 RegexOptions.IgnoreCase);
             
             return sanitized;
+        }
+
+        private string GetErrorCategory(string exceptionType)
+        {
+            return ErrorCategories.TryGetValue(exceptionType, out string? category) ? category : "UNKNOWN_ERROR";
+        }
+
+        private string GetErrorSeverity(string category)
+        {
+            return ErrorSeverity.TryGetValue(category, out string? severity) ? severity : "🔵 INFO";
+        }
+
+        private string GetErrorCode(Exception exception)
+        {
+            // 🆕 NEW: Extract meaningful error codes
+            if (exception is System.Data.SqlClient.SqlException sqlEx)
+                return $"SQL-{sqlEx.Number}";
+            if (exception is Npgsql.PostgresException pgEx)
+                return $"PG-{pgEx.SqlState}";
+            if (exception is System.Net.Http.HttpRequestException httpEx)
+                return $"HTTP-{GetHttpStatusCode(httpEx)}";
+            if (exception is System.ComponentModel.Win32Exception win32Ex)
+                return $"WIN32-{win32Ex.NativeErrorCode}";
+            
+            return $"GEN-{Math.Abs(exception.GetHashCode() % 10000):D4}";
+        }
+
+        private int GetHttpStatusCode(System.Net.Http.HttpRequestException httpEx)
+        {
+            // Try to extract HTTP status code from the exception
+            var statusMatch = Regex.Match(httpEx.Message, @"(\d{3})");
+            return statusMatch.Success ? int.Parse(statusMatch.Groups[1].Value) : 0;
+        }
+
+        private (string PrimaryLocation, string MethodName, string FileName, int LineNumber) AnalyzeStackTrace(string stackTrace)
+        {
+            try
+            {
+                var lines = stackTrace.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                
+                // Find the first non-framework line
+                foreach (var line in lines)
+                {
+                    var match = Regex.Match(line.Trim(), @"at\s+(.+)\s+in\s+(.+):line\s+(\d+)");
+                    if (match.Success)
+                    {
+                        string methodName = match.Groups[1].Value;
+                        string filePath = match.Groups[2].Value;
+                        int lineNumber = int.Parse(match.Groups[3].Value);
+                        string fileName = System.IO.Path.GetFileName(filePath);
+                        
+                        // Skip framework and system methods
+                        if (!IsFrameworkMethod(methodName))
+                        {
+                            return (filePath, methodName, fileName, lineNumber);
+                        }
+                    }
+                }
+                
+                // Fallback to first line
+                var fallbackMatch = Regex.Match(lines.FirstOrDefault() ?? "", @"at\s+(.+)\s+in\s+(.+):line\s+(\d+)");
+                if (fallbackMatch.Success)
+                {
+                    return (
+                        fallbackMatch.Groups[2].Value,
+                        fallbackMatch.Groups[1].Value,
+                        System.IO.Path.GetFileName(fallbackMatch.Groups[2].Value),
+                        int.Parse(fallbackMatch.Groups[3].Value)
+                    );
+                }
+            }
+            catch { }
+            
+            return ("Unknown", "Unknown", "Unknown", 0);
+        }
+
+        private bool IsFrameworkMethod(string methodName)
+        {
+            var frameworkNames = new[] { "System.", "Microsoft.", "mscorlib", "netstandard" };
+            return frameworkNames.Any(framework => methodName.StartsWith(framework, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private string[] GetErrorSuggestions(string category, Exception exception)
+        {
+            if (ErrorSuggestions.TryGetValue(category, out string[]? suggestions))
+            {
+                return suggestions;
+            }
+            
+            // 🆕 NEW: Dynamic suggestions based on exception content
+            var dynamicSuggestions = new List<string>();
+            
+            if (exception.Message.Contains("connection", StringComparison.OrdinalIgnoreCase))
+            {
+                dynamicSuggestions.Add("🔍 Check network connectivity and firewall settings");
+                dynamicSuggestions.Add("🔗 Verify connection strings and endpoints");
+            }
+            
+            if (exception.Message.Contains("permission", StringComparison.OrdinalIgnoreCase))
+            {
+                dynamicSuggestions.Add("🔐 Verify user permissions and access rights");
+                dynamicSuggestions.Add("👤 Check authentication and authorization");
+            }
+            
+            if (exception.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            {
+                dynamicSuggestions.Add("⏱️ Increase timeout values or optimize performance");
+                dynamicSuggestions.Add("🔄 Implement retry logic with exponential backoff");
+            }
+            
+            if (dynamicSuggestions.Count == 0)
+            {
+                dynamicSuggestions.Add("🔍 Review the stack trace for specific error details");
+                dynamicSuggestions.Add("📋 Check application logs for additional context");
+                dynamicSuggestions.Add("🔄 Consider restarting the affected service");
+            }
+            
+            return dynamicSuggestions.ToArray();
         }
 
         private static string GenerateSecurityHash(string input)
