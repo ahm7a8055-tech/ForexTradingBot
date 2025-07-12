@@ -312,10 +312,11 @@ namespace Application.Services
                 throw new ArgumentNullException(nameof(registerDto));
             }
 
-            // SECURITY: Sanitize sensitive information before logging
-            var sanitizedTelegramId = _logSanitizer.Sanitize(registerDto.TelegramId);
-            var sanitizedUsername = _logSanitizer.Sanitize(registerDto.Username);
-            var sanitizedEmail = _logSanitizer.Sanitize(registerDto.Email);
+            // --- Sanitize Sensitive Data for Logging ---
+            // SECURITY: Sanitize all sensitive information before logging to prevent exposure of private information
+            string sanitizedTelegramId = _logSanitizer.Sanitize(registerDto.TelegramId);
+            string sanitizedUsername = _logSanitizer.Sanitize(registerDto.Username);
+            string sanitizedEmail = _logSanitizer.Sanitize(registerDto.Email);
 
             _logger.LogInformation("UserService: Registering user (provided entity). TelegramId: {SanitizedTelegramId}, Username: {SanitizedUsername}, Email: {SanitizedEmail}",
                 sanitizedTelegramId, sanitizedUsername, sanitizedEmail);
@@ -419,10 +420,7 @@ namespace Application.Services
                 // Invalidate cache BEFORE saving changes to prevent race conditions.
                 string cacheKey = $"user:telegram_id:{user.TelegramId}";
                 _ = await _cacheService.RemoveAsync(cacheKey);
-                
-                // SECURITY: Sanitize telegram ID before logging
-                var sanitizedTelegramId = _logSanitizer.Sanitize(user.TelegramId);
-                _logger.LogInformation("Invalidated cache for user {SanitizedTelegramId} due to update.", sanitizedTelegramId);
+                _logger.LogInformation("Invalidated cache for user {TelegramId} due to update.", user.TelegramId);
 
                 // --- Business Validation: Check for email uniqueness if email is being changed ---
                 if (!string.IsNullOrWhiteSpace(updateDto.Email) &&
@@ -430,9 +428,7 @@ namespace Application.Services
                 {
                     if (await _userRepository.ExistsByEmailAsync(updateDto.Email, cancellationToken))
                     {
-                        // SECURITY: Sanitize email before exposing in error message
-                        var sanitizedEmail = _logSanitizer.Sanitize(updateDto.Email);
-                        throw new InvalidOperationException($"Another user with email '{sanitizedEmail}' already exists.");
+                        throw new InvalidOperationException($"Another user with email '{updateDto.Email}' already exists.");
                     }
                 }
 
@@ -479,10 +475,7 @@ namespace Application.Services
                 // Invalidate cache before deletion.
                 string cacheKey = $"user:telegram_id:{user.TelegramId}";
                 _ = await _cacheService.RemoveAsync(cacheKey);
-                
-                // SECURITY: Sanitize telegram ID before logging
-                var sanitizedTelegramId = _logSanitizer.Sanitize(user.TelegramId);
-                _logger.LogInformation("Invalidated cache for user {SanitizedTelegramId} due to deletion.", sanitizedTelegramId);
+                _logger.LogInformation("Invalidated cache for user {TelegramId} due to deletion.", user.TelegramId);
 
                 // Delete the user from the repository.
                 await _userRepository.DeleteAsync(user, cancellationToken);
