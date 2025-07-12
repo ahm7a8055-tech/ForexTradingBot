@@ -161,47 +161,47 @@ namespace WebAPI.Controllers
             if (string.IsNullOrWhiteSpace(connectionString))
                 return null;
 
-            // SECURITY: Sanitize input before any processing
-            var sanitizedInput = SanitizeForLogging(connectionString);
-            
+            // SECURITY: Sanitize for logging before any complex processing
+            var sanitizedInputForLogging = SanitizeSensitiveData(connectionString);
+
             try
             {
-                // Basic validation - check for required components
-                if (!connectionString.Contains("Server=", StringComparison.OrdinalIgnoreCase) &&
-                    !connectionString.Contains("Host=", StringComparison.OrdinalIgnoreCase) &&
-                    !connectionString.Contains("Data Source=", StringComparison.OrdinalIgnoreCase))
+                // Use NpgsqlConnectionStringBuilder to parse and validate the connection string.
+                // This mitigates connection string injection attacks.
+                var builder = new NpgsqlConnectionStringBuilder(connectionString);
+
+                if (string.IsNullOrWhiteSpace(builder.Host))
                 {
-                    _logger.LogWarning("Database connection string validation failed: Missing server/host information. Input: {SanitizedInput}", sanitizedInput);
+                    _logger.LogWarning("Database connection string validation failed: Missing host information. Input: {SanitizedInput}", sanitizedInputForLogging);
                     return null;
                 }
 
-                if (!connectionString.Contains("Database=", StringComparison.OrdinalIgnoreCase) &&
-                    !connectionString.Contains("Initial Catalog=", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(builder.Database))
                 {
-                    _logger.LogWarning("Database connection string validation failed: Missing database information. Input: {SanitizedInput}", sanitizedInput);
+                    _logger.LogWarning("Database connection string validation failed: Missing database information. Input: {SanitizedInput}", sanitizedInputForLogging);
                     return null;
                 }
 
-                // Additional validation for PostgreSQL
-                if (connectionString.Contains("PostgreSQL", StringComparison.OrdinalIgnoreCase) ||
-                    connectionString.Contains("postgres", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(builder.Username))
                 {
-                    if (!connectionString.Contains("Username=", StringComparison.OrdinalIgnoreCase) &&
-                        !connectionString.Contains("User Id=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _logger.LogWarning("PostgreSQL connection string validation failed: Missing username. Input: {SanitizedInput}", sanitizedInput);
-                        return null;
-                    }
+                    _logger.LogWarning("Database connection string validation failed: Missing username. Input: {SanitizedInput}", sanitizedInputForLogging);
+                    return null;
                 }
 
-                _logger.LogInformation("Database connection string validation successful. Input: {SanitizedInput}", sanitizedInput);
-                return connectionString;
+                _logger.LogInformation("Database connection string validation successful. Input: {SanitizedInput}", sanitizedInputForLogging);
+                // Return the rebuilt, sanitized connection string from the builder.
+                return builder.ConnectionString;
+            }
+            catch (ArgumentException ex) // Catch specific exceptions from the builder
+            {
+                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                _logger.LogError(sanitizedException, "Database connection string validation failed due to invalid format. Input: {SanitizedInput}", sanitizedInputForLogging);
+                return null;
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Database connection string validation failed. Input: {SanitizedInput}", sanitizedInput);
+                _logger.LogError(sanitizedException, "Database connection string validation failed. Input: {SanitizedInput}", sanitizedInputForLogging);
                 return null;
             }
         }
@@ -216,31 +216,33 @@ namespace WebAPI.Controllers
             if (string.IsNullOrWhiteSpace(connectionString))
                 return null;
 
-            // SECURITY: Sanitize input before any processing
-            var sanitizedInput = SanitizeForLogging(connectionString);
-            
+            // SECURITY: Sanitize for logging before any complex processing
+            var sanitizedInputForLogging = SanitizeSensitiveData(connectionString);
+
             try
             {
-                // Basic Redis connection string validation
-                if (!connectionString.Contains(":", StringComparison.OrdinalIgnoreCase) &&
-                    !connectionString.Contains("localhost", StringComparison.OrdinalIgnoreCase) &&
-                    !connectionString.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase))
+                // Use ConfigurationOptions.Parse to validate the Redis connection string format.
+                var options = ConfigurationOptions.Parse(connectionString);
+
+                if (options.EndPoints.Count == 0)
                 {
-                    _logger.LogWarning("Redis connection string validation failed: Invalid format. Input: {SanitizedInput}", sanitizedInput);
+                    _logger.LogWarning("Redis connection string validation failed: No endpoints specified. Input: {SanitizedInput}", sanitizedInputForLogging);
                     return null;
                 }
 
-                _logger.LogInformation("Redis connection string validation successful. Input: {SanitizedInput}", sanitizedInput);
+                _logger.LogInformation("Redis connection string validation successful. Input: {SanitizedInput}", sanitizedInputForLogging);
+                // Return the original string as Parse does not provide a rebuilt one, but we have validated its structure.
                 return connectionString;
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Redis connection string validation failed. Input: {SanitizedInput}", sanitizedInput);
+                _logger.LogError(sanitizedException, "Redis connection string validation failed. Input: {SanitizedInput}", sanitizedInputForLogging);
                 return null;
             }
         }
+
         #endregion
 
         #region API Endpoints
