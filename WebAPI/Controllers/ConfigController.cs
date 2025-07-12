@@ -31,77 +31,58 @@ namespace WebAPI.Controllers
         }
         #endregion
 
-        #region Security Validation Methods
+        #region Security Helper Methods
         /// <summary>
-        /// Sanitizes user input for safe logging by removing newlines and other problematic characters.
+        /// Redacts sensitive data for secure logging using the same patterns as ExceptionSanitizer.
         /// </summary>
-        /// <param name="input">The user input to sanitize</param>
-        /// <returns>Sanitized string safe for logging</returns>
-        private static string SanitizeForLogging(string? input)
+        /// <param name="sensitiveData">The sensitive data to redact</param>
+        /// <returns>Redacted string safe for logging</returns>
+        private static string RedactSensitiveData(string? sensitiveData)
         {
-            if (string.IsNullOrWhiteSpace(input))
-                return "[EMPTY_INPUT]";
+            if (string.IsNullOrWhiteSpace(sensitiveData))
+                return "[EMPTY_DATA]";
 
-            // Remove newlines, carriage returns, and other problematic characters
-            var sanitized = input
-                .Replace("\r", "")
-                .Replace("\n", "")
-                .Replace("\t", " ")
-                .Replace("\0", ""); // Null characters
-
-            // Remove any remaining control characters
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, @"[\x00-\x1F\x7F]", "");
-
-            // Limit length to prevent log flooding
-            if (sanitized.Length > 200)
+            try
             {
-                sanitized = sanitized[..200] + "...";
+                var redacted = sensitiveData;
+
+                // Apply the same redaction patterns as ExceptionSanitizer
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"(?:password|pwd)\s*=\s*[^;\s]+", "[PASSWORD_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "[USERNAME_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"(?:server|host|data\s*source)\s*=\s*[^;\s]+", "[SERVER_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"(?:database|initial\s*catalog)\s*=\s*[^;\s]+", "[DATABASE_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"(?:token|secret)\s*=\s*[a-zA-Z0-9\-_]{20,}", "[TOKEN_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"[0-9]+:[a-zA-Z0-9\-_]{35}", "[BOT_TOKEN_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
+                    @"[a-zA-Z0-9\-_]{20,}", "[API_KEY_REDACTED]", 
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                return redacted;
             }
-
-            return sanitized;
+            catch
+            {
+                return "[REDACTION_FAILED]";
+            }
         }
 
-        /// <summary>
-        /// Sanitizes sensitive data by redacting sensitive patterns while preserving structure.
-        /// </summary>
-        /// <param name="sensitiveInput">The sensitive input to sanitize</param>
-        /// <returns>Sanitized string with sensitive data redacted</returns>
-        private static string SanitizeSensitiveData(string? sensitiveInput)
-        {
-            if (string.IsNullOrWhiteSpace(sensitiveInput))
-                return "[EMPTY_INPUT]";
-
-            var sanitized = sensitiveInput;
-
-            // Redact connection string patterns
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"(?:password|pwd)\s*=\s*[^;\s]+", "password=***", 
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "userid=***", 
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            // Redact bot token patterns
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"[0-9]+:[a-zA-Z0-9\-_]{35}", "***:***", 
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            // Redact API keys and tokens
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"[a-zA-Z0-9\-_]{20,}", "***", 
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            return sanitized;
-        }
-
-        /// <summary>
-        /// Creates a secure error response that doesn't expose sensitive information.
-        /// </summary>
-        /// <param name="statusCode">HTTP status code</param>
-        /// <param name="userMessage">User-friendly message</param>
-        /// <param name="internalErrorId">Optional internal error ID for tracking</param>
-        /// <returns>Secure error response</returns>
         private IActionResult CreateSecureErrorResponse(int statusCode, string userMessage, string? internalErrorId = null)
         {
             var response = new
@@ -114,6 +95,19 @@ namespace WebAPI.Controllers
             return StatusCode(statusCode, response);
         }
         #endregion
+
+        #region Security Validation Methods
+        /// <summary>
+        /// Creates a secure error response that doesn't expose sensitive information.
+        /// </summary>
+        /// <param name="statusCode">HTTP status code</param>
+        /// <param name="userMessage">User-friendly message</param>
+        /// <param name="internalErrorId">Optional internal error ID for tracking</param>
+        /// <returns>Secure error response</returns>
+        #endregion
+
+
+
 
         #region Request/Response Models
         public class TestConfigRequestModel
@@ -161,47 +155,45 @@ namespace WebAPI.Controllers
             if (string.IsNullOrWhiteSpace(connectionString))
                 return null;
 
-            // SECURITY: Sanitize for logging before any complex processing
-            var sanitizedInputForLogging = SanitizeSensitiveData(connectionString);
-
             try
             {
                 // Use NpgsqlConnectionStringBuilder to parse and validate the connection string.
-                // This mitigates connection string injection attacks.
                 var builder = new NpgsqlConnectionStringBuilder(connectionString);
 
                 if (string.IsNullOrWhiteSpace(builder.Host))
                 {
-                    _logger.LogWarning("Database connection string validation failed: Missing host information. Input: {SanitizedInput}", sanitizedInputForLogging);
+                    _logger.LogWarning("Database connection string validation failed: Missing host information. Input: {EncryptedInput}", RedactSensitiveData(connectionString));
                     return null;
                 }
 
                 if (string.IsNullOrWhiteSpace(builder.Database))
                 {
-                    _logger.LogWarning("Database connection string validation failed: Missing database information. Input: {SanitizedInput}", sanitizedInputForLogging);
+                    _logger.LogWarning("Database connection string validation failed: Missing database information. Input: {EncryptedInput}", RedactSensitiveData(connectionString));
                     return null;
                 }
 
                 if (string.IsNullOrWhiteSpace(builder.Username))
                 {
-                    _logger.LogWarning("Database connection string validation failed: Missing username. Input: {SanitizedInput}", sanitizedInputForLogging);
+                    _logger.LogWarning("Database connection string validation failed: Missing username. Input: {EncryptedInput}", RedactSensitiveData(connectionString));
                     return null;
                 }
 
-                _logger.LogInformation("Database connection string validation successful. Input: {SanitizedInput}", sanitizedInputForLogging);
+                _logger.LogInformation("Database connection string validation successful. Input: {EncryptedInput}", RedactSensitiveData(connectionString));
                 // Return the rebuilt, sanitized connection string from the builder.
                 return builder.ConnectionString;
             }
             catch (ArgumentException ex) // Catch specific exceptions from the builder
             {
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Database connection string validation failed due to invalid format. Input: {SanitizedInput}", sanitizedInputForLogging);
+                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                var encryptedInput = RedactSensitiveData(connectionString);
+                _logger.LogError("Database connection string validation failed due to invalid format. Input: {EncryptedInput}. Details: {EncryptedException}", encryptedInput, encryptedException);
                 return null;
             }
             catch (Exception ex)
             {
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Database connection string validation failed. Input: {SanitizedInput}", sanitizedInputForLogging);
+                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                var encryptedInput = RedactSensitiveData(connectionString);
+                _logger.LogError("Database connection string validation failed. Input: {EncryptedInput}. Details: {EncryptedException}", encryptedInput, encryptedException);
                 return null;
             }
         }
@@ -216,9 +208,6 @@ namespace WebAPI.Controllers
             if (string.IsNullOrWhiteSpace(connectionString))
                 return null;
 
-            // SECURITY: Sanitize for logging before any complex processing
-            var sanitizedInputForLogging = SanitizeSensitiveData(connectionString);
-
             try
             {
                 // Use ConfigurationOptions.Parse to validate the Redis connection string format.
@@ -226,23 +215,22 @@ namespace WebAPI.Controllers
 
                 if (options.EndPoints.Count == 0)
                 {
-                    _logger.LogWarning("Redis connection string validation failed: No endpoints specified. Input: {SanitizedInput}", sanitizedInputForLogging);
+                    _logger.LogWarning("Redis connection string validation failed: No endpoints specified. Input: {EncryptedInput}", RedactSensitiveData(connectionString));
                     return null;
                 }
 
-                _logger.LogInformation("Redis connection string validation successful. Input: {SanitizedInput}", sanitizedInputForLogging);
+                _logger.LogInformation("Redis connection string validation successful. Input: {EncryptedInput}", RedactSensitiveData(connectionString));
                 // Return the original string as Parse does not provide a rebuilt one, but we have validated its structure.
                 return connectionString;
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                _logger.LogError(sanitizedException, "Redis connection string validation failed. Input: {SanitizedInput}", sanitizedInputForLogging);
+                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                var encryptedInput = RedactSensitiveData(connectionString);
+                _logger.LogError("Redis connection string validation failed. Input: {EncryptedInput}. Details: {EncryptedException}", encryptedInput, encryptedException);
                 return null;
             }
         }
-
         #endregion
 
         #region API Endpoints
@@ -281,10 +269,9 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
                 var errorId = Guid.NewGuid().ToString("N")[..8];
-                _logger.LogError(sanitizedException, "Database connection test failed. ErrorId: {ErrorId}", errorId);
+                _logger.LogError("Database connection test failed. ErrorId: {ErrorId}. Details: {EncryptedException}", errorId, encryptedException);
                 response.DatabaseStatus = "Error";
                 response.DatabaseError = "Database connection failed. Please check your connection string and network connectivity.";
             }
@@ -323,10 +310,9 @@ namespace WebAPI.Controllers
                 }
                 catch (Exception ex)
                 {
-                    // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                    var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                    var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
                     var errorId = Guid.NewGuid().ToString("N")[..8];
-                    _logger.LogError(sanitizedException, "Redis connection test failed. ErrorId: {ErrorId}", errorId);
+                    _logger.LogError("Redis connection test failed. ErrorId: {ErrorId}. Details: {EncryptedException}", errorId, encryptedException);
                     response.RedisStatus = "Error";
                     response.RedisError = "Redis connection failed. Please check your connection string and network connectivity.";
                 }
@@ -362,18 +348,16 @@ namespace WebAPI.Controllers
                             response.BotUsername = usernameElement.GetString();
                         }
                         response.TelegramStatus = "OK";
-                        // SECURITY: Sanitize bot username before logging
-                        var sanitizedBotUsername = SanitizeForLogging(response.BotUsername);
-                        _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {SanitizedBotUsername}", sanitizedBotUsername);
+                        var encryptedBotUsername = RedactSensitiveData(response.BotUsername);
+                        _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {EncryptedBotUsername}", encryptedBotUsername);
                     }
                     else
                     {
                         var errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
-                        // SECURITY: Sanitize error content before logging
-                        var sanitizedErrorContent = SanitizeForLogging(errorContent);
+                        var encryptedErrorContent = RedactSensitiveData(errorContent);
                         var errorId = Guid.NewGuid().ToString("N")[..8];
-                        _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {SanitizedErrorContent}, ErrorId: {ErrorId}", 
-                            telegramApiResponse.StatusCode, sanitizedErrorContent, errorId);
+                        _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {EncryptedErrorContent}, ErrorId: {ErrorId}",
+                            telegramApiResponse.StatusCode, encryptedErrorContent, errorId);
                         response.TelegramStatus = "Error";
                         response.TelegramError = "Telegram API test failed. Please check your bot token.";
                     }
@@ -381,10 +365,9 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
                 var errorId = Guid.NewGuid().ToString("N")[..8];
-                _logger.LogError(sanitizedException, "Telegram Bot Token test failed. ErrorId: {ErrorId}", errorId);
+                _logger.LogError("Telegram Bot Token test failed. ErrorId: {ErrorId}. Details: {EncryptedException}", errorId, encryptedException);
                 response.TelegramStatus = "Error";
                 response.TelegramError = "Telegram bot token test failed. Please check your token and network connectivity.";
             }
@@ -431,15 +414,15 @@ namespace WebAPI.Controllers
             //
             // This current logging is for demonstration purposes only for this project.
             
-            // SECURITY: Sanitize all user inputs before logging to prevent log forging
-            var sanitizedBotToken = SanitizeSensitiveData(model.BotToken);
-            var sanitizedDbConn = SanitizeSensitiveData(validatedDbConn);
-            var sanitizedRedisConn = SanitizeSensitiveData(validatedRedisConn);
+            // SECURITY: Encrypt all sensitive configuration data before logging.
+            var encryptedBotToken = RedactSensitiveData(model.BotToken);
+            var encryptedDbConn = RedactSensitiveData(validatedDbConn);
+            var encryptedRedisConn = RedactSensitiveData(validatedRedisConn);
             
             _logger.LogWarning("Received configuration to save (PLACEHOLDER - NOT SAVING TO APPSETTINGS.JSON):");
-            _logger.LogWarning("BotToken: {SanitizedBotToken}", sanitizedBotToken);
-            _logger.LogWarning("DbConn: {SanitizedDbConn}", sanitizedDbConn);
-            _logger.LogWarning("RedisConn: {SanitizedRedisConn}", sanitizedRedisConn);
+            _logger.LogWarning("BotToken: {EncryptedBotToken}", encryptedBotToken);
+            _logger.LogWarning("DbConn: {EncryptedDbConn}", encryptedDbConn);
+            _logger.LogWarning("RedisConn: {EncryptedRedisConn}", encryptedRedisConn);
 
             // SECURITY: Return a secure response without exposing sensitive information
             return Ok(new { 

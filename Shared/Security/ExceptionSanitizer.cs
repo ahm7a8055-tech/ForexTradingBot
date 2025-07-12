@@ -1,6 +1,9 @@
+using System;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Shared.Security
 {
