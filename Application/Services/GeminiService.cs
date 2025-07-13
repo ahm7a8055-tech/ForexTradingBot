@@ -730,55 +730,107 @@ Enhanced message:";
                 _totalStopwatch.Stop();
                 var sb = new StringBuilder();
 
-                // Header
-                sb.AppendLine("<b>🌟 GEMINI AI ENHANCEMENT REPORT</b>");
-                sb.AppendLine("<pre style='font-family:monospace;'>");
-                sb.AppendLine("──────────────────────────────────────────────");
-                sb.AppendLine($"📝 <b>Operation:</b> <b>{_operationName}</b>   <b>Status:</b> {GetStatusWithColor(_finalStatus ?? "UNKNOWN")}   <b>Duration:</b> {FormatDuration(_totalStopwatch.Elapsed)}");
-                sb.AppendLine($"🕒 <b>Started:</b> {_startTime:yyyy-MM-dd HH:mm:ss} UTC   <b>Ended:</b> {DateTime.UtcNow:HH:mm:ss} UTC");
-                sb.AppendLine($"🔗 <b>CID:</b> {CorrelationId}");
-                sb.AppendLine("──────────────────────────────────────────────");
-                sb.AppendLine($"📊 <b>Ops:</b> {_entries.Count}   <b>Success:</b> {CalculateSuccessRate()}   <b>Avg:</b> {CalculateAverageResponseTime()}   <b>Configs:</b> {_configUsageCount.Count}");
-                sb.AppendLine("──────────────────────────────────────────────");
-                sb.AppendLine("<b>Config Usage:</b>");
-                foreach (var kvp in _configUsageCount.OrderByDescending(x => x.Value))
-                    sb.AppendLine($"  • <b>Config {kvp.Key}:</b> {kvp.Value} ops");
-                sb.AppendLine("──────────────────────────────────────────────");
-                sb.AppendLine("<b>Trace:</b>");
+                // Header with beautiful styling
+                sb.AppendLine("**🌟 GEMINI AI ENHANCEMENT REPORT**");
+                sb.AppendLine();
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                sb.AppendLine();
+                
+                // Operation Summary
+                sb.AppendLine($"**📝 Operation:** `{_operationName}`");
+                sb.AppendLine($"**🎯 Status:** {GetStatusWithColor(_finalStatus ?? "UNKNOWN")}");
+                sb.AppendLine($"**⏱️ Duration:** `{FormatDuration(_totalStopwatch.Elapsed)}`");
+                sb.AppendLine($"**🕒 Started:** `{_startTime:yyyy-MM-dd HH:mm:ss} UTC`");
+                sb.AppendLine($"**🕐 Ended:** `{DateTime.UtcNow:HH:mm:ss} UTC`");
+                sb.AppendLine($"**🔗 Correlation ID:** `{CorrelationId}`");
+                sb.AppendLine();
+                
+                // Performance Metrics
+                sb.AppendLine("**📊 PERFORMANCE METRICS**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                sb.AppendLine($"**Total Operations:** `{_entries.Count}`");
+                sb.AppendLine($"**Success Rate:** `{CalculateSuccessRate()}`");
+                sb.AppendLine($"**Average Response Time:** `{CalculateAverageResponseTime()}`");
+                sb.AppendLine($"**Configurations Used:** `{_configUsageCount.Count}`");
+                sb.AppendLine();
+                
+                // Configuration Usage
+                if (_configUsageCount.Any())
+                {
+                    sb.AppendLine("**⚙️ CONFIGURATION USAGE**");
+                    sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    foreach (var kvp in _configUsageCount.OrderByDescending(x => x.Value))
+                    {
+                        sb.AppendLine($"• **Config {kvp.Key}:** `{kvp.Value} operations`");
+                    }
+                    sb.AppendLine();
+                }
+                
+                // Detailed Trace
+                sb.AppendLine("**🔍 DETAILED TRACE**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 foreach (var group in _entries.GroupBy(e => e.Category ?? "GENERAL").OrderBy(g => g.Key))
                 {
                     if (group.Key != "GENERAL")
-                        sb.AppendLine($"  <b>{group.Key}:</b>");
+                    {
+                        sb.AppendLine($"**{GetCategoryIcon(group.Key)} {group.Key.ToUpper()}:**");
+                    }
+                    
                     foreach (var entry in group)
                     {
                         string icon = GetStatusIcon(entry.Status);
-                        string configInfo = entry.ConfigId.HasValue ? $"[C{entry.ConfigId}]" : "";
-                        string timestamp = $"+{entry.Timestamp.TotalMilliseconds:F0}ms";
-                        string message = TruncateMessage(entry.Message, 60);
-                        sb.AppendLine($"   {icon} {timestamp} {configInfo} {message}");
+                        string configInfo = entry.ConfigId.HasValue ? $"`[C{entry.ConfigId}]`" : "";
+                        string timestamp = $"`+{entry.Timestamp.TotalMilliseconds:F0}ms`";
+                        string message = TruncateMessage(entry.Message, 80);
+                        
+                        sb.AppendLine($"  {icon} {timestamp} {configInfo} {message}");
                     }
+                    sb.AppendLine();
                 }
-                sb.AppendLine("──────────────────────────────────────────────");
+                
                 // Final Analysis
-                sb.AppendLine("<b>Analysis:</b>");
+                sb.AppendLine("**📋 ANALYSIS & RECOMMENDATIONS**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                
                 if (_successCount > 0)
                 {
-                    sb.AppendLine($"✅ <b>Success:</b> AI enhancement completed. Best config: {(_configUsageCount.OrderByDescending(x => x.Value).FirstOrDefault().Key)}");
+                    var bestConfig = _configUsageCount.OrderByDescending(x => x.Value).FirstOrDefault();
+                    sb.AppendLine($"✅ **Success:** AI enhancement completed successfully");
+                    sb.AppendLine($"   • **Best Config:** `Config {bestConfig.Key}` ({bestConfig.Value} operations)");
+                    sb.AppendLine($"   • **Success Rate:** `{(_successCount * 100.0 / _entries.Count):F1}%`");
                 }
                 else
                 {
-                    sb.AppendLine("❌ <b>Failure:</b> All configs failed. Check API keys, quotas, or network.");
+                    sb.AppendLine("❌ **Failure:** All configurations failed");
+                    sb.AppendLine("   • **Check:** API keys, quotas, network connectivity");
+                    sb.AppendLine("   • **Verify:** Gemini service configuration");
                 }
+                
                 if (_failureCount > 0)
                 {
-                    sb.AppendLine($"⚠️ <b>Failures:</b> {_failureCount} failures detected. Review configs and logs.");
+                    sb.AppendLine($"⚠️ **Failures Detected:** `{_failureCount} failures`");
+                    sb.AppendLine("   • **Review:** Configuration settings and API quotas");
+                    sb.AppendLine("   • **Check:** Network connectivity and service status");
                 }
+                
                 if (_entries.Any(e => e.Status == "FAILURE" && e.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)))
                 {
-                    sb.AppendLine("⏱️ <b>Timeouts:</b> Some configs timed out. Consider lowering timeout or checking network/API speed.");
+                    sb.AppendLine("⏱️ **Timeout Issues Detected:**");
+                    sb.AppendLine("   • **Consider:** Lowering timeout values");
+                    sb.AppendLine("   • **Check:** Network speed and API response times");
                 }
-                sb.AppendLine("──────────────────────────────────────────────");
-                sb.AppendLine("</pre>");
+                
+                if (_configUsageCount.Count > 1)
+                {
+                    sb.AppendLine("🔄 **Multiple Configs Used:**");
+                    sb.AppendLine("   • **Strategy:** Fallback configuration system active");
+                    sb.AppendLine("   • **Reliability:** Enhanced through config redundancy");
+                }
+                
+                sb.AppendLine();
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                sb.AppendLine("**📅 Report Generated:** " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC"));
+                
                 return sb.ToString();
             }
 
@@ -786,9 +838,9 @@ Enhanced message:";
             {
                 return status switch
                 {
-                    "✅ SUCCESS" => "✅ SUCCESS",
-                    "❌ FAILURE" => "❌ FAILURE",
-                    _ => "❓ UNKNOWN"
+                    "SUCCESS" => "✅ **SUCCESS**",
+                    "FAILURE" => "❌ **FAILURE**",
+                    _ => "❓ **UNKNOWN**"
                 };
             }
 
@@ -799,7 +851,27 @@ Enhanced message:";
                     "SUCCESS" => "✅",
                     "FAILURE" => "❌",
                     "START" => "🚀",
+                    "RETRY" => "🔄",
+                    "TIMEOUT" => "⏱️",
+                    "QUOTA" => "💳",
+                    "NETWORK" => "🌐",
                     _ => "➡️"
+                };
+            }
+            
+            private string GetCategoryIcon(string category)
+            {
+                return category.ToUpper() switch
+                {
+                    "INITIALIZATION" => "🚀",
+                    "ENHANCEMENT" => "✨",
+                    "VALIDATION" => "🔍",
+                    "NETWORK" => "🌐",
+                    "API" => "🔌",
+                    "CACHE" => "💾",
+                    "ERROR" => "⚠️",
+                    "SUCCESS" => "✅",
+                    _ => "📋"
                 };
             }
 
