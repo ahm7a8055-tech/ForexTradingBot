@@ -1802,7 +1802,7 @@ namespace Infrastructure.Services
                         {
                             // Case 1: Photo is being uploaded from a local file (no changes here)
                             case TL.InputMediaUploadedPhoto uploadedPhoto when uploadedPhoto.file is TL.InputFile file && !string.IsNullOrEmpty(file.Name) && File.Exists(file.Name):
-                                imageBytes = await File.ReadAllBytesAsync(file.Name, cancellationToken);
+                                imageBytes = null;
                                 aiInputDescription = $"Text + New Image ({imageBytes.Length} bytes from path)";
                                 debugReport.AppendLine($"   - AI Input Image: Found local file `{Path.GetFileName(file.Name)}`.");
                                 break;
@@ -1815,18 +1815,18 @@ namespace Infrastructure.Services
                                     // This is the correct object type to pass for a direct download.
                                     var location = new TL.InputPhotoFileLocation
                                     {
-                                        id = inputPhoto.id,
-                                        access_hash = inputPhoto.access_hash,
-                                        file_reference = inputPhoto.file_reference,
+                               //         id = inputPhoto.id,
+                              //          access_hash = inputPhoto.access_hash,
+                              //          file_reference = inputPhoto.file_reference,
                                         // "y" or "x" typically requests a large/full-sized version of the photo.
                                         // This is important for getting good quality for the AI model.
-                                        thumb_size = "y"
+                               //         thumb_size = "y"
                                     };
 
-                                    await _client!.DownloadFileAsync(location, stream);
-                                    imageBytes = stream.ToArray();
+                                  //  await _client!.DownloadFileAsync(location, stream);
+                                   // imageBytes = stream.ToArray();
                                 }
-                                aiInputDescription = $"Text + Forwarded Image ({imageBytes.Length} bytes from Telegram)";
+                             //   aiInputDescription = $"Text + Forwarded Image ({imageBytes.Length} bytes from Telegram)";
                                 debugReport.AppendLine("   - AI Input Image: Found forwarded/existing photo. Constructing file location and downloading from Telegram.");
                                 break;
 
