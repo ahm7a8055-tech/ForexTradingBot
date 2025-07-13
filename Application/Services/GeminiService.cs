@@ -40,32 +40,37 @@ namespace Application.Services
                 return null;
             }
 
-            // Create a scope to resolve both the repository and the notification service.
             await using var scope = _serviceProvider.CreateAsyncScope();
             var scopedServiceProvider = scope.ServiceProvider;
-            var notifToAdmin = scopedServiceProvider.GetRequiredService<INotificationToAdminService>(); // Get notifier here
+            var notifToAdmin = scopedServiceProvider.GetRequiredService<INotificationToAdminService>();
 
             try
             {
                 var configRepository = scopedServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
+
+                // ================== THE FIRST FIX IS HERE ==================
+                // We no longer look for the text "-pro-vision". We trust that if this method is called
+                // with an image, any available Gemini configuration is multimodal-capable.
                 var validConfigs = (await configRepository.GetAllByProviderAndStatusAndKeyNameAsync("Gemini", isEnabled: true, apiKeyName, cancellationToken))
-                    .Where(c => c != null && !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName) && c.ModelName.Contains("pro-vision"))
+                    .Where(c => c != null && !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName))
                     .ToList();
+                // ==========================================================
 
                 if (!validConfigs.Any())
                 {
-                    await notifToAdmin.SendNotificationAsync($"⚠️ **GeminiService Alert**\nNo valid 'pro-vision' configurations found for ApiKeyName `{apiKeyName ?? "default"}`.", cancellationToken);
+                    // The error message is now more accurate.
+                    await notifToAdmin.SendNotificationAsync($"⚠️ **GeminiService Alert**\nNo valid **multimodal-capable** (Gemini) configurations found for ApiKeyName `{apiKeyName ?? "default"}`.", cancellationToken);
+
+                    // The fallback logic remains the same.
                     return !string.IsNullOrWhiteSpace(text) ? await EnhanceMessageAsync(text, cancellationToken, apiKeyName) : null;
                 }
 
                 foreach (var config in validConfigs)
                 {
-                    // (Logic to build request body remains the same)
                     var parts = new List<Part> { new(config.PromptTemplate.Replace("{message}", text ?? string.Empty), null) };
                     if (imageDatas != null) foreach (var imageData in imageDatas) parts.Add(new Part(null, new InlineData("image/jpeg", Convert.ToBase64String(imageData))));
                     var requestBody = new GeminiRequest(new List<Content> { new(parts) });
 
-                    // Pass the resolved notifier to the API call method
                     string? enhancedMessage = await AttemptApiCallAsync(config, requestBody, notifToAdmin, cancellationToken);
                     if (!string.IsNullOrWhiteSpace(enhancedMessage))
                     {
@@ -73,7 +78,7 @@ namespace Application.Services
                     }
                 }
 
-                await notifToAdmin.SendNotificationAsync($"🚨 **GeminiService Failure**\nAll {validConfigs.Count} 'pro-vision' configurations failed for ApiKeyName `{apiKeyName ?? "default"}`.", cancellationToken);
+                await notifToAdmin.SendNotificationAsync($"🚨 **GeminiService Failure**\nAll {validConfigs.Count} multimodal configurations failed for ApiKeyName `{apiKeyName ?? "default"}`.", cancellationToken);
                 return null;
             }
             catch (Exception ex)
@@ -83,6 +88,7 @@ namespace Application.Services
                 return null;
             }
         }
+
 
         // --- TEXT-ONLY METHOD ---
         public async Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken, string? apiKeyName = null)
@@ -135,9 +141,13 @@ namespace Application.Services
         // --- CENTRALIZED API CALL LOGIC (MODIFIED TO ACCEPT NOTIFIER) ---
         private async Task<string?> AttemptApiCallAsync(AiApiConfiguration config, GeminiRequest requestBody, INotificationToAdminService notifToAdmin, CancellationToken cancellationToken)
         {
+            // ================== THE SECOND FIX IS HERE ==================
+            // We no longer need to clean the model name. The name from the database is now the REAL name.
+            // We use config.ModelName directly.
             var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{config.ModelName}:generateContent?key={config.ApiKey}";
-            // This detailed log is now removed to avoid leaking the whole prompt/image data in production logs.
-            // A shorter log can be used if needed. _logger.LogInformation("Attempting API call with ConfigId: {ConfigId}", config.Id);
+            // ==========================================================
+
+            _logger.LogInformation("Attempting API call to model: {ModelName} for ConfigId: {ConfigId}", config.ModelName, config.Id);
 
             try
             {
@@ -162,6 +172,7 @@ namespace Application.Services
                         .AppendLine($"🔥 **Gemini API Error**")
                         .AppendLine($"**Config ID:** `{config.Id}` | **Key Name:** `{config.ApiKeyName}`")
                         .AppendLine($"**Status:** `{(int)response.StatusCode} {response.ReasonPhrase}`")
+                        .AppendLine($"**Model Sent:** `{config.ModelName}`")
                         .AppendLine($"**Response:** ```{errorContent.Trim()}```")
                         .ToString(),
                     cancellationToken);
