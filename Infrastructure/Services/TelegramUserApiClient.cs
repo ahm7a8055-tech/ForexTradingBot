@@ -1407,20 +1407,26 @@ namespace Infrastructure.Services
             {
                 try
                 {
-                    // (Your logic to prepare imageBytesList for the AI call)
-                    List<byte[]>? imageBytesList = null;
-                    if (media is InputMediaUploadedPhoto { file: InputFile { Name: var filePath } } && File.Exists(filePath))
+                    // Use Hangfire background job for AI enhancement
+                    var jobId = await _geminiService.EnhanceMessageAsync(message, cancellationToken);
+                    
+                    if (!string.IsNullOrWhiteSpace(jobId) && !jobId.StartsWith("Job enqueued"))
                     {
-                        imageBytesList = new List<byte[]> { await File.ReadAllBytesAsync(filePath, cancellationToken) };
-                    }
-
-                    string? enhancedMessage = await _geminiService.EnhanceMessageAsync(message, imageBytesList, cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(enhancedMessage))
-                    {
+                        // If we got a direct result (not a job ID), use it immediately
                         _logger.LogInformation("Message/caption successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
-                        var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
+                        var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(jobId);
                         message = parsedText;
                         entitiesArray = parsedEntities.Length > 0 ? parsedEntities : null;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(jobId))
+                    {
+                        // Extract job ID from the response
+                        var actualJobId = jobId.Replace("Job enqueued successfully. JobId: ", "");
+                        _logger.LogInformation("AI enhancement job enqueued for Peer {PeerId}. JobId: {JobId}", peerIdForLog, actualJobId);
+                        
+                        // For now, proceed with original message and let the enhancement happen in background
+                        // In a more sophisticated implementation, you might want to wait for the result
+                        // or implement a callback mechanism
                     }
                 }
                 catch (Exception ex)
@@ -1693,13 +1699,22 @@ namespace Infrastructure.Services
 
                 // Call the now-idempotent GeminiService.
                 // We pass the original caption as the text to be enhanced.
-                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, imageBytesList, cancellationToken);
+                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, cancellationToken);
                 var (currentCaption, currentEntities) = (albumCaption, albumEntities); // Default to original
 
-                if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
                 {
+                    // If we got a direct result (not a job ID), use it immediately
                     debugReport.AppendLine($"   - ✅ AI service returned enhanced caption.");
                     (currentCaption, currentEntities) = FormatFinalMessage(enhancedCaption, null, debugReport); // Format the AI response
+                }
+                else if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                {
+                    // Extract job ID from the response
+                    var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
+                    debugReport.AppendLine($"   - 🔄 AI enhancement job enqueued. JobId: {actualJobId}");
+                    // For now, proceed with original caption and let the enhancement happen in background
+                    (currentCaption, currentEntities) = FormatFinalMessage(albumCaption, albumEntities, debugReport); // Format the original
                 }
                 else
                 {
@@ -1862,10 +1877,19 @@ namespace Infrastructure.Services
                 debugReport.AppendLine($"   - AI Input Type: `{aiInputDescription}`");
                 string? enhancedCaption = await _geminiService.EnhanceMessageAsync(currentCaption, imageBytesList, cancellationToken);
 
-                if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
                 {
+                    // If we got a direct result (not a job ID), use it immediately
                     debugReport.AppendLine($"   - Gemini Response: Received caption of length `{enhancedCaption.Length}`.");
                     return (enhancedCaption, null); // Return raw enhanced caption; formatting happens later.
+                }
+                else if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                {
+                    // Extract job ID from the response
+                    var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
+                    debugReport.AppendLine($"   - 🔄 Gemini job enqueued. JobId: {actualJobId}");
+                    // For now, return null to indicate no enhancement available immediately
+                    return null;
                 }
                 else
                 {
@@ -2491,6 +2515,56 @@ namespace Infrastructure.Services
             // For other negative IDs (e.g., basic groups, which are just negative chat_id), Math.Abs is also correct.
             // For positive IDs (users), Math.Abs changes nothing.
             return Math.Abs(peerId);
+        }
+
+        /// <summary>
+        /// Checks if a Gemini job has completed and optionally waits for it.
+        /// </summary>
+        /// <param name="jobId">The job ID to check</param>
+        /// <param name="waitForCompletion">Whether to wait for completion</param>
+        /// <param name="maxWaitTime">Maximum time to wait</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        /// <returns>The job result if completed, null otherwise</returns>
+        private async Task<string?> CheckGeminiJobResultAsync(string jobId, bool waitForCompletion = false, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(jobId))
+                return null;
+
+            var waitTime = maxWaitTime ?? TimeSpan.FromSeconds(30);
+            var startTime = DateTime.UtcNow;
+
+            while (DateTime.UtcNow - startTime < waitTime)
+            {
+                try
+                {
+                    var result = await _geminiService.GetJobResultAsync(jobId, cancellationToken);
+                    
+                    if (result == "JOB_RUNNING")
+                    {
+                        if (!waitForCompletion)
+                            return null;
+                        
+                        await Task.Delay(1000, cancellationToken); // Wait 1 second before checking again
+                        continue;
+                    }
+                    
+                    if (result == "JOB_NOT_FOUND")
+                        return null;
+                    
+                    // Job completed (success or failure)
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to check Gemini job result for JobId: {JobId}", jobId);
+                    if (!waitForCompletion)
+                        return null;
+                    
+                    await Task.Delay(1000, cancellationToken);
+                }
+            }
+
+            return null; // Timeout
         }
         #endregion
 

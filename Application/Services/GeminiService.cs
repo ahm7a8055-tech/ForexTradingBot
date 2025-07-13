@@ -1,5 +1,6 @@
 ﻿using Application.Common.Interfaces;
 using Domain.Entities;
+using Hangfire;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -88,7 +89,21 @@ namespace Application.Services
 
 
         public Task<string?> EnhanceMessageAsync(string text, CancellationToken ct, string? apiKeyName = null)
-      => EnhanceMessageAsync(text, null, ct, apiKeyName); // This overload will now always pass 'null' for images to the main method.
+        {
+            // Create a job ID for tracking
+            var jobId = Guid.NewGuid().ToString("N");
+            
+            // Enqueue the job and return immediately
+            var jobIdResult = BackgroundJob.Enqueue(() => 
+                ProcessEnhanceMessageJobAsync(text, jobId, apiKeyName, ct));
+            
+            _logger.LogInformation("EnhanceMessage job enqueued. JobId: {JobId}, HangfireJobId: {HangfireJobId}", 
+                jobId, jobIdResult);
+            
+            // Return a placeholder response - in real implementation, you might want to return the job ID
+            // and have the client poll for results or use SignalR for real-time updates
+            return Task.FromResult<string?>($"Job enqueued successfully. JobId: {jobId}");
+        }
 
         public async Task<string?> EnhanceMessageAsync(
             string? text,
@@ -96,91 +111,143 @@ namespace Application.Services
             CancellationToken ct,
             string? apiKeyName = null)
         {
-            var adminLogger = new AdminLogger("EnhanceMessage", Guid.NewGuid().ToString("N"));
+            // For the overload with images, we'll also use Hangfire
+            var jobId = Guid.NewGuid().ToString("N");
+            
+            var jobIdResult = BackgroundJob.Enqueue(() => 
+                ProcessEnhanceMessageJobAsync(text, jobId, apiKeyName, ct));
+            
+            _logger.LogInformation("EnhanceMessage job enqueued (with images). JobId: {JobId}, HangfireJobId: {HangfireJobId}", 
+                jobId, jobIdResult);
+            
+            return $"Job enqueued successfully. JobId: {jobId}";
+        }
 
-            // --- MODIFICATION START ---
-            // We are explicitly disabling image processing for this method.
-            // If an image was somehow passed (e.g., via the text-only overload, which is unlikely with the change above),
-            // we'll log it and proceed as if no image was provided to maintain the "text-only" behavior.
-            if (images != null && images.Any())
-            {
-                adminLogger.Info("Image data was provided but is ignored for this text-only enhancement method.", null, "IMAGE_PROCESSING");
-                // We can optionally clear the images list here if it helps clarity,
-                // but the primary logic will ignore it anyway.
-                images = null;
-            }
-            // --- MODIFICATION END ---
-
-
-            // 1. Input Validation & Idempotency
-            // The condition now implicitly checks for text only, as images are ignored.
-            if (string.IsNullOrWhiteSpace(text)) // Removed '&& (images == null || !images.Any())' as 'images' is now ignored.
-            {
-                adminLogger.Failure("Aborted: Text was null or empty.", null, "VALIDATION"); // Simplified message
-                await NotifyAdminAsync(adminLogger.Render(), ct);
-                return null;
-            }
-
-            // Generate cache key based on text only, as images are not processed.
-            string contentCacheKey = GenerateContentCacheKey(text, null); // Pass null for images
-            adminLogger.Info($"Request content hash (text-only): {contentCacheKey}", null, "CACHE");
-
-            var requestLock = _requestLocks.GetOrAdd(contentCacheKey, _ => new SemaphoreSlim(1, 1));
-            await requestLock.WaitAsync(ct);
+        /// <summary>
+        /// Hangfire background job method for processing message enhancement
+        /// </summary>
+        [AutomaticRetry(Attempts = 2)]
+        public async Task ProcessEnhanceMessageJobAsync(string? text, string jobId, string? apiKeyName, CancellationToken ct)
+        {
+            var adminLogger = new AdminLogger("EnhanceMessage", jobId);
 
             try
             {
-                if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
+                adminLogger.Info($"🚀 Hangfire job started for text enhancement. JobId: {jobId}", null, "HANGFIRE");
+
+                // 1. Input Validation & Idempotency
+                if (string.IsNullOrWhiteSpace(text))
                 {
-                    adminLogger.Success("Fulfilled from cache (Idempotency).", null, "CACHE");
+                    adminLogger.Failure("Aborted: Text was null or empty.", null, "VALIDATION");
                     await NotifyAdminAsync(adminLogger.Render(), ct);
-                    return cachedResult;
+                    return;
                 }
-                adminLogger.Info("Cache miss, proceeding to API call.", null, "CACHE");
 
-                // 2. Main Execution Loop: Try available configs in order
-                int maxAttempts = (_configs.Count > 0 ? _configs.Count : 1) + 1; // Failsafe loop
-                for (int attempt = 1; attempt <= maxAttempts; attempt++)
+                // Generate cache key based on text only
+                string contentCacheKey = GenerateContentCacheKey(text, null);
+                adminLogger.Info($"Request content hash (text-only): {contentCacheKey}", null, "CACHE");
+
+                var requestLock = _requestLocks.GetOrAdd(contentCacheKey, _ => new SemaphoreSlim(1, 1));
+                await requestLock.WaitAsync(ct);
+
+                try
                 {
-                    var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
-                    if (config == null)
+                    if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
                     {
-                        adminLogger.Failure("No available API configurations found. Halting operation.", null, "CONFIG");
-                        break; // Exit loop if no configs are available
+                        adminLogger.Success("Fulfilled from cache (Idempotency).", null, "CACHE");
+                        await NotifyAdminAsync(adminLogger.Render(), ct);
+                        return;
+                    }
+                    adminLogger.Info("Cache miss, proceeding to API call.", null, "CACHE");
+
+                    // 2. Main Execution Loop: Try available configs in order
+                    int maxAttempts = (_configs.Count > 0 ? _configs.Count : 1) + 1;
+                    for (int attempt = 1; attempt <= maxAttempts; attempt++)
+                    {
+                        var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
+                        if (config == null)
+                        {
+                            adminLogger.Failure("No available API configurations found. Halting operation.", null, "CONFIG");
+                            break;
+                        }
+
+                        adminLogger.Info($"Attempt {attempt}: Trying with Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
+
+                        (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+
+                        if (wasSuccess)
+                        {
+                            adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
+                            _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
+                            
+                            // Store the result in cache with job ID for retrieval
+                            _cache.Set($"JobResult_{jobId}", result, TimeSpan.FromMinutes(30));
+                            adminLogger.Success($"Job completed successfully. Result stored with JobId: {jobId}", null, "HANGFIRE");
+                            return;
+                        }
+
+                        adminLogger.Failure($"Config ID {config.Id} failed. Rotating to the back.", config.Id, "ROTATION");
+                        await ReportFailureAndRotateAsync(config.Id);
                     }
 
-                    adminLogger.Info($"Attempt {attempt}: Trying with Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
-
-                    // The core attempt to call the API with the selected config
-                    // Pass 'null' for images to ensure AttemptApiCallAsync and BuildRequest use text-only.
-                    (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
-
-                    if (wasSuccess)
-                    {
-                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
-                        _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
-                        return result; // Success, exit the method
-                    }
-
-                    // If the call was not successful, rotate the failed key to the back of the line
-                    adminLogger.Failure($"Config ID {config.Id} failed. Rotating to the back.", config.Id, "ROTATION");
-                    await ReportFailureAndRotateAsync(config.Id);
+                    adminLogger.Failure("All available API configurations failed.", null, "FINAL");
+                    _cache.Set($"JobResult_{jobId}", "FAILED: All configurations failed", TimeSpan.FromMinutes(30));
                 }
-
-                adminLogger.Failure("All available API configurations failed.", null, "FINAL");
-                return null;
+                finally
+                {
+                    requestLock.Release();
+                    await NotifyAdminAsync(adminLogger.Render(), ct);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unhandled exception in EnhanceMessageAsync. CID: {CID}", adminLogger.CorrelationId);
+                _logger.LogError(ex, "Unhandled exception in Hangfire job. JobId: {JobId}", jobId);
                 adminLogger.Failure($"CRITICAL ERROR: {ex.GetType().Name} - {ex.Message}", null, "ERROR");
-                return null;
-            }
-            finally
-            {
-                requestLock.Release();
+                _cache.Set($"JobResult_{jobId}", $"ERROR: {ex.Message}", TimeSpan.FromMinutes(30));
                 await NotifyAdminAsync(adminLogger.Render(), ct);
+                throw; // Let Hangfire handle retry
             }
+        }
+
+        /// <summary>
+        /// Get the result of a background job
+        /// </summary>
+        public async Task<string?> GetJobResultAsync(string jobId, CancellationToken ct)
+        {
+            if (_cache.TryGetValue($"JobResult_{jobId}", out string? result))
+            {
+                return result;
+            }
+            
+            // If not in cache, check if job is still running
+            var jobState = JobStorage.Current.GetMonitoringApi().JobDetails(jobId);
+            if (jobState != null)
+            {
+                return "JOB_RUNNING";
+            }
+            
+            return "JOB_NOT_FOUND";
+        }
+
+        /// <summary>
+        /// Enqueue a batch of message enhancements
+        /// </summary>
+        public async Task<List<string>> EnhanceMessagesBatchAsync(List<string> texts, CancellationToken ct, string? apiKeyName = null)
+        {
+            var jobIds = new List<string>();
+            
+            foreach (var text in texts)
+            {
+                var jobId = Guid.NewGuid().ToString("N");
+                var hangfireJobId = BackgroundJob.Enqueue(() => 
+                    ProcessEnhanceMessageJobAsync(text, jobId, apiKeyName, ct));
+                
+                jobIds.Add(jobId);
+                _logger.LogInformation("Batch job enqueued. Text: {TextLength} chars, JobId: {JobId}", 
+                    text?.Length ?? 0, jobId);
+            }
+            
+            return jobIds;
         }
 
         #region Core Logic Helpers

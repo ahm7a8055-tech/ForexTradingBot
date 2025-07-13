@@ -30,5 +30,31 @@
         /// or an error occurs.
         /// </returns>
         Task<string?> EnhanceMessageAsync(string originalMessage, CancellationToken cancellationToken, string? apiKeyName = null);
+
+        /// <summary>
+        /// Hangfire background job method for processing message enhancement
+        /// </summary>
+        /// <param name="text">The text to enhance</param>
+        /// <param name="jobId">Unique job identifier</param>
+        /// <param name="apiKeyName">Optional API key name</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        Task ProcessEnhanceMessageJobAsync(string? text, string jobId, string? apiKeyName, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Get the result of a background job
+        /// </summary>
+        /// <param name="jobId">Job identifier</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        /// <returns>Job result or status</returns>
+        Task<string?> GetJobResultAsync(string jobId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Enqueue a batch of message enhancements
+        /// </summary>
+        /// <param name="texts">List of texts to enhance</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        /// <param name="apiKeyName">Optional API key name</param>
+        /// <returns>List of job IDs</returns>
+        Task<List<string>> EnhanceMessagesBatchAsync(List<string> texts, CancellationToken cancellationToken, string? apiKeyName = null);
     }
 }
