@@ -42,6 +42,7 @@ namespace Infrastructure.Services
             .SetAbsoluteExpiration(TimeSpan.FromHours(1));
         private readonly TimeSpan _cacheCleanupInterval = TimeSpan.FromMinutes(10);
         private readonly IAdviceService _adviceService;
+        private readonly IServiceProvider _serviceProvider;
         private readonly ResiliencePipeline _resiliencePipeline;
         private readonly TimeSpan[] _retryDelays = new TimeSpan[]
         {
@@ -84,14 +85,14 @@ namespace Infrastructure.Services
         #endregion
 
         #region Constructor
-        public TelegramUserApiClient(IAdviceService adviceService, INotificationToAdminService notifToAdmin,
+        public TelegramUserApiClient(IAdviceService adviceService, IServiceProvider serviceProvider,
              ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
              IOptions<TelegramUserApiSettings> settingsOptions,
              MarkdownParserService markdownParserService, // Add markdown parser service parameter
              IGeminiService geminiService, // Inject GeminiService singleton
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
-            _notifToAdmin = notifToAdmin ?? throw new ArgumentNullException(nameof(notifToAdmin));
+         _serviceProvider = serviceProvider; 
             _geminiService = geminiService ?? throw new ArgumentNullException(nameof(geminiService));
             _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -1678,7 +1679,6 @@ namespace Infrastructure.Services
             {
                 debugReport.AppendLine("---");
                 debugReport.AppendLine("**2. Enrichment:** Processing caption...");
-
                 // The result of enrichment is now part of `currentCaption` within EnrichCaptionAsync
             }
             else
@@ -1745,8 +1745,8 @@ namespace Infrastructure.Services
         #region Private Pipeline Helper Methods
 
         private (string Caption, TL.MessageEntity[]? Entities) RecoverCaptionFromMedia(
-            string? initialCaption, TL.MessageEntity[]? initialEntities,
-            ICollection<TL.InputMedia> media, StringBuilder debugReport)
+          string? initialCaption, TL.MessageEntity[]? initialEntities,
+          ICollection<TL.InputMedia> media, StringBuilder debugReport)
         {
             debugReport.AppendLine($"**Initial Param Caption:** `{(string.IsNullOrWhiteSpace(initialCaption) ? "(empty)" : "Set")}`");
             if (!string.IsNullOrWhiteSpace(initialCaption))
@@ -1755,22 +1755,27 @@ namespace Infrastructure.Services
                 return (initialCaption, initialEntities);
             }
 
-            debugReport.AppendLine("**1. Caption Recovery:** ⚠️ Parameter caption empty, searching media items...");
-            // This requires a fix on the caller side. The properties do not exist on InputMedia types.
-            // For now, we log this clearly. If the caller passes a null caption, it will remain null.
-            debugReport.AppendLine("   - ❌ **CRITICAL:** Cannot recover caption from `InputMedia` types. The calling code MUST provide the caption.");
+            // This is no longer a critical error. It's a valid path for AI generation.
+            debugReport.AppendLine("**1. Caption Recovery:** ⚠️ No parameter caption provided. Proceeding to AI stage for generation from media content.");
             return (string.Empty, null);
         }
 
-    
+
         /// <summary>
-        /// Encapsulates the logic for AI enhancement, including image extraction and the call to the Gemini service.
+        /// Encapsulates the logic for AI enhancement. It now intelligently extracts image data
+        /// from either newly uploaded photos (InputMediaUploadedPhoto) or existing/forwarded photos (InputMediaPhoto).
+        /// </summary>
+        /// <returns>A tuple of the new caption and entities if successful; otherwise, null.</returns>
+        /// <summary>
+        /// Encapsulates the logic for AI enhancement. It now intelligently extracts image data
+        /// from either newly uploaded photos (InputMediaUploadedPhoto) or existing/forwarded photos (InputMediaPhoto).
         /// </summary>
         /// <returns>A tuple of the new caption and entities if successful; otherwise, null.</returns>
         private async Task<(string, TL.MessageEntity[])?> EnhanceCaptionWithAiAsync(
             string currentCaption, ICollection<TL.InputMedia> media,
             StringBuilder debugReport, CancellationToken cancellationToken)
         {
+            // The AI stage can now run even with an empty initial caption.
             debugReport.AppendLine($"**3. AI Enhancement:** Initiating with caption length: `{currentCaption?.Length ?? 0}`.");
 
             try
@@ -1778,52 +1783,99 @@ namespace Infrastructure.Services
                 List<byte[]>? imageBytesList = null;
                 string aiInputDescription = "Text-only";
 
-                // Attempt to extract image data for the AI
-                var firstPhoto = media.OfType<TL.InputMediaUploadedPhoto>().FirstOrDefault();
-                if (firstPhoto?.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
+                // Find the first available photo-like media to send to the AI
+                var firstPhotoMedia = media.FirstOrDefault(m => m is TL.InputMediaUploadedPhoto || m is TL.InputMediaPhoto);
+
+                if (firstPhotoMedia != null)
                 {
                     try
                     {
-                        byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken);
-                        imageBytesList = new List<byte[]> { imageBytes };
-                        aiInputDescription = $"Text + Image ({imageBytes.Length} bytes)";
+                        byte[]? imageBytes = null;
+                        switch (firstPhotoMedia)
+                        {
+                            // Case 1: Photo is being uploaded from a local file (no changes here)
+                            case TL.InputMediaUploadedPhoto uploadedPhoto when uploadedPhoto.file is TL.InputFile file && !string.IsNullOrEmpty(file.Name) && File.Exists(file.Name):
+                                imageBytes = await File.ReadAllBytesAsync(file.Name, cancellationToken);
+                                aiInputDescription = $"Text + New Image ({imageBytes.Length} bytes from path)";
+                                debugReport.AppendLine($"   - AI Input Image: Found local file `{Path.GetFileName(file.Name)}`.");
+                                break;
+
+                            // Case 2: Photo is an existing/forwarded Telegram photo (CORRECTED LOGIC)
+                            case TL.InputMediaPhoto forwardedPhoto when forwardedPhoto.id is TL.InputPhoto inputPhoto:
+                                using (var stream = new MemoryStream())
+                                {
+                                    // FIX: Construct a specific file location from the InputPhoto reference.
+                                    // This is the correct object type to pass for a direct download.
+                                    var location = new TL.InputPhotoFileLocation
+                                    {
+                                        id = inputPhoto.id,
+                                        access_hash = inputPhoto.access_hash,
+                                        file_reference = inputPhoto.file_reference,
+                                        // "y" or "x" typically requests a large/full-sized version of the photo.
+                                        // This is important for getting good quality for the AI model.
+                                        thumb_size = "y"
+                                    };
+
+                                    await _client!.DownloadFileAsync(location, stream);
+                                    imageBytes = stream.ToArray();
+                                }
+                                aiInputDescription = $"Text + Forwarded Image ({imageBytes.Length} bytes from Telegram)";
+                                debugReport.AppendLine("   - AI Input Image: Found forwarded/existing photo. Constructing file location and downloading from Telegram.");
+                                break;
+
+                            default:
+                                debugReport.AppendLine("   - AI Input Image: ⚠️ Detected a photo media type but could not extract data from it.");
+                                break;
+                        }
+
+                        if (imageBytes?.Length > 0)
+                        {
+                            imageBytesList = new List<byte[]> { imageBytes };
+                        }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to read image file for AI enhancement.");
-                        debugReport.AppendLine($"   - AI Input Image: ⚠️ Error reading file: `{ex.Message}`.");
-                        // Proceed with text-only if image reading fails
-                        aiInputDescription = "Text + Image (read error)";
+                        _logger.LogWarning(ex, "Failed to read or download image for AI enhancement.");
+                        debugReport.AppendLine($"   - AI Input Image: ⚠️ Error extracting image data: `{ex.Message}`.");
+                        aiInputDescription = "Text + Image (read/download error)";
                     }
                 }
                 else
                 {
-                    debugReport.AppendLine("   - AI Input Image: 🚫 Not detected or file path missing.");
+                    debugReport.AppendLine("   - AI Input Image: 🚫 No compatible photo media found in the album.");
                 }
+
+                // If we have no image and no initial text, there's nothing for the AI to do.
+                if (string.IsNullOrWhiteSpace(currentCaption) && imageBytesList is null)
+                {
+                    debugReport.AppendLine("   - AI Skipped: 🚫 No text and no image data available for enhancement.");
+                    return null;
+                }
+
                 debugReport.AppendLine($"   - AI Input Type: `{aiInputDescription}`");
                 string? enhancedCaption = await _geminiService.EnhanceMessageAsync(currentCaption, imageBytesList, cancellationToken);
 
                 if (!string.IsNullOrWhiteSpace(enhancedCaption))
                 {
                     debugReport.AppendLine($"   - Gemini Response: Received caption of length `{enhancedCaption.Length}`.");
-                    // Return raw enhanced caption; formatting happens later.
-                    return (enhancedCaption, null);
+                    return (enhancedCaption, null); // Return raw enhanced caption; formatting happens later.
                 }
                 else
                 {
-                    debugReport.AppendLine($"   - Gemini Response: Received empty or null caption.");
-                    return null; // AI enhancement failed or returned empty
+                    debugReport.AppendLine("   - Gemini Response: Received empty or null caption.");
+                    return null;
                 }
             }
             catch (Exception ex)
             {
+                // This will correctly catch an OperationCanceledException if the token is triggered during the await.
                 _logger.LogError(ex, "An exception occurred within the AI enhancement stage.");
                 debugReport.AppendLine($"   - 💥 AI Stage Exception: `{ex.Message}`.");
                 return null; // Signal failure
             }
         }
 
-
+        // No changes are needed for FormatFinalMessage, but it's included for completeness.
         private (string, TL.MessageEntity[]?) FormatFinalMessage(string caption, TL.MessageEntity[]? entities, StringBuilder debugReport)
         {
             if (string.IsNullOrWhiteSpace(caption))
