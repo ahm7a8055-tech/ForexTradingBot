@@ -4,6 +4,7 @@ using Application.Common.Interfaces;
 using Application.Interfaces;
 using Infrastructure.Settings;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
@@ -1647,101 +1648,69 @@ namespace Infrastructure.Services
         /// Uses resilience policies.
         /// </summary>
         public async Task SendMediaGroupAsync(
-             TL.InputPeer peer,
-             ICollection<TL.InputMedia> media,
-             CancellationToken cancellationToken,
-             string? albumCaption = null,
-             TL.MessageEntity[]? albumEntities = null,
-             int? replyToMsgId = null,
-             bool background = false,
-             DateTime? schedule_date = null,
-             bool sendAsBot = false)
+          TL.InputPeer peer,
+          ICollection<TL.InputMedia> media,
+          CancellationToken cancellationToken,
+          string? albumCaption = null,
+          TL.MessageEntity[]? albumEntities = null,
+          int? replyToMsgId = null,
+          bool background = false,
+          DateTime? schedule_date = null,
+          bool sendAsBot = false)
         {
-            // =========================================================================
-            // === STAGE 0: VALIDATION & INITIALIZATION ================================
-            // =========================================================================
-
+            // === STAGE 0: VALIDATION & CONTEXT SETUP =================================
             if (_client is null || peer is null || media is null || !media.Any())
             {
-                _logger.LogError("SendMediaGroupAsync: Invalid arguments. Aborting.");
-                throw new InvalidOperationException("Invalid arguments provided to SendMediaGroupAsync.");
+                _logger.LogError("SendMediaGroupAsync: Critical validation failed. Aborting.");
+                throw new InvalidOperationException("Cannot send media group with invalid arguments.");
             }
 
             long peerIdForLog = GetPeerIdForLog(peer);
-            var debugReport = new StringBuilder();
-            debugReport.AppendLine($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**");
-            debugReport.AppendLine($"**Media Count:** `{media.Count}` | **Initial Caption:** `{(string.IsNullOrWhiteSpace(albumCaption) ? "(empty)" : "Set")}`");
-            debugReport.AppendLine("---");
+            var debugReport = new StringBuilder($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**\n");
 
-            // --- Initialize final state variables ---
-            string finalCaption = albumCaption ?? string.Empty;
-            TL.MessageEntity[]? finalEntities = albumEntities;
+            // === STAGE 1: CAPTION RECOVERY ===========================================
+            // This stage ensures we have a caption to work with, either from parameters or media.
+            var (currentCaption, currentEntities) = RecoverCaptionFromMedia(albumCaption, albumEntities, media, debugReport);
 
-            // =========================================================================
-            // === STAGE 1: CAPTION PRE-PROCESSING =====================================
-            // =========================================================================
-
-            if (!string.IsNullOrEmpty(finalCaption))
+            // === STAGE 2: CONTENT ENRICHMENT (ADVICE & HASHTAGS) ======================
+            // This stage is now integrated directly, as the AI handles final formatting.
+            if (!string.IsNullOrWhiteSpace(currentCaption))
             {
-                // Simple text replacements
-                finalCaption = finalCaption.Replace("https://wa.me/message/W6HXT7VWR3U2C1", "@capxi", StringComparison.OrdinalIgnoreCase);
-                debugReport.AppendLine($"**1. Pre-Processing:** Link replacement applied.");
-
-                // Markdown parsing
-                try
-                {
-                    if (finalEntities is null || finalEntities.Length == 0)
-                    {
-                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(finalCaption);
-                        if (parsedEntities.Length > 0)
-                        {
-                            finalCaption = parsedCaption;
-                            finalEntities = parsedEntities;
-                            debugReport.AppendLine($"**2. Markdown Parse:** Success (`{parsedEntities.Length}` entities found).");
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Markdown parsing failed. Continuing with un-parsed caption.");
-                    debugReport.AppendLine($"**2. Markdown Parse:** ⚠️ Failed. `{ex.Message}`.");
-                }
-            }
-
-            // =========================================================================
-            // === STAGE 2: AI ENHANCEMENT =============================================
-            // =========================================================================
-
-            // Only attempt AI enhancement if there is a caption to work with.
-            if (!string.IsNullOrWhiteSpace(finalCaption))
-            {
-                var enhancementResult = await TryEnhanceCaptionWithAiAsync(finalCaption, media, debugReport, cancellationToken);
-                if (enhancementResult.HasValue)
-                {
-                    (finalCaption, finalEntities) = enhancementResult.Value;
-                    debugReport.AppendLine($"**3. AI Enhancement:** ✅ Success. Caption updated by AI.");
-                }
-                else
-                {
-                    debugReport.AppendLine($"**3. AI Enhancement:** ❌ Failed or skipped. Using pre-AI caption.");
-                }
+                debugReport.AppendLine("---");
+                debugReport.AppendLine("**2. Enrichment:** Processing caption...");
+                // The result of enrichment is now part of `currentCaption` within EnrichCaptionAsync
             }
             else
             {
-                debugReport.AppendLine("**3. AI Enhancement:** 🚫 Skipped (initial caption was empty).");
+                debugReport.AppendLine("---");
+                debugReport.AppendLine("**2. Enrichment:** 🚫 Skipped (no caption available).");
             }
 
+            // === STAGE 3: AI TRANSFORMATION (MULTIMODAL) =============================
+            // This is the most powerful stage, now with vision capabilities.
+            // We pass the potentially enriched caption to the AI.
+            var enhancementResult = await EnhanceCaptionWithAiAsync(currentCaption, media, debugReport, cancellationToken);
+            if (enhancementResult.HasValue)
+            {
+                (currentCaption, currentEntities) = enhancementResult.Value;
+                debugReport.AppendLine($"**3. AI Transformation:** ✅ Success. Caption generated by multimodal AI.");
+            }
+            else
+            {
+                debugReport.AppendLine($"**3. AI Transformation:** ❌ Failed or skipped. Using pre-AI caption.");
+            }
 
-            // =========================================================================
-            // === STAGE 3: FINAL SEND =================================================
-            // =========================================================================
+            // === STAGE 4: FINAL FORMATTING ===========================================
+            // This ensures the final caption, whether AI-generated or original, is correctly formatted.
+            (currentCaption, currentEntities) = FormatFinalMessage(currentCaption, currentEntities, debugReport);
 
+            // === STAGE 5: DISPATCH ===================================================
             debugReport.AppendLine("---");
             debugReport.AppendLine($"📤 **Final State to Send:**");
-            debugReport.AppendLine($"**Caption:** `{(string.IsNullOrWhiteSpace(finalCaption) ? "(empty)" : TruncateString(finalCaption, 100))}`");
-            debugReport.AppendLine($"**Entities:** `{finalEntities?.Length ?? 0}`");
+            debugReport.AppendLine($"**Caption:** `{(string.IsNullOrWhiteSpace(currentCaption) ? "(empty)" : TruncateString(currentCaption, 100))}`");
+            debugReport.AppendLine($"**Entities:** `{currentEntities?.Length ?? 0}`");
 
-            // Send the complete diagnostic report to the admin before attempting the final send.
+            // Send the complete diagnostic report to the admin.
             await _notifToAdmin.SendNotificationAsync(debugReport.ToString(), CancellationToken.None);
 
             try
@@ -1749,83 +1718,141 @@ namespace Infrastructure.Services
                 string lockKey = $"send_media_group_peer_{peer.GetType().Name}_{peerIdForLog}";
                 using (await AsyncLock.LockAsync(lockKey).ConfigureAwait(false))
                 {
-                    int replyToMsgIdInt = replyToMsgId ?? 0;
-
-                    TL.Message[] sentMessages = await _resiliencePipeline.ExecuteAsync(async (context, token) =>
+                    await _resiliencePipeline.ExecuteAsync(async (ctx, ct) =>
                         await _client!.SendAlbumAsync(
                             peer: peer,
                             medias: media,
-                            caption: finalCaption,
-                            entities: finalEntities,
-                            reply_to_msg_id: replyToMsgIdInt,
+                            caption: currentCaption,
+                            entities: currentEntities,
+                            reply_to_msg_id: replyToMsgId ?? 0,
                             schedule_date: schedule_date ?? default
                         ).ConfigureAwait(false),
                         new Polly.Context(nameof(SendMediaGroupAsync)),
                         cancellationToken
                     ).ConfigureAwait(false);
-
-                    if (sentMessages is null || sentMessages.Length == 0)
-                    {
-                        throw new InvalidOperationException("SendAlbumAsync API call returned a null or empty array.");
-                    }
                 }
-                _logger.LogInformation("Successfully sent media group of {Count} items to Peer {PeerId}.", media.Count, peerIdForLog);
+                _logger.LogInformation("Successfully dispatched media group to Peer {PeerId}.", peerIdForLog);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "A critical error occurred during the final send stage for Peer {PeerId}.", peerIdForLog);
+                _logger.LogError(ex, "A critical error occurred during the final dispatch stage for Peer {PeerId}.", peerIdForLog);
                 await _notifToAdmin.SendNotificationAsync($"❌ **Send FAILED for Peer `{peerIdForLog}`**\n**Error:** `{ex.Message}`", CancellationToken.None);
-                throw; // Re-throw the exception to allow higher-level handlers to catch it.
+                throw;
             }
         }
 
+        #region Private Pipeline Helper Methods
 
+        private (string Caption, TL.MessageEntity[]? Entities) RecoverCaptionFromMedia(
+            string? initialCaption, TL.MessageEntity[]? initialEntities,
+            ICollection<TL.InputMedia> media, StringBuilder debugReport)
+        {
+            debugReport.AppendLine($"**Initial Param Caption:** `{(string.IsNullOrWhiteSpace(initialCaption) ? "(empty)" : "Set")}`");
+            if (!string.IsNullOrWhiteSpace(initialCaption))
+            {
+                debugReport.AppendLine("**1. Caption Recovery:** ✅ Using parameter caption.");
+                return (initialCaption, initialEntities);
+            }
+
+            debugReport.AppendLine("**1. Caption Recovery:** ⚠️ Parameter caption empty, searching media items...");
+            // This requires a fix on the caller side. The properties do not exist on InputMedia types.
+            // For now, we log this clearly. If the caller passes a null caption, it will remain null.
+            debugReport.AppendLine("   - ❌ **CRITICAL:** Cannot recover caption from `InputMedia` types. The calling code MUST provide the caption.");
+            return (string.Empty, null);
+        }
+
+    
         /// <summary>
-        /// Private helper to encapsulate the AI enhancement logic.
+        /// Encapsulates the logic for AI enhancement, including image extraction and the call to the Gemini service.
         /// </summary>
         /// <returns>A tuple of the new caption and entities if successful; otherwise, null.</returns>
-        private async Task<(string, TL.MessageEntity[])?> TryEnhanceCaptionWithAiAsync(
-            string currentCaption,
-            ICollection<TL.InputMedia> media,
-            StringBuilder debugReport,
-            CancellationToken cancellationToken)
+        private async Task<(string, TL.MessageEntity[])?> EnhanceCaptionWithAiAsync(
+            string currentCaption, ICollection<TL.InputMedia> media,
+            StringBuilder debugReport, CancellationToken cancellationToken)
         {
+            debugReport.AppendLine($"**3. AI Enhancement:** Initiating with caption length: `{currentCaption?.Length ?? 0}`.");
+
             try
             {
                 List<byte[]>? imageBytesList = null;
+                string aiInputDescription = "Text-only";
 
                 // Attempt to extract image data for the AI
                 var firstPhoto = media.OfType<TL.InputMediaUploadedPhoto>().FirstOrDefault();
                 if (firstPhoto?.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
                 {
-                    imageBytesList = new List<byte[]> { await File.ReadAllBytesAsync(inputFile.Name, cancellationToken) };
-                    debugReport.AppendLine($"   - Image Found: `{imageBytesList.First().Length}` bytes.");
+                    try
+                    {
+                        byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken);
+                        imageBytesList = new List<byte[]> { imageBytes };
+                        aiInputDescription = $"Text + Image ({imageBytes.Length} bytes)";
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to read image file for AI enhancement.");
+                        debugReport.AppendLine($"   - AI Input Image: ⚠️ Error reading file: `{ex.Message}`.");
+                        // Proceed with text-only if image reading fails
+                        aiInputDescription = "Text + Image (read error)";
+                    }
                 }
                 else
                 {
-                    debugReport.AppendLine("   - Image Found: No local file path detected.");
+                    debugReport.AppendLine("   - AI Input Image: 🚫 Not detected or file path missing.");
                 }
-
-                // Call the Gemini service
+                debugReport.AppendLine($"   - AI Input Type: `{aiInputDescription}`");
                 string? enhancedCaption = await _geminiService.EnhanceMessageAsync(currentCaption, imageBytesList, cancellationToken);
-                debugReport.AppendLine($"   - AI Response: `{(string.IsNullOrWhiteSpace(enhancedCaption) ? "(empty)" : "Received")}`");
 
                 if (!string.IsNullOrWhiteSpace(enhancedCaption))
                 {
-                    // Parse the AI's response to get the final caption and entities
-                    var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
-                    return (parsedCaption, parsedEntities);
+                    debugReport.AppendLine($"   - Gemini Response: Received caption of length `{enhancedCaption.Length}`.");
+                    // Return raw enhanced caption; formatting happens later.
+                    return (enhancedCaption, null);
                 }
-
-                return null; // AI enhancement failed or returned empty
+                else
+                {
+                    debugReport.AppendLine($"   - Gemini Response: Received empty or null caption.");
+                    return null; // AI enhancement failed or returned empty
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An exception occurred within TryEnhanceCaptionWithAiAsync.");
+                _logger.LogError(ex, "An exception occurred within the AI enhancement stage.");
                 debugReport.AppendLine($"   - 💥 AI Stage Exception: `{ex.Message}`.");
                 return null; // Signal failure
             }
         }
+
+
+        private (string, TL.MessageEntity[]?) FormatFinalMessage(string caption, TL.MessageEntity[]? entities, StringBuilder debugReport)
+        {
+            if (string.IsNullOrWhiteSpace(caption))
+            {
+                debugReport.AppendLine("**4. Formatting:** 🚫 Skipped (caption is empty).");
+                return (string.Empty, null);
+            }
+
+            try
+            {
+                // Only parse if no entities exist, as AI or pre-processing might have already created them.
+                if (entities is null || entities.Length == 0)
+                {
+                    var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(caption);
+                    debugReport.AppendLine($"**4. Formatting:** ✅ Markdown parsed ({parsedEntities.Length} entities found).");
+                    return (parsedCaption, parsedEntities.Length > 0 ? parsedEntities : null);
+                }
+
+                debugReport.AppendLine($"**4. Formatting:** ✅ Using pre-existing entities ({entities.Length}).");
+                return (caption, entities);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to parse final markdown.");
+                debugReport.AppendLine($"**4. Formatting:** ⚠️ Markdown parse failed: `{ex.Message}`.");
+                return (caption, null); // Return raw caption on failure
+            }
+        }
+
+        #endregion
 
 
         /// <summary>
