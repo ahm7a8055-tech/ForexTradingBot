@@ -138,7 +138,7 @@ namespace Application.Services
 
                     if (wasSuccess)
                     {
-                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id);
+                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.");
                         _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
                         return result; // Success, exit the method
                     }
@@ -337,15 +337,41 @@ namespace Application.Services
             return _circuitBreakers.GetOrAdd($"ConfigId_{configId}", _ =>
             {
                 adminLogger.Info($"Creating new circuit breaker for Config ID {configId}.");
+
+                // Define the handlers with explicit types to resolve any compiler ambiguity.
+                Action<DelegateResult<HttpResponseMessage>, TimeSpan, Context> handleOnBreak = (resp, ts, ctx) =>
+                {
+                    _logger.LogWarning(
+                        "[Polly] Circuit breaker for ConfigId {ConfigId} is now open for {BreakTime}s due to: {Reason}",
+                        configId,
+                        ts.TotalSeconds,
+                        resp.Exception?.Message ?? resp.Result.StatusCode.ToString());
+                };
+
+                Action<Context> handleOnReset = (ctx) =>
+                {
+                    _logger.LogInformation(
+                        "[Polly] Circuit breaker for ConfigId {ConfigId} has been reset.",
+                        configId);
+                };
+
+                Action handleOnHalfOpen = () =>
+                {
+                    _logger.LogInformation(
+                        "[Polly] Circuit breaker for ConfigId {ConfigId} is now half-open. Next call is a test.",
+                        configId);
+                };
+
                 return Policy<HttpResponseMessage>
-                    .Handle<HttpRequestException>()
-                    .OrResult(r => (int)r.StatusCode >= 500 || r.StatusCode == HttpStatusCode.BadRequest)
-                    .CircuitBreakerAsync(
-                        2, TimeSpan.FromMinutes(2),
-                        onBreak: (resp, ts, ctx) => _logger.LogWarning("[Polly] Circuit breaker for ConfigId {ConfigId} is now open for {BreakTime}s due to: {Reason}", configId, ts.TotalSeconds, resp.Exception?.Message ?? resp.Result.StatusCode.ToString()),
-                        onReset: (ctx) => _logger.LogInformation("[Polly] Circuit breaker for ConfigId {ConfigId} has been reset.", configId),
-                        onHalfOpen: () => _logger.LogInformation("[Polly] Circuit breaker for ConfigId {ConfigId} is now half-open. Next call is a test.", configId)
-                    );
+      .Handle<HttpRequestException>()
+      .OrResult(r => (int)r.StatusCode >= 500 || r.StatusCode == HttpStatusCode.BadRequest)
+      .CircuitBreakerAsync(
+          2,                                // handledEventsAllowedBeforeBreaking
+          TimeSpan.FromMinutes(2),         // durationOfBreak
+          handleOnBreak,                    // onBreak
+          handleOnReset,                    // onReset
+          handleOnHalfOpen                  // onHalfOpen
+      );
             });
         }
 
@@ -410,62 +436,24 @@ namespace Application.Services
         }
         #endregion
 
-        #region DTOs and Request Builder
+        #region DTOs and Admin Logger
 
-        // ====================================================================================
-        // == START OF FIX: This method now correctly builds multimodal and text-only requests.
-        // ====================================================================================
         private GeminiRequest BuildRequest(string promptTemplate, string? text, ICollection<byte[]>? images)
         {
-            var parts = new List<Part>();
-            bool hasImages = images?.Any() ?? false;
-
-            // Determine the prompt text based on whether this is a multimodal request
-            string? promptForApi = null;
-            if (hasImages)
+            var parts = new List<Part> { new(promptTemplate.Replace("{message}", text ?? ""), null) };
+            if (images != null)
             {
-                // For requests with images, the 'text' is the primary prompt.
-                // If 'text' is empty, we use the template as a default instruction (e.g., "Describe the image").
-                promptForApi = !string.IsNullOrWhiteSpace(text)
-                    ? text
-                    : promptTemplate.Replace("{message}", "").Trim();
+                parts.AddRange(images.Select(img => new Part(null, new InlineData("image/jpeg", Convert.ToBase64String(img)))));
             }
-            else if (!string.IsNullOrWhiteSpace(text))
-            {
-                // For text-only requests, use the template to enhance the message.
-                promptForApi = promptTemplate.Replace("{message}", text);
-            }
-
-            // Add the text part if we have something to say
-            if (!string.IsNullOrWhiteSpace(promptForApi))
-            {
-                parts.Add(new Part(Text: promptForApi, InlineData: null));
-            }
-
-            // Add all image parts
-            if (hasImages)
-            {
-                parts.AddRange(images.Select(img => new Part(Text: null, InlineData: new InlineData("image/jpeg", Convert.ToBase64String(img)))));
-            }
-
             return new GeminiRequest(new List<Content> { new(parts) });
         }
-        // ====================================================================================
-        // == END OF FIX
-        // ====================================================================================
 
-
-        // Scoped these DTOs to the class as they are only used here.
-        private record GeminiRequest(List<Content> contents);
-        private record Content(List<Part> parts);
-        private record Part([property: JsonPropertyName("text")] string? Text, [property: JsonPropertyName("inline_data")] InlineData? InlineData);
-        private record InlineData([property: JsonPropertyName("mime_type")] string MimeType, [property: JsonPropertyName("data")] string Data);
-        private record GeminiResponse([property: JsonPropertyName("candidates")] List<Candidate>? Candidates);
-        private record Candidate([property: JsonPropertyName("content")] Content? Content);
-
-        #endregion
-
-        #region Pretty Admin Logger
+        public record GeminiRequest(List<Content> contents);
+        public record Content(List<Part> parts);
+        public record Part([property: JsonPropertyName("text")] string? Text, [property: JsonPropertyName("inline_data")] InlineData? InlineData);
+        public record InlineData([property: JsonPropertyName("mime_type")] string MimeType, [property: JsonPropertyName("data")] string Data);
+        public record GeminiResponse([property: JsonPropertyName("candidates")] List<Candidate>? Candidates);
+        public record Candidate([property: JsonPropertyName("content")] Content? Content);
 
         private class AdminLogger
         {
@@ -481,7 +469,7 @@ namespace Application.Services
                 _operationName = operationName;
                 CorrelationId = correlationId;
                 _totalStopwatch = Stopwatch.StartNew();
-                Info($"Operation '{_operationName}' Started");
+                Info($"Operation '{_operationName}' Started. CID: {CorrelationId}");
             }
 
             public void Info(string message, int? configId = null) => _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "INFO"));
@@ -500,39 +488,23 @@ namespace Application.Services
             {
                 _totalStopwatch.Stop();
                 var sb = new StringBuilder();
-                _finalStatus ??= "⚠️ UNKNOWN";
+                sb.AppendLine($"╔═════════ Gemini Service Report ═════════╗");
+                sb.AppendLine($"║ Operation: {_operationName,-29} ║");
+                sb.AppendLine($"║ Status: {_finalStatus ?? "UNKNOWN",-32} ║");
+                sb.AppendLine($"║ Duration: {_totalStopwatch.ElapsedMilliseconds,-9}ms                       ║");
+                sb.AppendLine($"║ CID: {CorrelationId,-35} ║");
+                sb.AppendLine($"╚═════════════════════════════════════════╝");
+                sb.AppendLine("─── Trace ───");
 
-                // Header
-                sb.AppendLine("╭─ ✨ Gemini Service Report ✨ ─────────╮");
-                sb.AppendLine($"│ Operation:  {_operationName,-25} │");
-                sb.AppendLine($"│ Status:     {_finalStatus,-25} │");
-                sb.AppendLine($"│ Duration:   {_totalStopwatch.ElapsedMilliseconds,5} ms{new string(' ', 18)} │");
-                sb.AppendLine($"│ CID:        {CorrelationId,-25} │");
-
-                // Trace
-                sb.AppendLine("├─ 🔎 Trace Log ──────────────────────────┤");
-                if (_entries.Any())
+                foreach (var entry in _entries)
                 {
-                    foreach (var entry in _entries)
-                    {
-                        string prefix = entry.Status switch { "SUCCESS" => "✅", "FAILURE" => "❌", _ => "➡️" };
-                        string configInfo = entry.ConfigId.HasValue ? $"[KeyID:{entry.ConfigId,2}]" : "[System] ";
-                        string logLine = $"{prefix} {configInfo} (+{entry.Timestamp.TotalMilliseconds,5:F0}ms) {entry.Message}";
-
-                        sb.Append("│ ").AppendLine(logLine.Truncate(76).PadRight(76)).Append(" │");
-                        sb.AppendLine();
-                    }
+                    string prefix = entry.Status switch { "SUCCESS" => "✅", "FAILURE" => "❌", _ => "➡️" };
+                    string configInfo = entry.ConfigId.HasValue ? $"[KeyID: {entry.ConfigId}] " : "";
+                    sb.AppendLine($"{prefix} (+{entry.Timestamp.TotalMilliseconds:F0}ms) {configInfo}{entry.Message}");
                 }
-                else
-                {
-                    sb.AppendLine("│ No trace entries were recorded.        │");
-                }
-
-                // Footer
-                sb.AppendLine("╰────────────────────────────────────────╯");
+                sb.AppendLine("─── End of Report ───");
                 return sb.ToString();
             }
-
             private record LogEntry(string Message, TimeSpan Timestamp, int? ConfigId, string Status);
         }
         #endregion
@@ -543,7 +515,7 @@ namespace Application.Services
         public static string Truncate(this string value, int maxLength)
         {
             if (string.IsNullOrEmpty(value)) return value;
-            return value.Length <= maxLength ? value : value[..(maxLength - 3)] + "...";
+            return value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
         }
     }
 }
