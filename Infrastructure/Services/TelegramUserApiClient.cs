@@ -30,6 +30,8 @@ namespace Infrastructure.Services
         private readonly INotificationToAdminService _notifToAdmin;
         public bool IsConnected { get; private set; } = false;
         #region Private Readonly Fields
+        private readonly IMemoryCache _memoryCache;
+
         private readonly ILogger<TelegramUserApiClient> _logger;
         private readonly TelegramUserApiSettings _settings;
         private readonly IHashtagService _hashtagService;
@@ -86,13 +88,14 @@ namespace Infrastructure.Services
 
         #region Constructor
         public TelegramUserApiClient(IAdviceService adviceService, IServiceProvider serviceProvider,
-             ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
+             ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,IMemoryCache memoryCache,
              IOptions<TelegramUserApiSettings> settingsOptions,
              MarkdownParserService markdownParserService, // Add markdown parser service parameter
              IGeminiService geminiService, // Inject GeminiService singleton
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
-         _serviceProvider = serviceProvider; 
+            _memoryCache = memoryCache;
+            _serviceProvider = serviceProvider; 
             _geminiService = geminiService ?? throw new ArgumentNullException(nameof(geminiService));
             _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -1643,14 +1646,64 @@ namespace Infrastructure.Services
         }
 
 
+        /// <summary>
+        /// Generates a unique, deterministic, and collision-resistant cache key for a media group.
+        /// This is the core of the idempotency logic to prevent duplicate album processing and sending.
+        /// </summary>
+        /// <param name="media">The collection of media items in the album.</param>
+        /// <param name="initialCaption">The initial caption, if any.</param>
+        /// <returns>A unique string key suitable for caching.</returns>
+        private static string GenerateAlbumCacheKey(ICollection<TL.InputMedia> media, string? initialCaption)
+        {
+            // We use a sorted list of unique identifiers to ensure the key is
+            // the same regardless of the order of media items in the collection.
+            var identifiers = new List<string>();
+
+            foreach (var m in media)
+            {
+                switch (m)
+                {
+                    // For newly uploaded media, the local file path is the unique identifier.
+                    case TL.InputMediaUploadedPhoto up:
+                        identifiers.Add($"UPLOAD_PHOTO:{up.file.Name}");
+                        break;
+                    case TL.InputMediaUploadedDocument ud:
+                        identifiers.Add($"UPLOAD_DOC:{ud.file.Name}");
+                        break;
+
+                    // For existing Telegram media, the ID and access hash are the unique identifiers.
+                    case TL.InputMediaPhoto p when p.id is TL.InputPhoto ip:
+                        identifiers.Add($"EXISTING_PHOTO:{ip.id}_{ip.access_hash}");
+                        break;
+                    case TL.InputMediaDocument d when d.id is TL.InputDocument idoc:
+                        identifiers.Add($"EXISTING_DOC:{idoc.id}_{idoc.access_hash}");
+                        break;
+
+                    // Add other media types as needed
+                    default:
+                        // Add a generic identifier for unknown types to be safe
+                        identifiers.Add($"UNKNOWN_MEDIA:{m.GetType().Name}");
+                        break;
+                }
+            }
+
+            // Sort the identifiers to make the key order-independent
+            identifiers.Sort(StringComparer.Ordinal);
+
+            // Combine the sorted identifiers and the initial caption into a single string
+            var combinedString = string.Join("|", identifiers) + $"|CAPTION:{initialCaption ?? "NULL"}";
+
+            // Hash the final string to create a short, unique, and safe cache key
+            using var sha256 = System.Security.Cryptography.SHA256.Create();
+            var hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(combinedString));
+            return $"AlbumSent-{Convert.ToBase64String(hashBytes)}";
+        }
+
 
         /// <summary>
-        /// Sends a group of media items as an album to a specified peer.
-        /// Uses resilience policies.
-        /// </summary>
-        /// <summary>
-        /// Sends a group of media items as an album to a specified peer.
-        /// Uses resilience policies and has been hardened with comprehensive logging.
+        /// Sends a group of media items as an album. This operation is IDEMPOTENT, meaning it will
+        /// not re-process or re-send the same album if called multiple times in a short period.
+        /// It uses a full pipeline of AI enhancement, formatting, and resilient dispatch.
         /// </summary>
         public async Task SendMediaGroupAsync(
           TL.InputPeer peer,
@@ -1667,7 +1720,6 @@ namespace Infrastructure.Services
             if (_client is null || peer is null || media is null || !media.Any())
             {
                 _logger.LogError("SendMediaGroupAsync: Critical validation failed at entry. Aborting.");
-                // Send a notification for this early exit, as it's a code-level issue.
                 await _notifToAdmin.SendNotificationAsync("❌ SendMediaGroupAsync validation failed. Peer or media was null.", CancellationToken.None);
                 throw new InvalidOperationException("Cannot send media group with invalid arguments.");
             }
@@ -1675,54 +1727,81 @@ namespace Infrastructure.Services
             long peerIdForLog = GetPeerIdForLog(peer);
             var debugReport = new StringBuilder($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**\n");
 
-            // We will now wrap the entire operation in a try/catch/finally block
-            // to guarantee a diagnostic report is always sent.
+            // === NEW: IDEMPOTENCY CHECK - THE CORE FIX FOR DUPLICATES =================
+            string albumCacheKey = GenerateAlbumCacheKey(media, albumCaption);
+            if (_memoryCache.TryGetValue(albumCacheKey, out _))
+            {
+                _logger.LogInformation("CACHE HIT: Album with key {AlbumCacheKey} has already been sent recently. Skipping.", albumCacheKey);
+                // We can optionally notify the admin of the duplicate detection.
+                await _notifToAdmin.SendNotificationAsync($"✅ **Duplicate Album Skipped**\nPeer: `{peerIdForLog}`\nCache Key: `{albumCacheKey}`", CancellationToken.None);
+                return; // EXIT EARLY - This prevents all duplicate work and sends.
+            }
+            debugReport.AppendLine($"**Cache Key:** `{albumCacheKey}` (MISS)");
+            // =========================================================================
+
             try
             {
-                // === STAGE 1: CAPTION RECOVERY ===========================================
-                var (currentCaption, currentEntities) = RecoverCaptionFromMedia(albumCaption, albumEntities, media, debugReport);
+                // === STAGE 1: CAPTION RECOVERY & AI ENHANCEMENT (COMBINED) ============
+                // We now do this in one intelligent step.
+                debugReport.AppendLine("\n---");
+                debugReport.AppendLine("**1. AI Caption Generation:**");
 
-                // === STAGE 2: CONTENT ENRICHMENT (ADVICE & HASHTAGS) ======================
-                // (Your existing logic here, which is currently integrated into other stages)
-                if (!string.IsNullOrWhiteSpace(currentCaption))
+                // Extract image data for the AI service.
+                var imageBytesList = new List<byte[]>();
+                foreach (var m in media)
                 {
-                    debugReport.AppendLine("---\n**2. Enrichment:** Processing caption...");
+                    if (imageBytesList.Any()) break; // We only need the first image for context.
+                    try
+                    {
+                        switch (m)
+                        {
+                            case TL.InputMediaUploadedPhoto up when up.file is TL.InputFile f && !string.IsNullOrEmpty(f.Name) && File.Exists(f.Name):
+                                imageBytesList.Add(await File.ReadAllBytesAsync(f.Name, cancellationToken));
+                                debugReport.AppendLine($"   - Extracted local image: `{Path.GetFileName(f.Name)}`");
+                                break;
+                            case TL.InputMediaPhoto p when p.id is TL.InputPhoto ip:
+                                using (var stream = new MemoryStream())
+                                {
+                                    var loc = new TL.InputPhotoFileLocation { id = ip.id, access_hash = ip.access_hash, file_reference = ip.file_reference, thumb_size = "y" };
+                                    await _client.DownloadFileAsync(loc, stream);
+                                    imageBytesList.Add(stream.ToArray());
+                                    debugReport.AppendLine($"   - Extracted existing Telegram photo ID: `{ip.id}`");
+                                }
+                                break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Could not extract an image for AI context. Proceeding without it.");
+                        debugReport.AppendLine($"   - ⚠️ Failed to extract image: `{ex.Message}`");
+                    }
+                }
+
+                // Call the now-idempotent GeminiService.
+                // We pass the original caption as the text to be enhanced.
+                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, imageBytesList, cancellationToken);
+                var (currentCaption, currentEntities) = (albumCaption, albumEntities); // Default to original
+
+                if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                {
+                    debugReport.AppendLine($"   - ✅ AI service returned enhanced caption.");
+                    (currentCaption, currentEntities) = FormatFinalMessage(enhancedCaption, null, debugReport); // Format the AI response
                 }
                 else
                 {
-                    debugReport.AppendLine("---\n**2. Enrichment:** 🚫 Skipped (no caption available).");
+                    debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
+                    (currentCaption, currentEntities) = FormatFinalMessage(albumCaption, albumEntities, debugReport); // Format the original
                 }
 
-                // === STAGE 3: AI TRANSFORMATION (MULTIMODAL) =============================
-                var enhancementResult = await EnhanceCaptionWithAiAsync(currentCaption, media, debugReport, cancellationToken);
-                if (enhancementResult.HasValue)
-                {
-                    (currentCaption, currentEntities) = enhancementResult.Value;
-                    debugReport.AppendLine($"**3. AI Transformation:** ✅ Success. Caption generated by multimodal AI.");
-                }
-                else
-                {
-                    debugReport.AppendLine($"**3. AI Transformation:** ❌ Failed or skipped. Using pre-AI caption.");
-                }
-
-                // === STAGE 4: FINAL FORMATTING ===========================================
-                (currentCaption, currentEntities) = FormatFinalMessage(currentCaption, currentEntities, debugReport);
-
-                // === STAGE 5: DISPATCH ===================================================
-                debugReport.AppendLine("---\n📤 **Final State to Send:**");
+                // === STAGE 2: DISPATCH ===================================================
+                debugReport.AppendLine("\n---");
+                debugReport.AppendLine($"📤 **Final State to Send:**");
                 debugReport.AppendLine($"**Caption:** `{(string.IsNullOrWhiteSpace(currentCaption) ? "(empty)" : TruncateString(currentCaption, 100))}`");
                 debugReport.AppendLine($"**Entities:** `{currentEntities?.Length ?? 0}`");
 
                 string lockKey = $"send_media_group_peer_{peer.GetType().Name}_{peerIdForLog}";
-                _logger.LogDebug("Attempting to acquire lock for Peer {PeerId} with key: {LockKey}", peerIdForLog, lockKey);
-                debugReport.AppendLine("🔐 **Locking:** Attempting to acquire lock...");
-
                 using (await AsyncLock.LockAsync(lockKey).ConfigureAwait(false))
                 {
-                    _logger.LogDebug("Lock acquired for Peer {PeerId}.", peerIdForLog);
-                    debugReport.AppendLine("   - ✅ Lock acquired. Executing with resilience policy.");
-
-                    // The Polly pipeline will execute the send logic.
                     await _resiliencePipeline.ExecuteAsync(async (ctx, ct) =>
                         await _client!.SendAlbumAsync(
                             peer: peer,
@@ -1737,38 +1816,25 @@ namespace Infrastructure.Services
                     ).ConfigureAwait(false);
                 }
 
-                _logger.LogInformation("Successfully dispatched media group to Peer {PeerId}. Lock released.", peerIdForLog);
-                debugReport.AppendLine("✅ **Dispatch Success:** Media group sent successfully.");
+                // === NEW: MARK AS SENT ON SUCCESS =======================================
+                // If the code reaches here, the send was successful.
+                _memoryCache.Set(albumCacheKey, true, TimeSpan.FromHours(1));
+                debugReport.AppendLine($"\n✅ **Dispatch Success & Cached:** Media group sent. Key `{albumCacheKey}` is now cached.");
+                _logger.LogInformation("Successfully dispatched media group to Peer {PeerId}. Lock released and idempotency key set.", peerIdForLog);
+                // =========================================================================
             }
             catch (Exception ex)
             {
-                // THIS IS THE MOST IMPORTANT CATCH BLOCK.
-                // It will catch failures from ANY stage, including the Polly pipeline or a problem during await.
                 _logger.LogError(ex, "A critical error occurred during the SendMediaGroupAsync operation for Peer {PeerId}.", peerIdForLog);
-
-                // Add detailed exception info to the debug report.
-                debugReport.AppendLine("\n---");
-                debugReport.AppendLine($"❌ **FATAL ERROR:** The operation failed unexpectedly.");
-                debugReport.AppendLine($"**Exception Type:** `{ex.GetType().Name}`");
-                debugReport.AppendLine($"**Message:** `{ex.Message}`");
-                // If it's a Telegram-specific error, it might contain more details
-                // Replace the problematic line with the following:
-                if (ex is TL.RpcException rpcEx)
-                {
-                    debugReport.AppendLine($"**RPC Error:** `{rpcEx.Message}`");
-                }
-
-                // We re-throw so the caller knows the operation failed.
-                throw;
+                debugReport.AppendLine($"\n❌ **FATAL ERROR:** {ex.Message}");
+                throw; // Re-throw so the caller knows it failed.
             }
             finally
             {
-                // FINALLY GUARANTEES EXECUTION: This block will run whether the try block
-                // succeeded, failed, or threw an exception. This ensures you ALWAYS get a report.
-                _logger.LogDebug("Sending final diagnostic report for Peer {PeerId}.", peerIdForLog);
                 await _notifToAdmin.SendNotificationAsync(debugReport.ToString(), CancellationToken.None);
             }
         }
+
         #region Private Pipeline Helper Methods
 
         private (string Caption, TL.MessageEntity[]? Entities) RecoverCaptionFromMedia(

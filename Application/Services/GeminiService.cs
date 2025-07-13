@@ -7,20 +7,14 @@ using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
 using Polly.Timeout;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Application.Services
 {
@@ -32,20 +26,30 @@ namespace Application.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly IMemoryCache _cache;
 
-        // Locks per input
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
+        #region State Management (In-Class Strategy)
+        // Static state to be shared across all instances of this service.
+        private static readonly ConcurrentDictionary<int, AiApiConfiguration> _configs = new();
+        private static List<int> _orderedConfigIds = new();
+        private static readonly SemaphoreSlim _configLock = new(1, 1);
+        private const string CONFIG_REFRESH_LOCK_KEY = "GeminiService_ConfigRefreshLock";
+        private static readonly TimeSpan CONFIG_CACHE_DURATION = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan CONFIG_FAILURE_COOLDOWN = TimeSpan.FromSeconds(60);
+        #endregion
 
-        // Free‐Tier quotas
+        #region Resilience Policies (In-Class Strategy)
+        // A registry to hold a specific circuit breaker FOR EACH config ID.
+        private static readonly ConcurrentDictionary<string, AsyncCircuitBreakerPolicy<HttpResponseMessage>> _circuitBreakers = new();
+        private readonly AsyncRetryPolicy<HttpResponseMessage> _retryPolicy;
+        private readonly AsyncTimeoutPolicy<HttpResponseMessage> _timeoutPolicy; // Made generic
+        #endregion
+
+        // Idempotency lock per request content
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _requestLocks = new();
+
+        // Quota Constants
         private const int FREE_RPM = 15;
         private const int FREE_TPM = 250_000;
         private const int FREE_RPD = 1_000;
-
-        // Cache key patterns
-        private const string RPM_KEY = "Quota_RPM_{0}";
-        private const string TPM_KEY = "Quota_TPM_{0}";
-        private const string RPD_KEY = "Quota_RPD_{0}";
-        private const string RATE_LIMITED_KEY = "GeminiRateLimit_{0}";
-        private const string PREFERRED_KEY = "Gemini_PreferredConfigId";
 
         // JSON options
         private static readonly JsonSerializerOptions _jsonOpts = new()
@@ -53,11 +57,6 @@ namespace Application.Services
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             WriteIndented = false
         };
-
-        // Resilience policies
-        private readonly AsyncRetryPolicy<HttpResponseMessage> _retryPolicy;
-        private readonly AsyncCircuitBreakerPolicy<HttpResponseMessage> _circuitBreakerPolicy;
-        private readonly AsyncTimeoutPolicy _timeoutPolicy;
 
         public GeminiService(
             ILogger<GeminiService> logger,
@@ -70,34 +69,20 @@ namespace Application.Services
             _serviceProvider = serviceProvider;
             _cache = memoryCache;
 
-            // Configure HttpClient timeouts
-            _httpClient.Timeout = TimeSpan.FromSeconds(30);
+            // General policies that apply to any call
+            _timeoutPolicy = Policy.TimeoutAsync<HttpResponseMessage>(15, TimeoutStrategy.Pessimistic);
 
-            // Retry: 3 attempts, exponential backoff 200ms‐800ms, on transient failures (5xx, 408)
             _retryPolicy = Policy<HttpResponseMessage>
                 .Handle<HttpRequestException>()
                 .OrResult(r => (int)r.StatusCode >= 500 || r.StatusCode == HttpStatusCode.RequestTimeout)
-                .WaitAndRetryAsync(3, attempt => TimeSpan.FromMilliseconds(200 * Math.Pow(2, attempt)),
+                .WaitAndRetryAsync(2, attempt => TimeSpan.FromMilliseconds(200 * attempt),
                     onRetry: (resp, ts, attempt, ctx) =>
-                        _logger.LogWarning("Retry {Attempt} for {OperationKey} after {Delay}ms due to {Reason}.",
-                            attempt, ctx.OperationKey, ts.TotalMilliseconds, resp.Exception?.Message ?? resp.Result.StatusCode.ToString()));
-
-            // Circuit Breaker: break on 2 consecutive failures, duration 30s
-            _circuitBreakerPolicy = Policy<HttpResponseMessage>
-                .Handle<HttpRequestException>()
-                .OrResult(r => !r.IsSuccessStatusCode && r.StatusCode != HttpStatusCode.TooManyRequests)
-                .CircuitBreakerAsync(2, TimeSpan.FromSeconds(30),
-                    onBreak: (resp, _) => _logger.LogWarning("Circuit broken due to {Reason}.", resp.Exception?.Message ?? resp.Result.StatusCode.ToString()),
-                    onReset: () => _logger.LogInformation("Circuit reset."),
-                    onHalfOpen: () => _logger.LogInformation("Circuit half-open test."));
-
-            // Timeout: each call must finish within 10s
-            _timeoutPolicy = Policy.TimeoutAsync(10, TimeoutStrategy.Pessimistic,
-                onTimeoutAsync: (ctx, ts, _) =>
-                {
-                    _logger.LogError("Timeout after {Timeout}s in {OperationKey}.", ts.TotalSeconds, ctx.OperationKey);
-                    return Task.CompletedTask;
-                });
+                    {
+                        var configId = ctx.GetValueOrDefault("ConfigId", "N/A");
+                        _logger.LogWarning(
+                            "[Polly] Retrying call for ConfigId {ConfigId}. Attempt {Attempt}. Delay {Delay}ms. Reason: {Reason}",
+                            configId, attempt, ts.TotalMilliseconds, resp.Exception?.Message ?? resp.Result.StatusCode.ToString());
+                    });
         }
 
         public Task<string?> EnhanceMessageAsync(string text, CancellationToken ct, string? apiKeyName = null)
@@ -109,219 +94,308 @@ namespace Application.Services
             CancellationToken ct,
             string? apiKeyName = null)
         {
-            // Correlation ID for this operation
-            string correlationId = Guid.NewGuid().ToString("N");
-            using var scope = _logger.BeginScope(new Dictionary<string, object>
-            {
-                ["CorrelationId"] = correlationId
-            });
+            var adminLogger = new AdminLogger("EnhanceMessage", Guid.NewGuid().ToString("N"));
 
-            _logger.LogInformation("Start EnhanceMessageAsync | CID={CID} | TextLen={Len} | ImgCount={Count}",
-                correlationId, text?.Length ?? 0, images?.Count ?? 0);
-
-            // 1. Input validation
+            // 1. Input Validation & Idempotency
             if (string.IsNullOrWhiteSpace(text) && (images == null || !images.Any()))
             {
-                _logger.LogWarning("Empty input; aborting.");
+                adminLogger.Failure("Aborted: Text and images were both null or empty.");
+                await NotifyAdminAsync(adminLogger.Render(), ct);
                 return null;
             }
 
-            // 2. Cache key
-            string cacheKey = GenerateCacheKey(text, images);
-            var sem = _locks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
-            await sem.WaitAsync(ct);
+            string contentCacheKey = GenerateContentCacheKey(text, images);
+            adminLogger.Info($"Request content hash: {contentCacheKey}");
 
-            var sw = Stopwatch.StartNew();
-            var adminLog = new StringBuilder()
-                .AppendLine($"[CID={correlationId}] GeminiService START")
-                .AppendLine($"Timestamp: {DateTime.UtcNow:O}")
-                .AppendLine($"CacheKey: {cacheKey}");
+            var requestLock = _requestLocks.GetOrAdd(contentCacheKey, _ => new SemaphoreSlim(1, 1));
+            await requestLock.WaitAsync(ct);
 
             try
             {
-                // 3. Idempotency cache
-                if (_cache.TryGetValue(cacheKey, out string? cached))
+                if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
                 {
-                    _logger.LogInformation("Cache hit | CID={CID}", correlationId);
-                    adminLog.AppendLine("Cache hit; returning cached result.");
-                    await NotifyAdminAsync(adminLog.ToString(), ct, correlationId);
-                    return cached;
+                    adminLogger.Success("Fulfilled from cache (Idempotency).");
+                    await NotifyAdminAsync(adminLogger.Render(), ct);
+                    return cachedResult;
                 }
+                adminLogger.Info("Cache miss, proceeding to API call.");
 
-                adminLog.AppendLine("Cache miss; proceeding to API.");
-
-                // 4. Load configs
-                await using var svcScope = _serviceProvider.CreateAsyncScope();
-                var repo = svcScope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
-                var adminNotifier = svcScope.ServiceProvider.GetRequiredService<INotificationToAdminService>();
-
-                var configs = (await repo.GetAllByProviderAndStatusAndKeyNameAsync("Gemini", true, apiKeyName, ct))
-                    .Where(c => !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName))
-                    .ToList();
-
-                _logger.LogDebug("Configs loaded: {Count}", configs.Count);
-                if (!configs.Any())
+                // 2. Main Execution Loop: Try available configs in order
+                int maxAttempts = (_configs.Count > 0 ? _configs.Count : 1) + 1; // Failsafe loop
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    adminLog.AppendLine("No configs found.");
-                    await adminNotifier.SendNotificationAsync(adminLog.ToString(), ct);
-                    return null;
-                }
-
-                // 5. Prioritize
-                _cache.TryGetValue(PREFERRED_KEY, out int? preferredId);
-                var ordered = PrioritizeConfigs(configs, preferredId);
-                adminLog.AppendLine($"PreferredId: {preferredId} | Ordered: {string.Join(",", ordered.Select(c => c.Id))}");
-
-                // 6. Try each config
-                foreach (var cfg in ordered)
-                {
-                    adminLog.AppendLine($"Trying Config {cfg.Id} | Model={cfg.ModelName}");
-                    var result = await AttemptCallWithPoliciesAsync(cfg, text, images, ct, adminLog, correlationId);
-                    if (!string.IsNullOrWhiteSpace(result))
+                    var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
+                    if (config == null)
                     {
-                        // Success
-                        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(30));
-                        _cache.Set(PREFERRED_KEY, cfg.Id, TimeSpan.FromDays(7));
-
-                        adminLog.AppendLine($"Success with {cfg.Id} in {sw.ElapsedMilliseconds}ms");
-                        await adminNotifier.SendNotificationAsync(adminLog.ToString(), ct);
-                        return result;
+                        adminLogger.Failure("No available API configurations found. Halting operation.");
+                        break; // Exit loop if no configs are available
                     }
-                    adminLog.AppendLine($"Config {cfg.Id} failed; next.");
+
+                    adminLogger.Info($"Attempt {attempt}: Trying with Config ID {config.Id} (Model: {config.ModelName})");
+
+                    // The core attempt to call the API with the selected config
+                    (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, images, adminLogger, ct);
+
+                    if (wasSuccess)
+                    {
+                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.");
+                        _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
+                        return result; // Success, exit the method
+                    }
+
+                    // If the call was not successful, rotate the failed key to the back of the line
+                    adminLogger.Failure($"Config ID {config.Id} failed. Rotating to the back.", config.Id);
+                    await ReportFailureAndRotateAsync(config.Id);
                 }
 
-                adminLog.AppendLine($"All configs failed after {sw.ElapsedMilliseconds}ms");
-                await adminNotifier.SendNotificationAsync(adminLog.ToString(), ct);
+                adminLogger.Failure("All available API configurations failed.");
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unhandled exception | CID={CID}", correlationId);
-                adminLog.AppendLine($"Exception: {ex}");
-                await NotifyAdminAsync(adminLog.ToString(), ct, correlationId);
+                _logger.LogError(ex, "Unhandled exception in EnhanceMessageAsync. CID: {CID}", adminLogger.CorrelationId);
+                adminLogger.Failure($"CRITICAL ERROR: {ex.GetType().Name} - {ex.Message}");
                 return null;
             }
             finally
             {
-                sem.Release();
+                requestLock.Release();
+                await NotifyAdminAsync(adminLogger.Render(), ct);
             }
         }
 
-        #region Helpers
+        #region Core Logic Helpers
 
-        private List<AiApiConfiguration> PrioritizeConfigs(List<AiApiConfiguration> all, int? preferredId)
-        {
-            var usable = all.Where(c => !_cache.TryGetValue(string.Format(RATE_LIMITED_KEY, c.Id), out _)).ToList();
-            if (preferredId.HasValue)
-            {
-                var pref = usable.FirstOrDefault(x => x.Id == preferredId);
-                if (pref != null)
-                {
-                    usable.Remove(pref);
-                    usable.Insert(0, pref);
-                }
-            }
-            var rnd = new Random();
-            return usable.Take(1).Concat(usable.Skip(1).OrderBy(_ => rnd.Next())).ToList();
-        }
-
-        private async Task<string?> AttemptCallWithPoliciesAsync(
+        private async Task<(string? result, bool wasSuccess)> AttemptApiCallAsync(
             AiApiConfiguration cfg,
             string? text,
             ICollection<byte[]>? images,
-            CancellationToken ct,
-            StringBuilder adminLog,
-            string correlationId)
+            AdminLogger adminLogger,
+            CancellationToken ct)
         {
-            // Quota check
-            int tokens = (text?.Length ?? 0) + (images?.Sum(i => i.Length) ?? 0);
-            if (!CheckAndIncrementQuota(cfg.ModelName, tokens))
+            // Quota Check
+            if (!CheckAndIncrementQuota(cfg.ModelName, text))
             {
-                adminLog.AppendLine($"Quota exceeded for {cfg.ModelName}; skipping.");
-                return null;
+                adminLogger.Info($"Quota exceeded for model {cfg.ModelName}; skipping.", cfg.Id);
+                return (null, false);
             }
 
-            // Prepare request
-            var parts = new List<Part> { new(cfg.PromptTemplate.Replace("{message}", text ?? ""), null) };
-            if (images != null)
-                foreach (var img in images)
-                    parts.Add(new Part(null, new InlineData("image/jpeg", Convert.ToBase64String(img))));
+            // Get the specific circuit breaker for this key
+            var circuitBreaker = GetOrCreateCircuitBreaker(cfg.Id, adminLogger);
+            if (circuitBreaker.CircuitState == CircuitState.Open)
+            {
+                adminLogger.Info($"Circuit breaker is open for Config ID {cfg.Id}. Skipping.", cfg.Id);
+                return (null, false);
+            }
 
-            var req = new GeminiRequest(new List<Content> { new(parts) });
-            var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
-
-            Context pollyCtx = new Context($"GeminiCall-{cfg.Id}-{correlationId}");
+            var policyWrap = Policy.WrapAsync<HttpResponseMessage>(_timeoutPolicy, circuitBreaker, _retryPolicy);
+            var pollyCtx = new Context($"GeminiCall-{cfg.Id}", new Dictionary<string, object> { { "ConfigId", cfg.Id.ToString() } });
 
             try
             {
-                // Compose policies: Timeout → CircuitBreaker → Retry → HTTP call
-                var response = await _timeoutPolicy
-                    .WrapAsync(_circuitBreakerPolicy.WrapAsync(_retryPolicy))
-                    .ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, req, _jsonOpts, ct), pollyCtx);
+                var request = BuildRequest(cfg.PromptTemplate, text, images);
+                var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
 
-                adminLog.AppendLine($"HTTP {(int)response.StatusCode}");
+                var sw = Stopwatch.StartNew();
+                HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
+                sw.Stop();
+
+                adminLogger.Info($"HTTP POST returned {(int)response.StatusCode} {response.ReasonPhrase} in {sw.ElapsedMilliseconds}ms.", cfg.Id);
+
                 if (response.IsSuccessStatusCode)
                 {
-                    var gem = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
-                    var txt = gem?.Candidates?.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
-                    if (!string.IsNullOrWhiteSpace(txt))
+                    var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
+                    var responseText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
+                    if (!string.IsNullOrWhiteSpace(responseText))
                     {
-                        adminLog.AppendLine("Valid content received.");
-                        return txt;
+                        return (responseText, true);
                     }
-                    adminLog.AppendLine("Empty content from Gemini.");
-                    return null;
+                    adminLogger.Failure("API returned success status but content was empty.", cfg.Id);
+                    return (null, false);
                 }
 
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
-                    adminLog.AppendLine("429 TooManyRequests; blacklisting for 60s.");
-                    _cache.Set(string.Format(RATE_LIMITED_KEY, cfg.Id), true, TimeSpan.FromSeconds(60));
-                    _cache.Remove(PREFERRED_KEY);
+                    adminLogger.Failure("API returned 429 TooManyRequests. This key will be on cooldown.", cfg.Id);
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync(ct);
+                    adminLogger.Failure($"API returned non-success status: {(int)response.StatusCode}. Error: {errorContent.Truncate(100)}", cfg.Id);
                 }
 
-                return null;
+                return (null, false);
             }
             catch (BrokenCircuitException)
             {
-                adminLog.AppendLine("Circuit is open; skipping key.");
-                return null;
+                adminLogger.Failure("Circuit breaker tripped and is now open.", cfg.Id);
+                return (null, false);
             }
             catch (TimeoutRejectedException)
             {
-                adminLog.AppendLine("Request timed out by policy.");
-                return null;
+                adminLogger.Failure("Request timed out by Polly policy.", cfg.Id);
+                return (null, false);
             }
             catch (Exception ex)
             {
-                adminLog.AppendLine($"Network/HTTP exception: {ex.Message}");
-                _logger.LogError(ex, "Error in AttemptCallWithPoliciesAsync | CID={CID} | Config={Id}", correlationId, cfg.Id);
-                return null;
+                _logger.LogError(ex, "Exception during API call for Config ID {ConfigId}", cfg.Id);
+                adminLogger.Failure($"Network/HTTP exception: {ex.Message}", cfg.Id);
+                return (null, false);
             }
         }
 
-        private bool CheckAndIncrementQuota(string model, int tokens)
+        private async Task<AiApiConfiguration?> GetNextActiveConfigAsync(string? apiKeyName, AdminLogger adminLogger, CancellationToken ct)
         {
-            var rpmKey = string.Format(RPM_KEY, model);
-            var tpmKey = string.Format(TPM_KEY, model);
-            var rpdKey = string.Format(RPD_KEY, model);
+            await RefreshConfigsIfNeededAsync(adminLogger, ct);
 
-            int currentRpm = _cache.Get<int?>(rpmKey) ?? 0;
-            int currentTpm = _cache.Get<int?>(tpmKey) ?? 0;
-            int currentRpd = _cache.Get<int?>(rpdKey) ?? 0;
+            await _configLock.WaitAsync(ct);
+            try
+            {
+                // Find the first ID in our ordered list that is not on cooldown.
+                // NOTE: Filtering by 'apiKeyName' was removed because the property 'KeyName' does not exist on your AiApiConfiguration entity.
+                // If you add this property to your entity, you can re-enable the commented-out filter.
+                var configId = _orderedConfigIds.FirstOrDefault(id =>
+                {
+                    if (!_configs.TryGetValue(id, out var conf)) return false;
+                    //bool nameMatch = string.IsNullOrEmpty(apiKeyName) || conf.KeyName == apiKeyName; // <-- This line requires 'KeyName' property
+                    bool onCooldown = _cache.TryGetValue(GetCooldownCacheKey(id), out _);
+                    return !onCooldown; // && nameMatch;
+                });
 
-            if (currentRpm + 1 > FREE_RPM) return false;
-            if (currentTpm + tokens > FREE_TPM) return false;
-            if (currentRpd + 1 > FREE_RPD) return false;
+                return configId != 0 && _configs.TryGetValue(configId, out var config) ? config : null;
+            }
+            finally
+            {
+                _configLock.Release();
+            }
+        }
 
-            _cache.Set(rpmKey, currentRpm + 1, TimeSpan.FromMinutes(1));
-            _cache.Set(tpmKey, currentTpm + tokens, TimeSpan.FromMinutes(1));
-            _cache.Set(rpdKey, currentRpd + 1, DateTime.Today.AddDays(1));
+        private async Task ReportFailureAndRotateAsync(int failedConfigId)
+        {
+            _cache.Set(GetCooldownCacheKey(failedConfigId), true, CONFIG_FAILURE_COOLDOWN);
 
+            await _configLock.WaitAsync();
+            try
+            {
+                if (_orderedConfigIds.Remove(failedConfigId))
+                {
+                    _orderedConfigIds.Add(failedConfigId);
+                }
+            }
+            finally
+            {
+                _configLock.Release();
+            }
+        }
+
+        private async Task RefreshConfigsIfNeededAsync(AdminLogger adminLogger, CancellationToken ct)
+        {
+            if (!_cache.TryGetValue(CONFIG_REFRESH_LOCK_KEY, out _))
+            {
+                await _configLock.WaitAsync(ct);
+                try
+                {
+                    if (_cache.TryGetValue(CONFIG_REFRESH_LOCK_KEY, out _)) return;
+
+                    adminLogger.Info("Config cache expired. Refreshing configurations from database.");
+
+                    await using var scope = _serviceProvider.CreateAsyncScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
+                    var allDbConfigs = await repo.GetAllByProviderAndStatusAsync("Gemini", true, ct);
+
+                    var freshConfigs = allDbConfigs
+                        .Where(c => !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName))
+                        .ToList();
+
+                    _configs.Clear();
+                    foreach (var cfg in freshConfigs)
+                    {
+                        _configs[cfg.Id] = cfg;
+                    }
+
+                    var newOrder = _orderedConfigIds.Intersect(_configs.Keys).ToList();
+                    var addedKeys = _configs.Keys.Except(newOrder).ToList();
+                    newOrder.AddRange(addedKeys);
+                    _orderedConfigIds = newOrder;
+
+                    adminLogger.Info($"Refresh complete. Found {_configs.Count} active configs. Order: [{string.Join(",", _orderedConfigIds)}]");
+                    _cache.Set(CONFIG_REFRESH_LOCK_KEY, true, CONFIG_CACHE_DURATION);
+                }
+                finally
+                {
+                    _configLock.Release();
+                }
+            }
+        }
+
+        #endregion
+
+        #region Policies & Utilities
+
+        private AsyncCircuitBreakerPolicy<HttpResponseMessage> GetOrCreateCircuitBreaker(int configId, AdminLogger adminLogger)
+        {
+            return _circuitBreakers.GetOrAdd($"ConfigId_{configId}", _ =>
+            {
+                adminLogger.Info($"Creating new circuit breaker for Config ID {configId}.");
+
+                // Define the handlers with explicit types to resolve any compiler ambiguity.
+                Action<DelegateResult<HttpResponseMessage>, TimeSpan, Context> handleOnBreak = (resp, ts, ctx) =>
+                {
+                    _logger.LogWarning(
+                        "[Polly] Circuit breaker for ConfigId {ConfigId} is now open for {BreakTime}s due to: {Reason}",
+                        configId,
+                        ts.TotalSeconds,
+                        resp.Exception?.Message ?? resp.Result.StatusCode.ToString());
+                };
+
+                Action<Context> handleOnReset = (ctx) =>
+                {
+                    _logger.LogInformation(
+                        "[Polly] Circuit breaker for ConfigId {ConfigId} has been reset.",
+                        configId);
+                };
+
+                Action handleOnHalfOpen = () =>
+                {
+                    _logger.LogInformation(
+                        "[Polly] Circuit breaker for ConfigId {ConfigId} is now half-open. Next call is a test.",
+                        configId);
+                };
+
+                return Policy<HttpResponseMessage>
+      .Handle<HttpRequestException>()
+      .OrResult(r => (int)r.StatusCode >= 500 || r.StatusCode == HttpStatusCode.BadRequest)
+      .CircuitBreakerAsync(
+          2,                                // handledEventsAllowedBeforeBreaking
+          TimeSpan.FromMinutes(2),         // durationOfBreak
+          handleOnBreak,                    // onBreak
+          handleOnReset,                    // onReset
+          handleOnHalfOpen                  // onHalfOpen
+      );
+            });
+        }
+
+
+        private bool CheckAndIncrementQuota(string model, string? text)
+        {
+            var tokens = text?.Length / 4 ?? 1; // Rough approximation
+            var rpmKey = $"Quota_RPM_{model}";
+            var tpmKey = $"Quota_TPM_{model}";
+            var rpdKey = $"Quota_RPD_{model}";
+
+            var rpm = _cache.GetOrCreate(rpmKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
+            var tpm = _cache.GetOrCreate(tpmKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
+            var rpd = _cache.GetOrCreate(rpdKey, entry => { entry.AbsoluteExpiration = DateTime.Today.AddDays(1); return 0; });
+
+            if (rpm >= FREE_RPM || tpm + tokens > FREE_TPM || rpd >= FREE_RPD) return false;
+
+            _cache.Set(rpmKey, rpm + 1);
+            _cache.Set(tpmKey, tpm + tokens);
+            _cache.Set(rpdKey, rpd + 1);
             return true;
         }
 
-        private static string GenerateCacheKey(string? text, ICollection<byte[]>? images)
+        private static string GenerateContentCacheKey(string? text, ICollection<byte[]>? images)
         {
             using var sha = SHA256.Create();
             using var ms = new MemoryStream();
@@ -339,43 +413,109 @@ namespace Application.Services
                     ms.Write(img, 0, img.Length);
                 }
             }
-            if (ms.Length == 0) return "EMPTY";
+            if (ms.Length == 0) return "EMPTY_CONTENT";
             ms.Position = 0;
             var hash = sha.ComputeHash(ms);
-            return Convert.ToBase64String(hash);
+            return $"GeminiContent:{Convert.ToBase64String(hash)}";
         }
 
-        private async Task NotifyAdminAsync(string message, CancellationToken ct, string correlationId)
+        private string GetCooldownCacheKey(int configId) => $"GeminiConfig_Cooldown_{configId}";
+
+        private async Task NotifyAdminAsync(string message, CancellationToken ct)
         {
             try
             {
                 await using var scope = _serviceProvider.CreateAsyncScope();
                 var notifier = scope.ServiceProvider.GetRequiredService<INotificationToAdminService>();
-                await notifier.SendNotificationAsync($"[CID={correlationId}]\n" + message, ct);
+                await notifier.SendNotificationAsync(message, ct);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to notify admin | CID={CID}", correlationId);
+                _logger.LogError(ex, "Failed to send admin notification.");
             }
         }
-
         #endregion
 
-        #region DTOs
+        #region DTOs and Admin Logger
+
+        private GeminiRequest BuildRequest(string promptTemplate, string? text, ICollection<byte[]>? images)
+        {
+            var parts = new List<Part> { new(promptTemplate.Replace("{message}", text ?? ""), null) };
+            if (images != null)
+            {
+                parts.AddRange(images.Select(img => new Part(null, new InlineData("image/jpeg", Convert.ToBase64String(img)))));
+            }
+            return new GeminiRequest(new List<Content> { new(parts) });
+        }
 
         public record GeminiRequest(List<Content> contents);
         public record Content(List<Part> parts);
-        public record Part(
-            [property: JsonPropertyName("text")] string? Text,
-            [property: JsonPropertyName("inline_data")] InlineData? InlineData);
-        public record InlineData(
-            [property: JsonPropertyName("mime_type")] string MimeType,
-            [property: JsonPropertyName("data")] string Data);
-        public record GeminiResponse(
-            [property: JsonPropertyName("candidates")] List<Candidate>? Candidates);
-        public record Candidate(
-            [property: JsonPropertyName("content")] Content? Content);
+        public record Part([property: JsonPropertyName("text")] string? Text, [property: JsonPropertyName("inline_data")] InlineData? InlineData);
+        public record InlineData([property: JsonPropertyName("mime_type")] string MimeType, [property: JsonPropertyName("data")] string Data);
+        public record GeminiResponse([property: JsonPropertyName("candidates")] List<Candidate>? Candidates);
+        public record Candidate([property: JsonPropertyName("content")] Content? Content);
 
+        private class AdminLogger
+        {
+            private readonly string _operationName;
+            private readonly Stopwatch _totalStopwatch;
+            private readonly List<LogEntry> _entries = new();
+            private string? _finalStatus;
+
+            public string CorrelationId { get; }
+
+            public AdminLogger(string operationName, string correlationId)
+            {
+                _operationName = operationName;
+                CorrelationId = correlationId;
+                _totalStopwatch = Stopwatch.StartNew();
+                Info($"Operation '{_operationName}' Started. CID: {CorrelationId}");
+            }
+
+            public void Info(string message, int? configId = null) => _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "INFO"));
+            public void Success(string message, int? configId = null)
+            {
+                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "SUCCESS"));
+                _finalStatus = "✅ SUCCESS";
+            }
+            public void Failure(string message, int? configId = null)
+            {
+                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "FAILURE"));
+                if (_finalStatus == null) _finalStatus = "❌ FAILURE";
+            }
+
+            public string Render()
+            {
+                _totalStopwatch.Stop();
+                var sb = new StringBuilder();
+                sb.AppendLine($"╔═════════ Gemini Service Report ═════════╗");
+                sb.AppendLine($"║ Operation: {_operationName,-29} ║");
+                sb.AppendLine($"║ Status: {_finalStatus ?? "UNKNOWN",-32} ║");
+                sb.AppendLine($"║ Duration: {_totalStopwatch.ElapsedMilliseconds,-9}ms                       ║");
+                sb.AppendLine($"║ CID: {CorrelationId,-35} ║");
+                sb.AppendLine($"╚═════════════════════════════════════════╝");
+                sb.AppendLine("─── Trace ───");
+
+                foreach (var entry in _entries)
+                {
+                    string prefix = entry.Status switch { "SUCCESS" => "✅", "FAILURE" => "❌", _ => "➡️" };
+                    string configInfo = entry.ConfigId.HasValue ? $"[KeyID: {entry.ConfigId}] " : "";
+                    sb.AppendLine($"{prefix} (+{entry.Timestamp.TotalMilliseconds:F0}ms) {configInfo}{entry.Message}");
+                }
+                sb.AppendLine("─── End of Report ───");
+                return sb.ToString();
+            }
+            private record LogEntry(string Message, TimeSpan Timestamp, int? ConfigId, string Status);
+        }
         #endregion
+    }
+
+    public static class StringExtensions
+    {
+        public static string Truncate(this string value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value)) return value;
+            return value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
+        }
     }
 }
