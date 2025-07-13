@@ -42,6 +42,7 @@ namespace Infrastructure.Services
             .SetAbsoluteExpiration(TimeSpan.FromHours(1));
         private readonly TimeSpan _cacheCleanupInterval = TimeSpan.FromMinutes(10);
         private readonly IAdviceService _adviceService;
+        private readonly IServiceProvider _serviceProvider;
         private readonly ResiliencePipeline _resiliencePipeline;
         private readonly TimeSpan[] _retryDelays = new TimeSpan[]
         {
@@ -84,14 +85,14 @@ namespace Infrastructure.Services
         #endregion
 
         #region Constructor
-        public TelegramUserApiClient(IAdviceService adviceService, INotificationToAdminService notifToAdmin,
+        public TelegramUserApiClient(IAdviceService adviceService, IServiceProvider serviceProvider,
              ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
              IOptions<TelegramUserApiSettings> settingsOptions,
              MarkdownParserService markdownParserService, // Add markdown parser service parameter
              IGeminiService geminiService, // Inject GeminiService singleton
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
-            _notifToAdmin = notifToAdmin ?? throw new ArgumentNullException(nameof(notifToAdmin));
+         _serviceProvider = serviceProvider; 
             _geminiService = geminiService ?? throw new ArgumentNullException(nameof(geminiService));
             _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
