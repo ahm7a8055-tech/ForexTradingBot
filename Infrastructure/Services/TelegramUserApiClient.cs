@@ -1821,7 +1821,7 @@ namespace Infrastructure.Services
                     return (parsedCaption, parsedEntities.Length > 0 ? parsedEntities : null);
                 }
 
-                debugReport.AppendLine($"**4. Formatting:** ✅ Using pre-existing entities ({entities.Length}).");
+                debugReport.AppendLine($"**4. Formatting:** ✅ Using pre-existing entities ({entities?.Length ?? 0}).");
                 return (caption, entities);
             }
             catch (Exception ex)

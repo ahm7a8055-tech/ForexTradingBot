@@ -217,12 +217,14 @@ Enhanced message:";
                 }
 
                 adminLogger.Failure("All available API configurations failed.", null, "FINAL");
+                await NotifyAdminAsync(adminLogger.Render(), ct);
                 return null;
             }
             catch (Exception ex)
             {
                 adminLogger.Failure($"Exception during immediate enhancement: {ex.Message}", null, "EXCEPTION");
                 _logger.LogError(ex, "Exception during immediate enhancement");
+                await NotifyAdminAsync(adminLogger.Render(), ct);
                 return null;
             }
         }
@@ -373,6 +375,7 @@ Enhanced message:";
             if (!CheckAndIncrementQuota(cfg.ModelName, text))
             {
                 adminLogger.Info($"Quota exceeded for model {cfg.ModelName}; skipping.", cfg.Id, "QUOTA");
+                await NotifyAdminAsync(adminLogger.Render(), ct);
                 return (null, false);
             }
 
@@ -420,6 +423,7 @@ Enhanced message:";
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
                     adminLogger.Failure("API returned 429 TooManyRequests. This key will be on cooldown.", cfg.Id, "QUOTA");
+                    await NotifyAdminAsync(adminLogger.Render(), ct);
                 }
                 else if (response.StatusCode == HttpStatusCode.Unauthorized)
                 {
@@ -628,6 +632,10 @@ Enhanced message:";
                 if (notificationService != null)
                 {
                     await notificationService.SendNotificationAsync(message, ct);
+                }
+                else
+                {
+                    _logger.LogWarning("Admin notification service is not registered. Cannot send admin notification.");
                 }
             }
             catch (Exception ex)
