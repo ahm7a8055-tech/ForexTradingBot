@@ -1748,84 +1748,72 @@ namespace Infrastructure.Services
                     // CATCH-ALL: This ensures any unexpected error in markdown parsing does not stop the album from being sent
                     _logger.LogWarning(ex, "An exception occurred during markdown parsing for album caption Peer {PeerId}. Proceeding with original caption.", peerIdForLog);
                 }
-            // =========================================================================
-            // === END OF MARKDOWN PARSING BLOCK FOR ALBUM CAPTION ====================
-            // =========================================================================
+            // Fix for CS8600: Ensure `albumCaption` is not null before assigning it to `captionToSend`.  
+            string captionToSend = albumCaption ?? string.Empty; // Use an empty string if albumCaption is null.  
+            TL.MessageEntity[]? entitiesToSend = albumEntities; // Start with the original entities
 
-            // --- STAGE 2: AI ENHANCEMENT ---
-            string captionToSend;
-            TL.MessageEntity[]? entitiesToSend;
-
-            try
+            // Only attempt AI enhancement IF there is a caption to enhance in the first place.
+            if (!string.IsNullOrWhiteSpace(albumCaption))
             {
-                if (!string.IsNullOrWhiteSpace(albumCaption))
+                try
                 {
-                    List<byte[]>? imageBytesList = null; // Prepare to hold image data
+                    List<byte[]>? imageBytesList = null;
 
-                    // --- NEW: ATTEMPT TO EXTRACT IMAGE DATA FOR AI ---
+                    // --- ATTEMPT TO EXTRACT IMAGE DATA FOR AI (The fragile part) ---
+                    // This logic remains the same, but its failure is now better handled.
                     try
                     {
-                        // Find the first photo in the media group to send to the AI
-                        var firstPhoto = media
-                            .OfType<TL.InputMediaUploadedPhoto>()
-                            .FirstOrDefault();
-
-                        // =================== FIX IS HERE ===================
-                        // The property is 'file' (lowercase), not 'File'.
+                        var firstPhoto = media.OfType<TL.InputMediaUploadedPhoto>().FirstOrDefault();
                         if (firstPhoto?.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
-                        // ===================================================
                         {
-                            _logger.LogDebug("Found image file at path '{ImagePath}' to include in AI enhancement request.", inputFile.Name);
                             byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken).ConfigureAwait(false);
                             imageBytesList = new List<byte[]> { imageBytes };
                             _logger.LogInformation("Successfully read {ByteCount} bytes from image file for AI multimodal processing.", imageBytes.Length);
                         }
                         else
                         {
-                            _logger.LogDebug("No local image file found in the media group for AI enhancement. Proceeding with text-only.");
+                            _logger.LogDebug("No local image file found in media group for AI enhancement. Proceeding with text-only AI call.");
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "An error occurred while trying to read image file for AI enhancement. Falling back to text-only.");
-                        imageBytesList = null; // Ensure it's null on failure
+                        _logger.LogWarning(ex, "An error occurred while reading image file for AI enhancement. Falling back to text-only AI call.");
+                        imageBytesList = null;
                     }
 
-                    // --- CALL THE APPROPRIATE AI SERVICE METHOD ---
+                    // --- CALL THE AI SERVICE ---
                     _logger.LogDebug("Attempting to enhance album caption with AI for Peer {PeerId}. Multimodal: {IsMultimodal}", peerIdForLog, imageBytesList != null);
-
-                    // Call the multimodal service. It will handle the text-only fallback internally if needed.
                     string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, imageBytesList, cancellationToken).ConfigureAwait(false);
 
+                    // If enhancement was successful, parse the result and overwrite the original caption/entities.
                     if (!string.IsNullOrWhiteSpace(enhancedCaption))
                     {
-                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
+                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing enhanced caption...", peerIdForLog);
                         var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
-                        captionToSend = parsedCaption;
-                        entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null;
+
+                        captionToSend = parsedCaption; // Overwrite
+                        entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null; // Overwrite
                     }
                     else
                     {
-                        _logger.LogDebug("AI enhancement for album caption failed or was disabled. Sending original constructed caption.");
-                        captionToSend = albumCaption;
-                        entitiesToSend = albumEntities;
+                        // AI returned nothing. The original caption/entities (already assigned) will be used.
+                        _logger.LogWarning("AI enhancement for album caption returned null or empty. Proceeding with the pre-AI caption.");
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    captionToSend = albumCaption;
-                    entitiesToSend = albumEntities;
+                    // A major failure in the enhancement block. Log it, but proceed with the pre-AI caption.
+                    _logger.LogError(ex, "A critical exception occurred during the AI album caption enhancement stage. Proceeding with the original constructed caption.");
+                    // 'captionToSend' and 'entitiesToSend' still hold their pre-AI values, so no assignment is needed here.
                 }
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogWarning(ex, "An exception occurred during AI album caption enhancement. Proceeding with original constructed caption.");
-                captionToSend = albumCaption;
-                entitiesToSend = albumEntities;
+                _logger.LogDebug("Album caption is empty. Skipping AI enhancement entirely.");
             }
 
             try
-                {
+            {
                     // Level 3: Acquire a lock for sending media groups to a specific peer.
                     _logger.LogTrace("SendMediaGroupAsync: Attempting to acquire send lock with key: {LockKey}", lockKey);
                     using IDisposable sendLock = await AsyncLock.LockAsync(lockKey).ConfigureAwait(false);

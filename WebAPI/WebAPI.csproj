@@ -26,6 +26,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+  <ItemGroup>
+    <None Remove="keys\key-bccf50c5-6383-4f2d-8cf9-8a46fa231a1f.xml" />
+  </ItemGroup>
   <!-- ==================================================================== -->
 
   <ItemGroup>
@@ -66,6 +69,9 @@
     <None Update="bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="keys\" />
   </ItemGroup>
 
 </Project>

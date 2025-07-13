@@ -77,8 +77,7 @@ AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
 
 #endregion
 
-
-    #region Main Application Entry (region master)
+#region Main Application Entry (region master)
 try
 {
     Log.Information("--------------------------------------------------");
@@ -201,6 +200,7 @@ try
             Log.Information("[SmokeTest] No DefaultConnection found. Using SQLite: {Conn}", smokeTestConn);
         }
     }
+
     #endregion
 
     #region SmokeTest SQLite Connection (region master)
@@ -418,7 +418,9 @@ try
     #region Configure Application Options/Settings (region master)
 
 
-
+    builder.Services.Configure<AdminNotificationSettings>(
+    builder.Configuration.GetSection(AdminNotificationSettings.SectionName));
+    builder.Services.AddScoped<INotificationToAdminService, NotificationToAdminService>();
     // ------------------- ۳. پیکربندی Options (خواندن تنظیمات از appsettings.json) -------------------
     // مپ کردن بخش "TelegramSettings" از appsettings.json به کلاس Domain.Settings.TelegramSettings
     // این کلاس می‌تواند شامل تنظیمات عمومی تلگرام مانند AdminUserId باشد.
