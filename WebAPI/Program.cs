@@ -420,7 +420,7 @@ try
 
     builder.Services.Configure<AdminNotificationSettings>(
     builder.Configuration.GetSection(AdminNotificationSettings.SectionName));
-    builder.Services.AddScoped<INotificationToAdminService, NotificationToAdminService>();
+    builder.Services.AddSingleton<INotificationToAdminService, NotificationToAdminService>();
     // ------------------- ۳. پیکربندی Options (خواندن تنظیمات از appsettings.json) -------------------
     // مپ کردن بخش "TelegramSettings" از appsettings.json به کلاس Domain.Settings.TelegramSettings
     // این کلاس می‌تواند شامل تنظیمات عمومی تلگرام مانند AdminUserId باشد.
