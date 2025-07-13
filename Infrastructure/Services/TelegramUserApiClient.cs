@@ -12,6 +12,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using TL;
@@ -25,6 +26,7 @@ namespace Infrastructure.Services
     /// </summary>
     public class TelegramUserApiClient : ITelegramUserApiClient
     {
+        private readonly INotificationToAdminService _notifToAdmin;
         public bool IsConnected { get; private set; } = false;
         #region Private Readonly Fields
         private readonly ILogger<TelegramUserApiClient> _logger;
@@ -81,13 +83,14 @@ namespace Infrastructure.Services
         #endregion
 
         #region Constructor
-        public TelegramUserApiClient(IAdviceService adviceService,
+        public TelegramUserApiClient(IAdviceService adviceService, INotificationToAdminService notifToAdmin,
              ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,
              IOptions<TelegramUserApiSettings> settingsOptions,
              MarkdownParserService markdownParserService, // Add markdown parser service parameter
              IGeminiService geminiService, // Inject GeminiService singleton
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
+            _notifToAdmin = notifToAdmin ?? throw new ArgumentNullException(nameof(notifToAdmin));
             _geminiService = geminiService ?? throw new ArgumentNullException(nameof(geminiService));
             _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -1643,238 +1646,188 @@ namespace Infrastructure.Services
         /// Sends a group of media items as an album to a specified peer.
         /// Uses resilience policies.
         /// </summary>
-        public async Task SendMediaGroupAsync( // Returns Task (void), as per interface
-    TL.InputPeer peer,
-    ICollection<TL.InputMedia> media,
-    CancellationToken cancellationToken,
-    string? albumCaption = null,
-    TL.MessageEntity[]? albumEntities = null, // Directly MessageEntity[] as per interface
-    int? replyToMsgId = null,
-    bool background = false, // Interface requires this, but SendAlbumAsync does not have it. Will be ignored.
-    DateTime? schedule_date = null,
-    bool sendAsBot = false) // Interface requires this, but SendAlbumAsync does not have it. Will be ignored.
+        public async Task SendMediaGroupAsync(
+             TL.InputPeer peer,
+             ICollection<TL.InputMedia> media,
+             CancellationToken cancellationToken,
+             string? albumCaption = null,
+             TL.MessageEntity[]? albumEntities = null,
+             int? replyToMsgId = null,
+             bool background = false,
+             DateTime? schedule_date = null,
+             bool sendAsBot = false)
         {
-            // Level 1: Early Exit for invalid state/arguments.
-            if (_client is null)
+            // =========================================================================
+            // === STAGE 0: VALIDATION & INITIALIZATION ================================
+            // =========================================================================
+
+            if (_client is null || peer is null || media is null || !media.Any())
             {
-                _logger.LogError("SendMediaGroupAsync: Telegram client (_client) is not initialized. Cannot send media group.");
-                throw new InvalidOperationException("Telegram API client is not initialized.");
-            }
-            if (peer is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: InputPeer is null. Cannot send media group.");
-                throw new ArgumentNullException(nameof(peer), "InputPeer cannot be null for sending media group.");
-            }
-            if (media is null || !media.Any())
-            {
-                _logger.LogError("SendMediaGroupAsync: Media list cannot be null or empty. Aborting send.");
-                throw new ArgumentException("Media list cannot be null or empty for sending media group.", nameof(media));
+                _logger.LogError("SendMediaGroupAsync: Invalid arguments. Aborting.");
+                throw new InvalidOperationException("Invalid arguments provided to SendMediaGroupAsync.");
             }
 
-            // Level 2: Prepare logging variables upfront, conditionally format expensive parts.
             long peerIdForLog = GetPeerIdForLog(peer);
-            string peerTypeForLog = peer.GetType().Name;
+            var debugReport = new StringBuilder();
+            debugReport.AppendLine($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**");
+            debugReport.AppendLine($"**Media Count:** `{media.Count}` | **Initial Caption:** `{(string.IsNullOrWhiteSpace(albumCaption) ? "(empty)" : "Set")}`");
+            debugReport.AppendLine("---");
 
-            string effectiveAlbumCaptionForLog = _logger.IsEnabled(LogLevel.Debug)
-                ? (string.IsNullOrWhiteSpace(albumCaption)
-                    ? (media.FirstOrDefault()?.GetType().Name is string firstMediaName
-                        ? $"First media type: {firstMediaName}"
-                        : "[No Caption]")
-                    : TruncateString(albumCaption, 50))
-                : "[...caption...]";
+            // --- Initialize final state variables ---
+            string finalCaption = albumCaption ?? string.Empty;
+            TL.MessageEntity[]? finalEntities = albumEntities;
 
-            string mediaItemsInfo = _logger.IsEnabled(LogLevel.Debug)
-                ? (media.Count > 5 ? $"{media.Count} items (e.g., {string.Join(", ", media.Take(2).Select(m => m.GetType().Name))}...)" : $"Total: {media.Count} items")
-                : "[...media items...]";
+            // =========================================================================
+            // === STAGE 1: CAPTION PRE-PROCESSING =====================================
+            // =========================================================================
 
-            string lockKey = $"send_media_group_peer_{peerTypeForLog}_{peerIdForLog}";
-
-            // Level 2: Conditional Logging - Debug level for detailed input parameters
-            if (_logger.IsEnabled(LogLevel.Debug))
+            if (!string.IsNullOrEmpty(finalCaption))
             {
-                _logger.LogDebug(
-                    "SendMediaGroupAsync: Attempting to send media group to Peer (Type: {PeerType}, LoggedID: {PeerId}). " +
-                    "Media Items: {MediaItemsInfo}. Album Caption: '{AlbumCaptionPreview}'. ReplyToMsgID: {ReplyToMsgId}. " +
-                    "Background: {BackgroundFlag} (ignored for albums). ScheduleDate: {ScheduleDate}. SendAsBot: {SendAsBotFlag} (ignored for albums).",
-                    peerTypeForLog, peerIdForLog, mediaItemsInfo, effectiveAlbumCaptionForLog,
-                    replyToMsgId.HasValue ? replyToMsgId.Value.ToString() : "N/A",
-                    background, schedule_date.HasValue ? schedule_date.Value.ToString("s") : "N/A", sendAsBot);
-            }
+                // Simple text replacements
+                finalCaption = finalCaption.Replace("https://wa.me/message/W6HXT7VWR3U2C1", "@capxi", StringComparison.OrdinalIgnoreCase);
+                debugReport.AppendLine($"**1. Pre-Processing:** Link replacement applied.");
 
-            // --- STAGE 1: CAPTION CONSTRUCTION ---
-
-            // Pre-processing filter for @capxi
-            if (!string.IsNullOrEmpty(albumCaption) && albumCaption.Contains("https://wa.me/message/W6HXT7VWR3U2C1", StringComparison.OrdinalIgnoreCase))
-            {
-                albumCaption = albumCaption.Replace("https://wa.me/message/W6HXT7VWR3U2C1", "@capxi", StringComparison.OrdinalIgnoreCase);
-                _logger.LogDebug("SendMediaGroupAsync: Replaced WhatsApp link with @capxi in album caption for Peer {PeerId}.", peerIdForLog);
-            }
-
-                // =========================================================================
-                // === NEW LOGIC BLOCK: MARKDOWN PARSING FOR ALBUM CAPTION ====
-                // =========================================================================
+                // Markdown parsing
                 try
                 {
-                    // Only attempt markdown parsing if there's caption content and no existing entities
-                    if (!string.IsNullOrWhiteSpace(albumCaption) && (albumEntities == null || !albumEntities.Any()))
+                    if (finalEntities is null || finalEntities.Length == 0)
                     {
-                        _logger.LogDebug("Attempting to parse markdown in album caption for Peer {PeerId}.", peerIdForLog);
-
-                        // Parse markdown and convert to Telegram entities
-                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(albumCaption);
-
-                        if (!string.IsNullOrEmpty(parsedCaption) && parsedEntities.Length > 0)
+                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(finalCaption);
+                        if (parsedEntities.Length > 0)
                         {
-                            // SUCCESS: Markdown was parsed and entities were created
-                            _logger.LogInformation("Successfully parsed markdown for album caption Peer {PeerId}. Found {EntityCount} entities.",
-                                peerIdForLog, parsedEntities.Length);
-
-                            albumCaption = parsedCaption;
-                            albumEntities = parsedEntities;
+                            finalCaption = parsedCaption;
+                            finalEntities = parsedEntities;
+                            debugReport.AppendLine($"**2. Markdown Parse:** Success (`{parsedEntities.Length}` entities found).");
                         }
-                        else
-                        {
-                            // No markdown found or parsing failed, keep original caption
-                            _logger.LogDebug("No markdown syntax found in album caption for Peer {PeerId}. Using original text.", peerIdForLog);
-                        }
-                    }
-                    else if (albumEntities != null && albumEntities.Any())
-                    {
-                        _logger.LogDebug("Skipping markdown parsing for album caption Peer {PeerId} as entities are already provided.", peerIdForLog);
                     }
                 }
                 catch (Exception ex)
                 {
-                    // CATCH-ALL: This ensures any unexpected error in markdown parsing does not stop the album from being sent
-                    _logger.LogWarning(ex, "An exception occurred during markdown parsing for album caption Peer {PeerId}. Proceeding with original caption.", peerIdForLog);
+                    _logger.LogWarning(ex, "Markdown parsing failed. Continuing with un-parsed caption.");
+                    debugReport.AppendLine($"**2. Markdown Parse:** ⚠️ Failed. `{ex.Message}`.");
                 }
-            // Fix for CS8600: Ensure `albumCaption` is not null before assigning it to `captionToSend`.  
-            string captionToSend = albumCaption ?? string.Empty; // Use an empty string if albumCaption is null.  
-            TL.MessageEntity[]? entitiesToSend = albumEntities; // Start with the original entities
+            }
 
-            // Only attempt AI enhancement IF there is a caption to enhance in the first place.
-            if (!string.IsNullOrWhiteSpace(albumCaption))
+            // =========================================================================
+            // === STAGE 2: AI ENHANCEMENT =============================================
+            // =========================================================================
+
+            // Only attempt AI enhancement if there is a caption to work with.
+            if (!string.IsNullOrWhiteSpace(finalCaption))
             {
-                try
+                var enhancementResult = await TryEnhanceCaptionWithAiAsync(finalCaption, media, debugReport, cancellationToken);
+                if (enhancementResult.HasValue)
                 {
-                    List<byte[]>? imageBytesList = null;
-
-                    // --- ATTEMPT TO EXTRACT IMAGE DATA FOR AI (The fragile part) ---
-                    // This logic remains the same, but its failure is now better handled.
-                    try
-                    {
-                        var firstPhoto = media.OfType<TL.InputMediaUploadedPhoto>().FirstOrDefault();
-                        if (firstPhoto?.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
-                        {
-                            byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken).ConfigureAwait(false);
-                            imageBytesList = new List<byte[]> { imageBytes };
-                            _logger.LogInformation("Successfully read {ByteCount} bytes from image file for AI multimodal processing.", imageBytes.Length);
-                        }
-                        else
-                        {
-                            _logger.LogDebug("No local image file found in media group for AI enhancement. Proceeding with text-only AI call.");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "An error occurred while reading image file for AI enhancement. Falling back to text-only AI call.");
-                        imageBytesList = null;
-                    }
-
-                    // --- CALL THE AI SERVICE ---
-                    _logger.LogDebug("Attempting to enhance album caption with AI for Peer {PeerId}. Multimodal: {IsMultimodal}", peerIdForLog, imageBytesList != null);
-                    string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, imageBytesList, cancellationToken).ConfigureAwait(false);
-
-                    // If enhancement was successful, parse the result and overwrite the original caption/entities.
-                    if (!string.IsNullOrWhiteSpace(enhancedCaption))
-                    {
-                        _logger.LogInformation("Album caption successfully enhanced by AI for Peer {PeerId}. Parsing enhanced caption...", peerIdForLog);
-                        var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
-
-                        captionToSend = parsedCaption; // Overwrite
-                        entitiesToSend = parsedEntities.Length > 0 ? parsedEntities : null; // Overwrite
-                    }
-                    else
-                    {
-                        // AI returned nothing. The original caption/entities (already assigned) will be used.
-                        _logger.LogWarning("AI enhancement for album caption returned null or empty. Proceeding with the pre-AI caption.");
-                    }
+                    (finalCaption, finalEntities) = enhancementResult.Value;
+                    debugReport.AppendLine($"**3. AI Enhancement:** ✅ Success. Caption updated by AI.");
                 }
-                catch (Exception ex)
+                else
                 {
-                    // A major failure in the enhancement block. Log it, but proceed with the pre-AI caption.
-                    _logger.LogError(ex, "A critical exception occurred during the AI album caption enhancement stage. Proceeding with the original constructed caption.");
-                    // 'captionToSend' and 'entitiesToSend' still hold their pre-AI values, so no assignment is needed here.
+                    debugReport.AppendLine($"**3. AI Enhancement:** ❌ Failed or skipped. Using pre-AI caption.");
                 }
             }
             else
             {
-                _logger.LogDebug("Album caption is empty. Skipping AI enhancement entirely.");
+                debugReport.AppendLine("**3. AI Enhancement:** 🚫 Skipped (initial caption was empty).");
             }
+
+
+            // =========================================================================
+            // === STAGE 3: FINAL SEND =================================================
+            // =========================================================================
+
+            debugReport.AppendLine("---");
+            debugReport.AppendLine($"📤 **Final State to Send:**");
+            debugReport.AppendLine($"**Caption:** `{(string.IsNullOrWhiteSpace(finalCaption) ? "(empty)" : TruncateString(finalCaption, 100))}`");
+            debugReport.AppendLine($"**Entities:** `{finalEntities?.Length ?? 0}`");
+
+            // Send the complete diagnostic report to the admin before attempting the final send.
+            await _notifToAdmin.SendNotificationAsync(debugReport.ToString(), CancellationToken.None);
 
             try
             {
-                    // Level 3: Acquire a lock for sending media groups to a specific peer.
-                    _logger.LogTrace("SendMediaGroupAsync: Attempting to acquire send lock with key: {LockKey}", lockKey);
-                    using IDisposable sendLock = await AsyncLock.LockAsync(lockKey).ConfigureAwait(false);
-                    _logger.LogDebug("SendMediaGroupAsync: Acquired send lock with key: {LockKey} for Peer (Type: {PeerType}, LoggedID: {PeerId})",
-                        lockKey, peerTypeForLog, peerIdForLog);
+                string lockKey = $"send_media_group_peer_{peer.GetType().Name}_{peerIdForLog}";
+                using (await AsyncLock.LockAsync(lockKey).ConfigureAwait(false))
+                {
+                    int replyToMsgIdInt = replyToMsgId ?? 0;
 
-                    int replyToMsgIdInt = replyToMsgId.HasValue ? replyToMsgId.Value : 0;
-
-                    // Level 4: Resilience Pipeline Execution for sending media group.
                     TL.Message[] sentMessages = await _resiliencePipeline.ExecuteAsync(async (context, token) =>
                         await _client!.SendAlbumAsync(
                             peer: peer,
                             medias: media,
-                            caption: captionToSend,         // Use the final caption
+                            caption: finalCaption,
+                            entities: finalEntities,
                             reply_to_msg_id: replyToMsgIdInt,
-                            entities: entitiesToSend,       // Use the final entities
                             schedule_date: schedule_date ?? default
                         ).ConfigureAwait(false),
                         new Polly.Context(nameof(SendMediaGroupAsync)),
                         cancellationToken
                     ).ConfigureAwait(false);
 
-                    // Level 1: Post-API call validation
                     if (sentMessages is null || sentMessages.Length == 0)
                     {
-                        _logger.LogError("SendMediaGroupAsync: WTelegramClient API call returned null or empty array after Polly retries. This is unexpected. Peer: {PeerId}, Media Items: {MediaItemsInfo}", peerIdForLog, mediaItemsInfo);
-                        throw new InvalidOperationException("Telegram API call to SendAlbumAsync unexpectedly returned null or empty array after all retries.");
+                        throw new InvalidOperationException("SendAlbumAsync API call returned a null or empty array.");
                     }
-
-                    // Level 2: Informational logging for success
-                    _logger.LogInformation("SendMediaGroupAsync: Successfully sent media group of {MediaCount} items to Peer (Type: {PeerType}, LoggedID: {PeerId}). First message ID: {FirstMessageId}.",
-                        media.Count, peerTypeForLog, peerIdForLog, sentMessages.FirstOrDefault()?.id ?? 0);
                 }
-                // Level 6: Consistent Error Handling and Logging
-                catch (OperationCanceledException oce)
-                {
-                    _logger.LogInformation(oce, "SendMediaGroupAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Media Items: {MediaItemsInfo}.",
-                        peerTypeForLog, peerIdForLog, mediaItemsInfo);
-                    throw;
-                }
-                catch (TL.RpcException rpcEx)
-                {
-                    _logger.LogError(rpcEx, "SendMediaGroupAsync: Telegram API (RPC) exception occurred after Polly retries exhausted (or error was not retryable) for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}.",
-                        peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code);
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "SendMediaGroupAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
-                        peerTypeForLog, peerIdForLog);
-                    throw;
-                }
-                finally
-                {
-                    _logger.LogTrace("SendMediaGroupAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
-                }
-
+                _logger.LogInformation("Successfully sent media group of {Count} items to Peer {PeerId}.", media.Count, peerIdForLog);
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "A critical error occurred during the final send stage for Peer {PeerId}.", peerIdForLog);
+                await _notifToAdmin.SendNotificationAsync($"❌ **Send FAILED for Peer `{peerIdForLog}`**\n**Error:** `{ex.Message}`", CancellationToken.None);
+                throw; // Re-throw the exception to allow higher-level handlers to catch it.
+            }
+        }
 
 
-            
+        /// <summary>
+        /// Private helper to encapsulate the AI enhancement logic.
+        /// </summary>
+        /// <returns>A tuple of the new caption and entities if successful; otherwise, null.</returns>
+        private async Task<(string, TL.MessageEntity[])?> TryEnhanceCaptionWithAiAsync(
+            string currentCaption,
+            ICollection<TL.InputMedia> media,
+            StringBuilder debugReport,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                List<byte[]>? imageBytesList = null;
+
+                // Attempt to extract image data for the AI
+                var firstPhoto = media.OfType<TL.InputMediaUploadedPhoto>().FirstOrDefault();
+                if (firstPhoto?.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
+                {
+                    imageBytesList = new List<byte[]> { await File.ReadAllBytesAsync(inputFile.Name, cancellationToken) };
+                    debugReport.AppendLine($"   - Image Found: `{imageBytesList.First().Length}` bytes.");
+                }
+                else
+                {
+                    debugReport.AppendLine("   - Image Found: No local file path detected.");
+                }
+
+                // Call the Gemini service
+                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(currentCaption, imageBytesList, cancellationToken);
+                debugReport.AppendLine($"   - AI Response: `{(string.IsNullOrWhiteSpace(enhancedCaption) ? "(empty)" : "Received")}`");
+
+                if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                {
+                    // Parse the AI's response to get the final caption and entities
+                    var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedCaption);
+                    return (parsedCaption, parsedEntities);
+                }
+
+                return null; // AI enhancement failed or returned empty
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An exception occurred within TryEnhanceCaptionWithAiAsync.");
+                debugReport.AppendLine($"   - 💥 AI Stage Exception: `{ex.Message}`.");
+                return null; // Signal failure
+            }
+        }
+
+
         /// <summary>
         /// Forwards messages from one peer to another.
         /// Uses resilience policies.
