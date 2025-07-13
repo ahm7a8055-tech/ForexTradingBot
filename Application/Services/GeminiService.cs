@@ -85,27 +85,45 @@ namespace Application.Services
                     });
         }
 
+
+
         public Task<string?> EnhanceMessageAsync(string text, CancellationToken ct, string? apiKeyName = null)
-            => EnhanceMessageAsync(text, null, ct, apiKeyName);
+      => EnhanceMessageAsync(text, null, ct, apiKeyName); // This overload will now always pass 'null' for images to the main method.
 
         public async Task<string?> EnhanceMessageAsync(
             string? text,
-            ICollection<byte[]>? images,
+            ICollection<byte[]>? images, // This parameter will now be effectively ignored by the core logic.
             CancellationToken ct,
             string? apiKeyName = null)
         {
             var adminLogger = new AdminLogger("EnhanceMessage", Guid.NewGuid().ToString("N"));
 
-            // 1. Input Validation & Idempotency
-            if (string.IsNullOrWhiteSpace(text) && (images == null || !images.Any()))
+            // --- MODIFICATION START ---
+            // We are explicitly disabling image processing for this method.
+            // If an image was somehow passed (e.g., via the text-only overload, which is unlikely with the change above),
+            // we'll log it and proceed as if no image was provided to maintain the "text-only" behavior.
+            if (images != null && images.Any())
             {
-                adminLogger.Failure("Aborted: Text and images were both null or empty.");
+                adminLogger.Info("Image data was provided but is ignored for this text-only enhancement method.", null, "IMAGE_PROCESSING");
+                // We can optionally clear the images list here if it helps clarity,
+                // but the primary logic will ignore it anyway.
+                images = null;
+            }
+            // --- MODIFICATION END ---
+
+
+            // 1. Input Validation & Idempotency
+            // The condition now implicitly checks for text only, as images are ignored.
+            if (string.IsNullOrWhiteSpace(text)) // Removed '&& (images == null || !images.Any())' as 'images' is now ignored.
+            {
+                adminLogger.Failure("Aborted: Text was null or empty.", null, "VALIDATION"); // Simplified message
                 await NotifyAdminAsync(adminLogger.Render(), ct);
                 return null;
             }
 
-            string contentCacheKey = GenerateContentCacheKey(text, images);
-            adminLogger.Info($"Request content hash: {contentCacheKey}");
+            // Generate cache key based on text only, as images are not processed.
+            string contentCacheKey = GenerateContentCacheKey(text, null); // Pass null for images
+            adminLogger.Info($"Request content hash (text-only): {contentCacheKey}", null, "CACHE");
 
             var requestLock = _requestLocks.GetOrAdd(contentCacheKey, _ => new SemaphoreSlim(1, 1));
             await requestLock.WaitAsync(ct);
@@ -114,11 +132,11 @@ namespace Application.Services
             {
                 if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
                 {
-                    adminLogger.Success("Fulfilled from cache (Idempotency).");
+                    adminLogger.Success("Fulfilled from cache (Idempotency).", null, "CACHE");
                     await NotifyAdminAsync(adminLogger.Render(), ct);
                     return cachedResult;
                 }
-                adminLogger.Info("Cache miss, proceeding to API call.");
+                adminLogger.Info("Cache miss, proceeding to API call.", null, "CACHE");
 
                 // 2. Main Execution Loop: Try available configs in order
                 int maxAttempts = (_configs.Count > 0 ? _configs.Count : 1) + 1; // Failsafe loop
@@ -127,34 +145,35 @@ namespace Application.Services
                     var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
                     if (config == null)
                     {
-                        adminLogger.Failure("No available API configurations found. Halting operation.");
+                        adminLogger.Failure("No available API configurations found. Halting operation.", null, "CONFIG");
                         break; // Exit loop if no configs are available
                     }
 
-                    adminLogger.Info($"Attempt {attempt}: Trying with Config ID {config.Id} (Model: {config.ModelName})");
+                    adminLogger.Info($"Attempt {attempt}: Trying with Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
 
                     // The core attempt to call the API with the selected config
-                    (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, images, adminLogger, ct);
+                    // Pass 'null' for images to ensure AttemptApiCallAsync and BuildRequest use text-only.
+                    (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
 
                     if (wasSuccess)
                     {
-                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.");
+                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
                         _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
                         return result; // Success, exit the method
                     }
 
                     // If the call was not successful, rotate the failed key to the back of the line
-                    adminLogger.Failure($"Config ID {config.Id} failed. Rotating to the back.", config.Id);
+                    adminLogger.Failure($"Config ID {config.Id} failed. Rotating to the back.", config.Id, "ROTATION");
                     await ReportFailureAndRotateAsync(config.Id);
                 }
 
-                adminLogger.Failure("All available API configurations failed.");
+                adminLogger.Failure("All available API configurations failed.", null, "FINAL");
                 return null;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Unhandled exception in EnhanceMessageAsync. CID: {CID}", adminLogger.CorrelationId);
-                adminLogger.Failure($"CRITICAL ERROR: {ex.GetType().Name} - {ex.Message}");
+                adminLogger.Failure($"CRITICAL ERROR: {ex.GetType().Name} - {ex.Message}", null, "ERROR");
                 return null;
             }
             finally
@@ -176,7 +195,7 @@ namespace Application.Services
             // Quota Check
             if (!CheckAndIncrementQuota(cfg.ModelName, text))
             {
-                adminLogger.Info($"Quota exceeded for model {cfg.ModelName}; skipping.", cfg.Id);
+                adminLogger.Info($"Quota exceeded for model {cfg.ModelName}; skipping.", cfg.Id, "QUOTA");
                 return (null, false);
             }
 
@@ -184,7 +203,7 @@ namespace Application.Services
             var circuitBreaker = GetOrCreateCircuitBreaker(cfg.Id, adminLogger);
             if (circuitBreaker.CircuitState == CircuitState.Open)
             {
-                adminLogger.Info($"Circuit breaker is open for Config ID {cfg.Id}. Skipping.", cfg.Id);
+                adminLogger.Info($"Circuit breaker is open for Config ID {cfg.Id}. Skipping.", cfg.Id, "CIRCUIT_BREAKER");
                 return (null, false);
             }
 
@@ -200,7 +219,7 @@ namespace Application.Services
                 HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
                 sw.Stop();
 
-                adminLogger.Info($"HTTP POST returned {(int)response.StatusCode} {response.ReasonPhrase} in {sw.ElapsedMilliseconds}ms.", cfg.Id);
+                adminLogger.Info($"HTTP POST returned {(int)response.StatusCode} {response.ReasonPhrase} in {sw.ElapsedMilliseconds}ms.", cfg.Id, "API_CALL");
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -210,36 +229,36 @@ namespace Application.Services
                     {
                         return (responseText, true);
                     }
-                    adminLogger.Failure("API returned success status but content was empty.", cfg.Id);
+                    adminLogger.Failure("API returned success status but content was empty.", cfg.Id, "API_RESPONSE");
                     return (null, false);
                 }
 
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
-                    adminLogger.Failure("API returned 429 TooManyRequests. This key will be on cooldown.", cfg.Id);
+                    adminLogger.Failure("API returned 429 TooManyRequests. This key will be on cooldown.", cfg.Id, "QUOTA");
                 }
                 else
                 {
                     var errorContent = await response.Content.ReadAsStringAsync(ct);
-                    adminLogger.Failure($"API returned non-success status: {(int)response.StatusCode}. Error: {errorContent.Truncate(100)}", cfg.Id);
+                    adminLogger.Failure($"API returned non-success status: {(int)response.StatusCode}. Error: {errorContent.Truncate(100)}", cfg.Id, "API_RESPONSE");
                 }
 
                 return (null, false);
             }
             catch (BrokenCircuitException)
             {
-                adminLogger.Failure("Circuit breaker tripped and is now open.", cfg.Id);
+                adminLogger.Failure("Circuit breaker tripped and is now open.", cfg.Id, "CIRCUIT_BREAKER");
                 return (null, false);
             }
             catch (TimeoutRejectedException)
             {
-                adminLogger.Failure("Request timed out by Polly policy.", cfg.Id);
+                adminLogger.Failure("Request timed out by Polly policy.", cfg.Id, "TIMEOUT");
                 return (null, false);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Exception during API call for Config ID {ConfigId}", cfg.Id);
-                adminLogger.Failure($"Network/HTTP exception: {ex.Message}", cfg.Id);
+                adminLogger.Failure($"Network/HTTP exception: {ex.Message}", cfg.Id, "NETWORK");
                 return (null, false);
             }
         }
@@ -297,7 +316,7 @@ namespace Application.Services
                 {
                     if (_cache.TryGetValue(CONFIG_REFRESH_LOCK_KEY, out _)) return;
 
-                    adminLogger.Info("Config cache expired. Refreshing configurations from database.");
+                    adminLogger.Info("Config cache expired. Refreshing configurations from database.", null, "CONFIG_REFRESH");
 
                     await using var scope = _serviceProvider.CreateAsyncScope();
                     var repo = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
@@ -318,7 +337,7 @@ namespace Application.Services
                     newOrder.AddRange(addedKeys);
                     _orderedConfigIds = newOrder;
 
-                    adminLogger.Info($"Refresh complete. Found {_configs.Count} active configs. Order: [{string.Join(",", _orderedConfigIds)}]");
+                    adminLogger.Info($"Refresh complete. Found {_configs.Count} active configs. Order: [{string.Join(",", _orderedConfigIds)}]", null, "CONFIG_REFRESH");
                     _cache.Set(CONFIG_REFRESH_LOCK_KEY, true, CONFIG_CACHE_DURATION);
                 }
                 finally
@@ -336,7 +355,7 @@ namespace Application.Services
         {
             return _circuitBreakers.GetOrAdd($"ConfigId_{configId}", _ =>
             {
-                adminLogger.Info($"Creating new circuit breaker for Config ID {configId}.");
+                adminLogger.Info($"Creating new circuit breaker for Config ID {configId}.", configId, "CIRCUIT_BREAKER");
 
                 // Define the handlers with explicit types to resolve any compiler ambiguity.
                 Action<DelegateResult<HttpResponseMessage>, TimeSpan, Context> handleOnBreak = (resp, ts, ctx) =>
@@ -440,13 +459,29 @@ namespace Application.Services
 
         private GeminiRequest BuildRequest(string promptTemplate, string? text, ICollection<byte[]>? images)
         {
-            var parts = new List<Part> { new(promptTemplate.Replace("{message}", text ?? ""), null) };
-            if (images != null)
+            var parts = new List<Part>();
+
+            string processedText;
+            if (!string.IsNullOrWhiteSpace(text))
             {
-                parts.AddRange(images.Select(img => new Part(null, new InlineData("image/jpeg", Convert.ToBase64String(img)))));
+                // Apply the template to the provided text.
+                processedText = promptTemplate.Replace("{message}", text);
+            }
+            else
+            {
+                // If text is null or empty, use the template with an empty message,
+                // or just the template itself if it doesn't require a message.
+                processedText = promptTemplate.Replace("{message}", "").Trim();
+            }
+
+            // Add the single text part.
+            if (!string.IsNullOrWhiteSpace(processedText))
+            {
+                parts.Add(new Part(Text: processedText, InlineData: null));
             }
             return new GeminiRequest(new List<Content> { new(parts) });
         }
+
 
         public record GeminiRequest(List<Content> contents);
         public record Content(List<Part> parts);
@@ -461,6 +496,11 @@ namespace Application.Services
             private readonly Stopwatch _totalStopwatch;
             private readonly List<LogEntry> _entries = new();
             private string? _finalStatus;
+            private readonly DateTime _startTime;
+            private int _successCount = 0;
+            private int _failureCount = 0;
+            private int _infoCount = 0;
+            private readonly Dictionary<int, int> _configUsageCount = new();
 
             public string CorrelationId { get; }
 
@@ -469,18 +509,33 @@ namespace Application.Services
                 _operationName = operationName;
                 CorrelationId = correlationId;
                 _totalStopwatch = Stopwatch.StartNew();
-                Info($"Operation '{_operationName}' Started. CID: {CorrelationId}");
+                _startTime = DateTime.UtcNow;
+                Info($"🚀 Operation '{_operationName}' Started", null, "START");
             }
 
-            public void Info(string message, int? configId = null) => _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "INFO"));
-            public void Success(string message, int? configId = null)
+            public void Info(string message, int? configId = null, string? category = null) 
             {
-                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "SUCCESS"));
+                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "INFO", category));
+                _infoCount++;
+                if (configId.HasValue)
+                    _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
+            }
+
+            public void Success(string message, int? configId = null, string? category = null)
+            {
+                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "SUCCESS", category));
+                _successCount++;
+                if (configId.HasValue)
+                    _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
                 _finalStatus = "✅ SUCCESS";
             }
-            public void Failure(string message, int? configId = null)
+
+            public void Failure(string message, int? configId = null, string? category = null)
             {
-                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "FAILURE"));
+                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "FAILURE", category));
+                _failureCount++;
+                if (configId.HasValue)
+                    _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
                 if (_finalStatus == null) _finalStatus = "❌ FAILURE";
             }
 
@@ -488,24 +543,129 @@ namespace Application.Services
             {
                 _totalStopwatch.Stop();
                 var sb = new StringBuilder();
-                sb.AppendLine($"╔═════════ Gemini Service Report ═════════╗");
-                sb.AppendLine($"║ Operation: {_operationName,-29} ║");
-                sb.AppendLine($"║ Status: {_finalStatus ?? "UNKNOWN",-32} ║");
-                sb.AppendLine($"║ Duration: {_totalStopwatch.ElapsedMilliseconds,-9}ms                       ║");
-                sb.AppendLine($"║ CID: {CorrelationId,-35} ║");
-                sb.AppendLine($"╚═════════════════════════════════════════╝");
-                sb.AppendLine("─── Trace ───");
-
-                foreach (var entry in _entries)
+                
+                // Enhanced Header with gradient-like effect
+                sb.AppendLine("╔══════════════════════════════════════════════════════════════════════════════════════════════════════╗");
+                sb.AppendLine("║ 🎯 GEMINI SERVICE ADMIN REPORT                                                                        ║");
+                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+                
+                // Operation Details Section
+                sb.AppendLine("║ 📋 OPERATION DETAILS                                                                                                                  ║");
+                sb.AppendLine($"║    • Operation: {_operationName,-60} ║");
+                sb.AppendLine($"║    • Status: {GetStatusWithColor(_finalStatus ?? "UNKNOWN"),-65} ║");
+                sb.AppendLine($"║    • Duration: {FormatDuration(_totalStopwatch.Elapsed),-60} ║");
+                sb.AppendLine($"║    • Started: {_startTime:yyyy-MM-dd HH:mm:ss.fff} UTC                                                      ║");
+                sb.AppendLine($"║    • Ended: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC                                                        ║");
+                sb.AppendLine($"║    • CID: {CorrelationId,-65} ║");
+                
+                // Performance Metrics Section
+                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+                sb.AppendLine("║ 📊 PERFORMANCE METRICS                                                                                                                ║");
+                sb.AppendLine($"║    • Total Operations: {_entries.Count,-55} ║");
+                sb.AppendLine($"║    • Success Rate: {CalculateSuccessRate(),-60} ║");
+                sb.AppendLine($"║    • Average Response Time: {CalculateAverageResponseTime(),-50} ║");
+                sb.AppendLine($"║    • Configurations Used: {_configUsageCount.Count,-55} ║");
+                
+                // Configuration Usage Summary
+                if (_configUsageCount.Any())
                 {
-                    string prefix = entry.Status switch { "SUCCESS" => "✅", "FAILURE" => "❌", _ => "➡️" };
-                    string configInfo = entry.ConfigId.HasValue ? $"[KeyID: {entry.ConfigId}] " : "";
-                    sb.AppendLine($"{prefix} (+{entry.Timestamp.TotalMilliseconds:F0}ms) {configInfo}{entry.Message}");
+                    sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+                    sb.AppendLine("║ 🔑 CONFIGURATION USAGE                                                                                                               ║");
+                    foreach (var kvp in _configUsageCount.OrderByDescending(x => x.Value))
+                    {
+                        sb.AppendLine($"║    • Config ID {kvp.Key}: {kvp.Value} operations                                                          ║");
+                    }
                 }
-                sb.AppendLine("─── End of Report ───");
+                
+                // Detailed Trace Section
+                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+                sb.AppendLine("║ 🔍 DETAILED TRACE                                                                                                                     ║");
+                
+                var groupedEntries = _entries.GroupBy(e => e.Category ?? "GENERAL").OrderBy(g => g.Key);
+                
+                foreach (var group in groupedEntries)
+                {
+                    if (group.Key != "GENERAL")
+                    {
+                        sb.AppendLine($"║ 📂 {group.Key.ToUpper()}                                                                                                                ║");
+                    }
+                    
+                    foreach (var entry in group)
+                    {
+                        string icon = GetStatusIcon(entry.Status);
+                        string configInfo = entry.ConfigId.HasValue ? $"[Config:{entry.ConfigId}] " : "";
+                        string timestamp = $"+{entry.Timestamp.TotalMilliseconds:F0}ms";
+                        string message = TruncateMessage(entry.Message, 70);
+                        
+                        sb.AppendLine($"║    {icon} {timestamp,-10} {configInfo,-12} {message,-70} ║");
+                    }
+                    
+                    if (group.Key != "GENERAL" && group != groupedEntries.Last())
+                    {
+                        sb.AppendLine("║                                                                                                                              ║");
+                    }
+                }
+                
+                // Footer
+                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+                sb.AppendLine("║ 🏁 END OF REPORT                                                                                                                     ║");
+                sb.AppendLine("╚══════════════════════════════════════════════════════════════════════════════════════════════════════╝");
+                
                 return sb.ToString();
             }
-            private record LogEntry(string Message, TimeSpan Timestamp, int? ConfigId, string Status);
+
+            private string GetStatusWithColor(string status)
+            {
+                return status switch
+                {
+                    "✅ SUCCESS" => "✅ SUCCESS",
+                    "❌ FAILURE" => "❌ FAILURE",
+                    _ => "❓ UNKNOWN"
+                };
+            }
+
+            private string GetStatusIcon(string status)
+            {
+                return status switch
+                {
+                    "SUCCESS" => "✅",
+                    "FAILURE" => "❌",
+                    "START" => "🚀",
+                    _ => "➡️"
+                };
+            }
+
+            private string FormatDuration(TimeSpan duration)
+            {
+                if (duration.TotalMilliseconds < 1000)
+                    return $"{duration.TotalMilliseconds:F0}ms";
+                else if (duration.TotalSeconds < 60)
+                    return $"{duration.TotalSeconds:F1}s";
+                else
+                    return $"{duration.TotalMinutes:F1}m {duration.Seconds}s";
+            }
+
+            private string CalculateSuccessRate()
+            {
+                if (_entries.Count == 0) return "0%";
+                var successRate = (double)_successCount / _entries.Count * 100;
+                return $"{successRate:F1}% ({_successCount}/{_entries.Count})";
+            }
+
+            private string CalculateAverageResponseTime()
+            {
+                if (_entries.Count == 0) return "0ms";
+                var avgTime = _entries.Average(e => e.Timestamp.TotalMilliseconds);
+                return $"{avgTime:F0}ms";
+            }
+
+            private string TruncateMessage(string message, int maxLength)
+            {
+                if (string.IsNullOrEmpty(message)) return "";
+                return message.Length <= maxLength ? message : message.Substring(0, maxLength - 3) + "...";
+            }
+
+            private record LogEntry(string Message, TimeSpan Timestamp, int? ConfigId, string Status, string? Category);
         }
         #endregion
     }
