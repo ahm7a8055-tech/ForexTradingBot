@@ -1349,300 +1349,214 @@ namespace Infrastructure.Services
         /// <exception cref="OperationCanceledException">Thrown if the operation is cancelled.</exception>
         /// <exception cref="Exception">Thrown for any other unhandled errors.</exception>
         public async Task<UpdatesBase> SendMessageAsync(
-    InputPeer peer,
-    string? message, // Message can be null if media is present (caption)
-    CancellationToken cancellationToken,
-    int? replyToMsgId = null,
-    ReplyMarkup? replyMarkup = null,
-    IEnumerable<MessageEntity>? entities = null, // KEEP as IEnumerable<MessageEntity> for input flexibility
-    bool noWebpage = false, // Will only be used for text messages
-    bool background = false,
-    bool clearDraft = false,
-    DateTime? schedule_date = null,
-    InputMedia? media = null)
+       InputPeer peer,
+       string? message,
+       CancellationToken cancellationToken,
+       int? replyToMsgId = null,
+       ReplyMarkup? replyMarkup = null,
+       IEnumerable<MessageEntity>? entities = null,
+       bool noWebpage = false,
+       bool background = false,
+       bool clearDraft = false,
+       DateTime? schedule_date = null,
+       InputMedia? media = null)
         {
-            // Level 1: Early Exit for invalid state/arguments.
-            if (_client is null)
-            {
-                _logger.LogError("SendMessageAsync: Telegram client (_client) is not initialized. Cannot send message.");
-                throw new InvalidOperationException("Telegram API client is not initialized.");
-            }
-            if (peer is null)
-            {
-                _logger.LogError("SendMessageAsync: InputPeer cannot be null.");
-                throw new ArgumentNullException(nameof(peer), "InputPeer cannot be null for sending message.");
-            }
-            if (string.IsNullOrEmpty(message) && media is null)
-            {
-                _logger.LogError("SendMessageAsync: Both message content and media are null or empty. Nothing to send.");
-                throw new ArgumentException("Either message content or media must be provided for sending a message.", nameof(message));
-            }
+            // =========================================================================
+            // === STAGE 1: VALIDATION & PREPARATION
+            // =========================================================================
+            if (_client is null) throw new InvalidOperationException("Telegram API client is not initialized.");
+            if (peer is null) throw new ArgumentNullException(nameof(peer), "InputPeer cannot be null.");
+            if (string.IsNullOrEmpty(message) && media is null) throw new ArgumentException("Either message or media must be provided.");
 
-            // Level 2: Prepare logging variables upfront, conditionally format expensive parts.
-            long peerIdForLog = GetPeerIdForLog(peer); // Assumed helper method
-            string peerTypeForLog = peer.GetType().Name;
-            string truncatedMessage = _logger.IsEnabled(LogLevel.Debug) ? TruncateString(message, 100) : "[...message...]"; // Assumed helper method
-            bool hasMedia = media != null;
+            long peerIdForLog = GetPeerIdForLog(peer);
+            _logger.LogDebug("Initiating SendMessageAsync for Peer {PeerId}. Media: {HasMedia}", peerIdForLog, media != null);
 
-            // Convert entities to array once if needed, and for logging.
-            MessageEntity[]? entitiesArray = entities?.ToArray(); // Convert to array early if not null/empty
-            string entitiesInfo = _logger.IsEnabled(LogLevel.Debug) && entitiesArray != null && entitiesArray.Any()
-                ? $"Count: {entitiesArray.Length}, Types: [{string.Join(", ", entitiesArray.Select(e => e.GetType().Name))}]"
-                : (entitiesArray != null && entitiesArray.Any() ? "[...entities...]" : "None");
+            // Convert entities to an array for consistent handling throughout the process.
+            MessageEntity[]? entitiesArray = entities?.ToArray();
 
+            // --- Begin Text Pre-processing ---
 
-            // Level 3: Define a lock key specific to the peer to prevent simultaneous sends to the same chat.
-            string lockKey = $"send_peer_{peerTypeForLog}_{peerIdForLog}";
-
-            // Level 2: Conditional Logging - Debug level for detailed input parameters
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "SendMessageAsync: Preparing to send message to Peer (Type: {PeerType}, LoggedID: {PeerId}). " +
-                    "Message (partial): '{MessageContent}'. Entities: {EntitiesInfo}. Media: {HasMedia}. ReplyToMsgID: {ReplyToMsgId}. " +
-                    "NoWebpage: {NoWebpageFlag} (ignored for media). Background: {BackgroundFlag}. ClearDraft: {ClearDraftFlag}. ScheduleDate: {ScheduleDate}.",
-                    peerTypeForLog,
-                    peerIdForLog,
-                    truncatedMessage,
-                    entitiesInfo,
-                    hasMedia,
-                    replyToMsgId.HasValue ? replyToMsgId.Value.ToString() : "N/A",
-                    noWebpage, background, clearDraft, schedule_date.HasValue ? schedule_date.Value.ToString("s") : "N/A");
-            }
-
-            // Level 4: Custom pre-processing example (if required)
-            if (!string.IsNullOrEmpty(message) && message!.Contains("https://wa.me/message/W6HXT7VWR3U2C1", StringComparison.OrdinalIgnoreCase))
+            // Custom link replacement
+            if (!string.IsNullOrEmpty(message) && message.Contains("https://wa.me/message/W6HXT7VWR3U2C1", StringComparison.OrdinalIgnoreCase))
             {
                 message = message.Replace("https://wa.me/message/W6HXT7VWR3U2C1", "@capxi", StringComparison.OrdinalIgnoreCase);
-                _logger.LogDebug("SendMessageAsync: Replaced WhatsApp link with @capxi for Peer {PeerId}.", peerIdForLog);
+                _logger.LogDebug("Replaced WhatsApp link with @capxi for Peer {PeerId}.", peerIdForLog);
             }
 
-     
-            // =========================================================================
-            // === NEW LOGIC BLOCK: MARKDOWN PARSING (BEFORE AI ENHANCEMENT) ====
-            // =========================================================================
-            try
+            // Markdown parsing (only if no entities are already provided)
+            if (!string.IsNullOrWhiteSpace(message) && (entitiesArray == null || !entitiesArray.Any()))
             {
-                // Only attempt markdown parsing if there's text content and no existing entities
-                if (!string.IsNullOrWhiteSpace(message) && (entitiesArray == null || !entitiesArray.Any()))
+                try
                 {
-                    _logger.LogDebug("Attempting to parse markdown in message for Peer {PeerId}.", peerIdForLog);
-                    
-                    // Parse markdown and convert to Telegram entities
                     var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(message);
-                    
-                    if (!string.IsNullOrEmpty(parsedText) && parsedEntities.Length > 0)
+                    if (parsedEntities.Length > 0)
                     {
-                        // SUCCESS: Markdown was parsed and entities were created
-                        _logger.LogInformation("Successfully parsed markdown for Peer {PeerId}. Found {EntityCount} entities.", 
-                            peerIdForLog, parsedEntities.Length);
-                        
+                        _logger.LogInformation("Successfully parsed markdown for Peer {PeerId}, found {Count} entities.", peerIdForLog, parsedEntities.Length);
                         message = parsedText;
                         entitiesArray = parsedEntities;
                     }
-                    else
-                    {
-                        // No markdown found or parsing failed, keep original message
-                        _logger.LogDebug("No markdown syntax found in message for Peer {PeerId}. Using original text.", peerIdForLog);
-                    }
                 }
-                else if (entitiesArray != null && entitiesArray.Any())
+                catch (Exception ex)
                 {
-                    _logger.LogDebug("Skipping markdown parsing for Peer {PeerId} as entities are already provided.", peerIdForLog);
+                    _logger.LogWarning(ex, "Markdown parsing failed for Peer {PeerId}. Proceeding with original text.", peerIdForLog);
                 }
             }
-            catch (Exception ex)
-            {
-                // CATCH-ALL: This ensures any unexpected error in markdown parsing does not stop the message from being sent
-                _logger.LogWarning(ex, "An exception occurred during markdown parsing for Peer {PeerId}. Proceeding with original message.", peerIdForLog);
-            }
-            // =========================================================================
-            // === END OF MARKDOWN PARSING BLOCK ======================================
-            // =========================================================================
 
-            // =========================================================================
-            // === NEW LOGIC BLOCK: AI ENHANCEMENT (FINAL STAGE OF TEXT PREPARATION) ====
-            // =========================================================================
-            try
+            // AI Enhancement
+            if (!string.IsNullOrWhiteSpace(message))
             {
-                // We only attempt enhancement if there's a caption/message to enhance.
-                if (!string.IsNullOrWhiteSpace(message))
+                try
                 {
-                    List<byte[]>? imageBytesList = null; // Prepare for potential image data
-
-                    // --- NEW: ATTEMPT TO EXTRACT IMAGE DATA FOR AI ---
-                    try
+                    // (Your logic to prepare imageBytesList for the AI call)
+                    List<byte[]>? imageBytesList = null;
+                    if (media is InputMediaUploadedPhoto { file: InputFile { Name: var filePath } } && File.Exists(filePath))
                     {
-                        // Check if the single media item is an uploaded photo
-                        if (media is TL.InputMediaUploadedPhoto uploadedPhoto)
-                        {
-                            // The property is 'file' (lowercase)
-                            if (uploadedPhoto.file is TL.InputFile inputFile && !string.IsNullOrEmpty(inputFile.Name) && File.Exists(inputFile.Name))
-                            {
-                                _logger.LogDebug("Found single image file at path '{ImagePath}' to include in AI enhancement request.", inputFile.Name);
-                                byte[] imageBytes = await File.ReadAllBytesAsync(inputFile.Name, cancellationToken).ConfigureAwait(false);
-                                imageBytesList = new List<byte[]> { imageBytes };
-                                _logger.LogInformation("Successfully read {ByteCount} bytes from single image file for AI multimodal processing.", imageBytes.Length);
-                            }
-                            else
-                            {
-                                _logger.LogDebug("Media is a photo, but no local file path was found. Proceeding with text-only AI enhancement.");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "An error occurred while trying to read single image file for AI enhancement. Falling back to text-only.");
-                        imageBytesList = null; // Ensure it's null on failure
+                        imageBytesList = new List<byte[]> { await File.ReadAllBytesAsync(filePath, cancellationToken) };
                     }
 
-                    // --- CALL THE APPROPRIATE AI SERVICE METHOD ---
-                    _logger.LogDebug("Attempting to enhance message/caption with AI for Peer {PeerId}. Multimodal: {IsMultimodal}", peerIdForLog, imageBytesList != null);
-
-                    // Call the multimodal service. It's designed to handle cases where imageBytesList is null.
-                    string? enhancedMessage = await _geminiService.EnhanceMessageAsync(message, imageBytesList, cancellationToken).ConfigureAwait(false);
-
+                    string? enhancedMessage = await _geminiService.EnhanceMessageAsync(message, imageBytesList, cancellationToken);
                     if (!string.IsNullOrWhiteSpace(enhancedMessage))
                     {
-                        _logger.LogInformation("Message/caption successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
-                        // Always parse Gemini output as MarkdownV1
+                        _logger.LogInformation("Message/caption successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
                         var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
                         message = parsedText;
                         entitiesArray = parsedEntities.Length > 0 ? parsedEntities : null;
                     }
-                    else
-                    {
-                        // FALLBACK: AI service is disabled, failed, or returned empty content.
-                        _logger.LogDebug("AI enhancement failed or was disabled. Sending original constructed message.");
-                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "AI message enhancement failed for Peer {PeerId}. Proceeding with original text.", peerIdForLog);
                 }
             }
-            catch (Exception ex)
+
+            // --- End Text Pre-processing ---
+
+            // =========================================================================
+            // === STAGE 2: DISPATCH TO SENDING WORKER
+            // =========================================================================
+
+            int charLimit = media is null ? TelegramMessageHelper.TextMessageMaxLength : TelegramMessageHelper.CaptionMaxLength;
+            List<string> messageParts;
+
+            if (string.IsNullOrEmpty(message) || message.Length <= charLimit)
             {
-                // CATCH-ALL: This ensures any unexpected error in the AI service does not stop the message from being sent.
-                _logger.LogWarning(ex, "An exception occurred during AI message enhancement. Proceeding with original constructed message.");
+                messageParts = new List<string> { message ?? string.Empty };
+            }
+            else
+            {
+                _logger.LogInformation("Message length ({Length}) exceeds limit ({Limit}). Splitting into multiple parts.", message.Length, charLimit);
+
+                if (entitiesArray?.Any() == true)
+                {
+                    _logger.LogWarning("Message with entities exceeds length limit. Entities will be stripped to allow splitting.");
+                    entitiesArray = null;
+                }
+                messageParts = TelegramMessageHelper.ChunkMessage(message, charLimit);
+                _logger.LogInformation("Message split into {PartCount} parts.", messageParts.Count);
             }
 
-            // =========================================================================
-            // === END OF NEW AI LOGIC BLOCK ===========================================
-            // =========================================================================
+            return await SendInPartsAsync(peer, messageParts, media, replyToMsgId, replyMarkup, entitiesArray,
+                noWebpage, background, clearDraft, schedule_date, cancellationToken);
+        }
 
-            try
+        /// <summary>
+        /// Internal method that handles the logic of sending one or more message parts.
+        /// If multiple parts are provided, it sends them as a threaded reply chain.
+        /// </summary>
+        private async Task<UpdatesBase> SendInPartsAsync(
+            InputPeer peer,
+            List<string> messageParts,
+            InputMedia? media,
+            int? initialReplyToMsgId,
+            ReplyMarkup? replyMarkup,
+            MessageEntity[]? entities,
+            bool noWebpage,
+            bool background,
+            bool clearDraft,
+            DateTime? schedule_date,
+            CancellationToken cancellationToken)
+        {
+            long peerIdForLog = GetPeerIdForLog(peer);
+            string lockKey = $"send_peer_{peer.GetType().Name}_{peerIdForLog}";
+
+            using IDisposable sendLock = await AsyncLock.LockAsync(lockKey).ConfigureAwait(false);
+            _logger.LogDebug("Acquired send lock for peer {PeerId} to send message in {PartCount} part(s).", peerIdForLog, messageParts.Count);
+
+            UpdatesBase? firstMessageUpdate = null;
+            int? replyToMsgId = initialReplyToMsgId;
+
+            for (int i = 0; i < messageParts.Count; i++)
             {
-                // Level 3: Acquire a lock. Use 'await using' for proper disposal.
-                _logger.LogTrace("SendMessageAsync: Attempting to acquire send lock with key: {LockKey}", lockKey);
-                // Assuming AsyncLock.LockAsync is a static method that returns an IDisposable
-                using IDisposable sendLock = await AsyncLock.LockAsync(lockKey).ConfigureAwait(false);
-                _logger.LogDebug("SendMessageAsync: Acquired send lock with key: {LockKey} for Peer (Type: {PeerType}, LoggedID: {PeerId})",
-                    lockKey, peerTypeForLog, peerIdForLog);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string currentPart = messageParts[i];
+                bool isFirstPart = i == 0;
+                bool isLastPart = i == messageParts.Count - 1;
 
                 long random_id = WTelegram.Helpers.RandomLong();
-                InputReplyTo? inputReplyTo = replyToMsgId.HasValue
-                    ? new InputReplyToMessage { reply_to_msg_id = replyToMsgId.Value }
-                    : null;
+                InputReplyTo? inputReplyTo = replyToMsgId.HasValue ? new InputReplyToMessage { reply_to_msg_id = replyToMsgId.Value } : null;
 
-                UpdatesBase updatesBase;
-
-                // This block is now separate from the hashtag block to allow AI to process the full text
                 try
                 {
-                    // Re-calculate the truncated message for logging in case AI changed it.
-                    string finalTruncatedMessage = _logger.IsEnabled(LogLevel.Debug) ? TruncateString(message, 100) : "[...message...]";
+                    UpdatesBase currentUpdate;
 
-                    // Level 5: Conditionally call Messages_SendMessage or Messages_SendMedia
-                    if (media is null)
+                    // The first part is special: it might contain media and uses the initial entities/reply markup.
+                    if (isFirstPart)
                     {
-                        _logger.LogDebug("SendMessageAsync: Calling _client.Messages_SendMessage (text-only) for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
-                            peerTypeForLog, peerIdForLog);
-
-                        updatesBase = await _resiliencePipeline.ExecuteAsync(
-                            async (context, token) => await _client!.Messages_SendMessage(
-                                peer: peer,
-                                message: message!, // Message is guaranteed not null here due to early exit check
-                                random_id: random_id,
-                                reply_to: inputReplyTo,
-                                reply_markup: replyMarkup,
-                                entities: entitiesArray, // Pass the array here
-                                no_webpage: noWebpage,
-                                background: background,
-                                clear_draft: clearDraft,
-                                schedule_date: schedule_date
-                            ).ConfigureAwait(false),
-                            new Polly.Context(nameof(SendMessageAsync) + "_Text"),
-                            cancellationToken
-                        ).ConfigureAwait(false);
+                        _logger.LogDebug("Sending part 1/{TotalParts} to peer {PeerId}. Media: {HasMedia}", messageParts.Count, peerIdForLog, media != null);
+                        if (media is null) // Text-only message
+                        {
+                            currentUpdate = await _resiliencePipeline.ExecuteAsync(
+                                async token => await _client!.Messages_SendMessage(peer, currentPart, random_id, reply_to: inputReplyTo, reply_markup: isLastPart ? replyMarkup : null, entities: entities, no_webpage: noWebpage, background: background, clear_draft: clearDraft, schedule_date: schedule_date).ConfigureAwait(false),
+                                cancellationToken
+                            ).ConfigureAwait(false);
+                        }
+                        else // Media with caption
+                        {
+                            currentUpdate = await _resiliencePipeline.ExecuteAsync(
+                                async token => await _client!.Messages_SendMedia(peer, media, currentPart, random_id, reply_to: inputReplyTo, reply_markup: isLastPart ? replyMarkup : null, entities: entities, background: background, clear_draft: clearDraft, schedule_date: schedule_date).ConfigureAwait(false),
+                                cancellationToken
+                            ).ConfigureAwait(false);
+                        }
                     }
+                    // Subsequent parts are always text-only replies.
                     else
                     {
-                        _logger.LogDebug("SendMessageAsync: Calling _client.Messages_SendMedia for Peer (Type: {PeerType}, LoggedID: {PeerId}).",
-                            peerTypeForLog, peerIdForLog);
-
-                        updatesBase = await _resiliencePipeline.ExecuteAsync(
-                            async (context, token) => await _client!.Messages_SendMedia(
-                                peer: peer,
-                                media: media,
-                                random_id: random_id,
-                                message: message, // Message acts as caption here, can be null
-                                reply_to: inputReplyTo,
-                                reply_markup: replyMarkup,
-                                entities: entitiesArray, // Pass the array here (for caption entities)
-                                background: background,
-                                clear_draft: clearDraft,
-                                schedule_date: schedule_date
-                            ).ConfigureAwait(false),
-                            new Polly.Context(nameof(SendMessageAsync) + "_Media"),
+                        _logger.LogDebug("Sending part {PartNum}/{TotalParts} as a reply to peer {PeerId}.", i + 1, messageParts.Count, peerIdForLog);
+                        currentUpdate = await _resiliencePipeline.ExecuteAsync(
+                            async token => await _client!.Messages_SendMessage(peer, currentPart, random_id, reply_to: inputReplyTo, reply_markup: isLastPart ? replyMarkup : null, background: background).ConfigureAwait(false), // No entities, no webpage for subsequent parts
                             cancellationToken
                         ).ConfigureAwait(false);
                     }
 
-                    // Level 1: Post-API call validation
-                    if (updatesBase is null)
+                    // Store the first update to return it at the end.
+                    firstMessageUpdate ??= currentUpdate;
+
+                    // Set the reply_to_msg_id for the *next* iteration.
+                    replyToMsgId = TelegramMessageHelper.GetSentMessageId(currentUpdate);
+
+                    // Small delay between parts to prevent flooding and ensure messages appear in order.
+                    if (!isLastPart)
                     {
-                        _logger.LogError("SendMessageAsync: WTelegramClient API call returned null after Polly retries. This is unexpected. Peer: {PeerId}, Message (partial): '{MessageContent}'", peerIdForLog, finalTruncatedMessage);
-                        throw new InvalidOperationException("Telegram API call to SendMessage/SendMedia unexpectedly returned null after all retries.");
+                        await Task.Delay(250, cancellationToken);
                     }
-
-                    // Level 2: Informational logging for success
-                    _logger.LogInformation(
-                        "SendMessageAsync: Message sent successfully via API. Response Type: {ResponseType}. " +
-                        "Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{TruncatedMessage}'",
-                        updatesBase.GetType().Name,
-                        peerTypeForLog, peerIdForLog,
-                        finalTruncatedMessage);
-
-                    return updatesBase;
                 }
-                // Level 6: Consistent Error Handling and Logging
-                catch (OperationCanceledException oce) // Handle explicit cancellation first
+                catch (Exception ex)
                 {
-                    _logger.LogInformation(oce, "SendMessageAsync: Operation cancelled for Peer (Type: {PeerType}, LoggedID: {PeerId}), Message (partial): '{MessageContent}'.",
-                        peerTypeForLog, peerIdForLog, truncatedMessage); // Note: uses original truncated message for context
-                    throw; // Re-throw to propagate cancellation.
-                }
-                catch (RpcException rpcEx) // Handle Telegram API specific errors
-                {
-                    _logger.LogError(rpcEx, "SendMessageAsync: Telegram API (RPC) exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}). Error: {ErrorTypeString}, Code: {ErrorCode}. Message (partial): '{MessageContent}'",
-                        peerTypeForLog, peerIdForLog, rpcEx.Message, rpcEx.Code, truncatedMessage); // Note: uses original truncated message for context
-                    throw; // Re-throw to propagate the exception.
-                }
-                catch (Exception ex) // Catch any other unexpected exceptions
-                {
-                    _logger.LogError(ex, "SendMessageAsync: Unhandled generic exception occurred for Peer (Type: {PeerType}, LoggedID: {PeerId}). Message (partial): '{MessageContent}'",
-                        peerTypeForLog, peerIdForLog, truncatedMessage); // Note: uses original truncated message for context
+                    _logger.LogError(ex, "Failed to send part {PartNum}/{TotalParts} of a multi-part message to peer {PeerId}.", i + 1, messageParts.Count, peerIdForLog);
+                    // If any part fails, we stop and re-throw the exception.
                     throw;
                 }
-                // NOTE: The `finally` block was removed from this inner `try` as the lock is handled by the outer `finally`.
-            }
-            finally
-            {
-                // This 'finally' now correctly corresponds to the 'try' that acquires the lock.
-                _logger.LogTrace("SendMessageAsync: Send lock (if acquired) has been released for key: {LockKey}", lockKey);
             }
 
-            // This path should ideally not be reached if the lock try/finally is structured correctly.
-            // If an exception is thrown before or during the lock, it will propagate.
-            // If it succeeds, it returns. This is for absolute safety.
-            throw new InvalidOperationException("SendMessageAsync: Unexpected code path reached. No UpdatesBase was returned and no exception was thrown.");
+            if (firstMessageUpdate is null)
+            {
+                _logger.LogError("Multi-part message sending completed, but no update was captured. This is unexpected.");
+                throw new InvalidOperationException("Failed to send message and capture a response from Telegram.");
+            }
+
+            _logger.LogInformation("Successfully sent message in {PartCount} part(s) to peer {PeerId}.", messageParts.Count, peerIdForLog);
+            return firstMessageUpdate;
         }
 
 
@@ -2584,5 +2498,94 @@ namespace Infrastructure.Services
         // Add a delegate property to allow cache removal from outside (e.g., injected from ForwardingService)
         public Action<long>? RemoveForwardingRulesCacheForChannel { get; set; }
         #endregion
+    }
+    public static class TelegramMessageHelper
+    {
+        public const int TextMessageMaxLength = 4086;
+        public const int CaptionMaxLength = 1014;
+
+      public static List<string> ChunkMessage(string text, int limit)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length <= limit)
+                return new List<string> { text ?? string.Empty };
+
+            var chunks = new List<string>();
+            var remainingText = text.Trim();
+
+            while (remainingText.Length > 0)
+            {
+                // If the remaining text fits within the limit, add it as the last chunk.
+                if (remainingText.Length <= limit)
+                {
+                    chunks.Add(remainingText);
+                    break;
+                }
+
+                // Determine the best split point *at or before* the limit.
+                int splitIndex = FindBestSplitIndex(remainingText, limit);
+
+                // Add the chunk to the list.
+                chunks.Add(remainingText.Substring(0, splitIndex).TrimEnd());
+
+                // Update the remaining text.
+                remainingText = remainingText.Substring(splitIndex).TrimStart();
+            }
+
+            return chunks;
+        }
+
+        /// <summary>
+        /// Finds the best index to split the string at or before the given limit.
+        /// Prioritizes natural breaks (newline, space) over arbitrary cuts.
+        /// </summary>
+        private static int FindBestSplitIndex(string text, int limit)
+        {
+            // First, consider the limit itself as a potential split point.
+            int bestIndex = limit;
+
+            // Try to find the last newline before or at the limit.
+            int newlineIndex = text.LastIndexOf('\n', limit - 1);
+            if (newlineIndex > 0) // If newline is found and not at the very beginning
+            {
+                bestIndex = newlineIndex;
+            }
+            else
+            {
+                // If no newline, try to find the last space before or at the limit.
+                int spaceIndex = text.LastIndexOf(' ', limit - 1);
+                if (spaceIndex > 0) // If space is found and not at the very beginning
+                {
+                    bestIndex = spaceIndex;
+                }
+            }
+
+            // Heuristic: Avoid splitting immediately after an opening bold/italic marker if possible.
+            // This is complex and can be very error-prone if not carefully implemented.
+            // For simplicity and robustness, we'll stick to newline/space as primary.
+            // A more advanced approach would involve parsing entities.
+
+            // If the calculated bestIndex is 0 (meaning the limit hit before any meaningful split),
+            // we must split at the limit to avoid an infinite loop.
+            if (bestIndex <= 0 && text.Length > 0)
+            {
+                return Math.Min(limit, text.Length);
+            }
+
+            return Math.Min(bestIndex, text.Length); // Ensure we don't go out of bounds
+        }
+
+        /// <summary>
+        /// Extracts the sent message ID from the various UpdatesBase types returned by WTelegramClient.
+        /// </summary>
+        public static int? GetSentMessageId(UpdatesBase updatesBase)
+        {
+            return updatesBase switch
+            {
+                Updates { updates: var u } => u.OfType<UpdateNewMessage>().FirstOrDefault()?.message.ID ??
+                                              u.OfType<UpdateNewChannelMessage>().FirstOrDefault()?.message.ID,
+                UpdateShortSentMessage ssm => ssm.id,
+                _ => null
+            };
+        }
     }
 }
