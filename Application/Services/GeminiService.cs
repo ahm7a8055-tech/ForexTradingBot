@@ -86,7 +86,7 @@ Enhanced message:";
             _cache = memoryCache;
 
             // General policies that apply to any call
-            _timeoutPolicy = Policy.TimeoutAsync<HttpResponseMessage>(15, TimeoutStrategy.Pessimistic);
+            _timeoutPolicy = Policy.TimeoutAsync<HttpResponseMessage>(8, TimeoutStrategy.Pessimistic);
 
             _retryPolicy = Policy<HttpResponseMessage>
                 .Handle<HttpRequestException>()
@@ -179,27 +179,44 @@ Enhanced message:";
                     return cachedResult;
                 }
 
-                // Get configuration
-                var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
-                if (config == null)
+                // Try all available configurations until one succeeds
+                int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    adminLogger.Failure("No available API configurations found.", null, "CONFIG");
-                    return null;
+                    var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
+                    if (config == null)
+                    {
+                        adminLogger.Failure("No available API configurations found.", null, "CONFIG");
+                        break;
+                    }
+
+                    adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
+
+                    // Attempt API call
+                    (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+
+                    if (wasSuccess && !string.IsNullOrWhiteSpace(result))
+                    {
+                        adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
+                        _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
+                        return result;
+                    }
+
+                    adminLogger.Failure($"Config ID {config.Id} failed. Moving to next configuration.", config.Id, "ROTATION");
+                    await ReportFailureAndRotateAsync(config.Id);
+                    
+                    // If this was the last attempt, break
+                    if (attempt == maxAttempts)
+                    {
+                        adminLogger.Failure($"All {maxAttempts} available API configurations failed.", null, "FINAL");
+                        break;
+                    }
+                    
+                    // Small delay before trying next config (optional)
+                    await Task.Delay(100, ct);
                 }
 
-                adminLogger.Info($"Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
-
-                // Attempt API call
-                (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
-
-                if (wasSuccess && !string.IsNullOrWhiteSpace(result))
-                {
-                    adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
-                    _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
-                    return result;
-                }
-
-                adminLogger.Failure($"Config ID {config.Id} failed.", config.Id, "API_CALL");
+                adminLogger.Failure("All available API configurations failed.", null, "FINAL");
                 return null;
             }
             catch (Exception ex)
@@ -249,7 +266,7 @@ Enhanced message:";
                     adminLogger.Info("Cache miss, proceeding to API call.", null, "CACHE");
 
                     // 2. Main Execution Loop: Try available configs in order
-                    int maxAttempts = (_configs.Count > 0 ? _configs.Count : 1) + 1;
+                    int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
                     for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
                         var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
@@ -259,7 +276,7 @@ Enhanced message:";
                             break;
                         }
 
-                        adminLogger.Info($"Attempt {attempt}: Trying with Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
+                        adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Trying with Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
 
                         (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
 
@@ -274,8 +291,18 @@ Enhanced message:";
                             return;
                         }
 
-                        adminLogger.Failure($"Config ID {config.Id} failed. Rotating to the back.", config.Id, "ROTATION");
+                        adminLogger.Failure($"Config ID {config.Id} failed. Moving to next configuration.", config.Id, "ROTATION");
                         await ReportFailureAndRotateAsync(config.Id);
+                        
+                        // If this was the last attempt, break
+                        if (attempt == maxAttempts)
+                        {
+                            adminLogger.Failure($"All {maxAttempts} available API configurations failed.", null, "FINAL");
+                            break;
+                        }
+                        
+                        // Small delay before trying next config (optional)
+                        await Task.Delay(100, ct);
                     }
 
                     adminLogger.Failure("All available API configurations failed.", null, "FINAL");
@@ -368,26 +395,40 @@ Enhanced message:";
                 var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
 
                 var sw = Stopwatch.StartNew();
+                
+                // Wait for the API response with timeout
                 HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
                 sw.Stop();
 
                 adminLogger.Info($"HTTP POST returned {(int)response.StatusCode} {response.ReasonPhrase} in {sw.ElapsedMilliseconds}ms.", cfg.Id, "API_CALL");
 
+                // Check if we got a successful response (200 OK)
                 if (response.IsSuccessStatusCode)
                 {
                     var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
                     var responseText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
                     if (!string.IsNullOrWhiteSpace(responseText))
                     {
+                        adminLogger.Success($"Successfully received valid response from Config ID {cfg.Id}.", cfg.Id, "API_CALL");
                         return (responseText, true);
                     }
                     adminLogger.Failure("API returned success status but content was empty.", cfg.Id, "API_RESPONSE");
                     return (null, false);
                 }
 
+                // Handle specific error cases
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 {
                     adminLogger.Failure("API returned 429 TooManyRequests. This key will be on cooldown.", cfg.Id, "QUOTA");
+                }
+                else if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    adminLogger.Failure("API returned 401 Unauthorized. Invalid API key.", cfg.Id, "AUTH");
+                }
+                else if (response.StatusCode == HttpStatusCode.BadRequest)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync(ct);
+                    adminLogger.Failure($"API returned 400 Bad Request. Error: {errorContent.Truncate(100)}", cfg.Id, "API_RESPONSE");
                 }
                 else
                 {
@@ -407,10 +448,20 @@ Enhanced message:";
                 adminLogger.Failure("Request timed out by Polly policy.", cfg.Id, "TIMEOUT");
                 return (null, false);
             }
+            catch (TaskCanceledException)
+            {
+                adminLogger.Failure("Request was cancelled.", cfg.Id, "CANCELLATION");
+                return (null, false);
+            }
+            catch (HttpRequestException ex)
+            {
+                adminLogger.Failure($"HTTP request exception: {ex.Message}", cfg.Id, "NETWORK");
+                return (null, false);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Exception during API call for Config ID {ConfigId}", cfg.Id);
-                adminLogger.Failure($"Network/HTTP exception: {ex.Message}", cfg.Id, "NETWORK");
+                adminLogger.Failure($"Unexpected exception: {ex.Message}", cfg.Id, "EXCEPTION");
                 return (null, false);
             }
         }
@@ -670,74 +721,56 @@ Enhanced message:";
             {
                 _totalStopwatch.Stop();
                 var sb = new StringBuilder();
-                
-                // Enhanced Header with gradient-like effect
-                sb.AppendLine("╔══════════════════════════════════════════════════════════════════════════════════════════════════════╗");
-                sb.AppendLine("║ 🎯 GEMINI SERVICE ADMIN REPORT                                                                        ║");
-                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
-                
-                // Operation Details Section
-                sb.AppendLine("║ 📋 OPERATION DETAILS                                                                                                                  ║");
-                sb.AppendLine($"║    • Operation: {_operationName,-60} ║");
-                sb.AppendLine($"║    • Status: {GetStatusWithColor(_finalStatus ?? "UNKNOWN"),-65} ║");
-                sb.AppendLine($"║    • Duration: {FormatDuration(_totalStopwatch.Elapsed),-60} ║");
-                sb.AppendLine($"║    • Started: {_startTime:yyyy-MM-dd HH:mm:ss.fff} UTC                                                      ║");
-                sb.AppendLine($"║    • Ended: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC                                                        ║");
-                sb.AppendLine($"║    • CID: {CorrelationId,-65} ║");
-                
-                // Performance Metrics Section
-                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
-                sb.AppendLine("║ 📊 PERFORMANCE METRICS                                                                                                                ║");
-                sb.AppendLine($"║    • Total Operations: {_entries.Count,-55} ║");
-                sb.AppendLine($"║    • Success Rate: {CalculateSuccessRate(),-60} ║");
-                sb.AppendLine($"║    • Average Response Time: {CalculateAverageResponseTime(),-50} ║");
-                sb.AppendLine($"║    • Configurations Used: {_configUsageCount.Count,-55} ║");
-                
-                // Configuration Usage Summary
-                if (_configUsageCount.Any())
-                {
-                    sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
-                    sb.AppendLine("║ 🔑 CONFIGURATION USAGE                                                                                                               ║");
-                    foreach (var kvp in _configUsageCount.OrderByDescending(x => x.Value))
-                    {
-                        sb.AppendLine($"║    • Config ID {kvp.Key}: {kvp.Value} operations                                                          ║");
-                    }
-                }
-                
-                // Detailed Trace Section
-                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
-                sb.AppendLine("║ 🔍 DETAILED TRACE                                                                                                                     ║");
-                
-                var groupedEntries = _entries.GroupBy(e => e.Category ?? "GENERAL").OrderBy(g => g.Key);
-                
-                foreach (var group in groupedEntries)
+
+                // Header
+                sb.AppendLine("<b>🌟 GEMINI AI ENHANCEMENT REPORT</b>");
+                sb.AppendLine("<pre style='font-family:monospace;'>");
+                sb.AppendLine("──────────────────────────────────────────────");
+                sb.AppendLine($"📝 <b>Operation:</b> <b>{_operationName}</b>   <b>Status:</b> {GetStatusWithColor(_finalStatus ?? "UNKNOWN")}   <b>Duration:</b> {FormatDuration(_totalStopwatch.Elapsed)}");
+                sb.AppendLine($"🕒 <b>Started:</b> {_startTime:yyyy-MM-dd HH:mm:ss} UTC   <b>Ended:</b> {DateTime.UtcNow:HH:mm:ss} UTC");
+                sb.AppendLine($"🔗 <b>CID:</b> {CorrelationId}");
+                sb.AppendLine("──────────────────────────────────────────────");
+                sb.AppendLine($"📊 <b>Ops:</b> {_entries.Count}   <b>Success:</b> {CalculateSuccessRate()}   <b>Avg:</b> {CalculateAverageResponseTime()}   <b>Configs:</b> {_configUsageCount.Count}");
+                sb.AppendLine("──────────────────────────────────────────────");
+                sb.AppendLine("<b>Config Usage:</b>");
+                foreach (var kvp in _configUsageCount.OrderByDescending(x => x.Value))
+                    sb.AppendLine($"  • <b>Config {kvp.Key}:</b> {kvp.Value} ops");
+                sb.AppendLine("──────────────────────────────────────────────");
+                sb.AppendLine("<b>Trace:</b>");
+                foreach (var group in _entries.GroupBy(e => e.Category ?? "GENERAL").OrderBy(g => g.Key))
                 {
                     if (group.Key != "GENERAL")
-                    {
-                        sb.AppendLine($"║ 📂 {group.Key.ToUpper()}                                                                                                                ║");
-                    }
-                    
+                        sb.AppendLine($"  <b>{group.Key}:</b>");
                     foreach (var entry in group)
                     {
                         string icon = GetStatusIcon(entry.Status);
-                        string configInfo = entry.ConfigId.HasValue ? $"[Config:{entry.ConfigId}] " : "";
+                        string configInfo = entry.ConfigId.HasValue ? $"[C{entry.ConfigId}]" : "";
                         string timestamp = $"+{entry.Timestamp.TotalMilliseconds:F0}ms";
-                        string message = TruncateMessage(entry.Message, 70);
-                        
-                        sb.AppendLine($"║    {icon} {timestamp,-10} {configInfo,-12} {message,-70} ║");
-                    }
-                    
-                    if (group.Key != "GENERAL" && group != groupedEntries.Last())
-                    {
-                        sb.AppendLine("║                                                                                                                              ║");
+                        string message = TruncateMessage(entry.Message, 60);
+                        sb.AppendLine($"   {icon} {timestamp} {configInfo} {message}");
                     }
                 }
-                
-                // Footer
-                sb.AppendLine("╠══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
-                sb.AppendLine("║ 🏁 END OF REPORT                                                                                                                     ║");
-                sb.AppendLine("╚══════════════════════════════════════════════════════════════════════════════════════════════════════╝");
-                
+                sb.AppendLine("──────────────────────────────────────────────");
+                // Final Analysis
+                sb.AppendLine("<b>Analysis:</b>");
+                if (_successCount > 0)
+                {
+                    sb.AppendLine($"✅ <b>Success:</b> AI enhancement completed. Best config: {(_configUsageCount.OrderByDescending(x => x.Value).FirstOrDefault().Key)}");
+                }
+                else
+                {
+                    sb.AppendLine("❌ <b>Failure:</b> All configs failed. Check API keys, quotas, or network.");
+                }
+                if (_failureCount > 0)
+                {
+                    sb.AppendLine($"⚠️ <b>Failures:</b> {_failureCount} failures detected. Review configs and logs.");
+                }
+                if (_entries.Any(e => e.Status == "FAILURE" && e.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)))
+                {
+                    sb.AppendLine("⏱️ <b>Timeouts:</b> Some configs timed out. Consider lowering timeout or checking network/API speed.");
+                }
+                sb.AppendLine("──────────────────────────────────────────────");
+                sb.AppendLine("</pre>");
                 return sb.ToString();
             }
 
