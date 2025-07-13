@@ -59,6 +59,21 @@ namespace Application.Services
             WriteIndented = false
         };
 
+        // Default prompt template for message enhancement
+        private const string DEFAULT_PROMPT_TEMPLATE = @"You are an expert financial content enhancer. Your task is to improve the given trading signal message to make it more professional, engaging, and informative while maintaining all the original trading information.
+
+IMPORTANT RULES:
+1. Keep ALL original trading data (prices, levels, symbols) exactly as provided
+2. Add professional formatting and structure
+3. Enhance the language to be more engaging and professional
+4. Add relevant trading context or insights if appropriate
+5. Use markdown formatting for better presentation
+6. Keep the message concise but informative
+
+Original message: {message}
+
+Enhanced message:";
+
         public GeminiService(
             ILogger<GeminiService> logger,
             IHttpClientFactory httpClientFactory,
@@ -86,11 +101,25 @@ namespace Application.Services
                     });
         }
 
-
-
-        public Task<string?> EnhanceMessageAsync(string text, CancellationToken ct, string? apiKeyName = null)
+        public async Task<string?> EnhanceMessageAsync(string text, CancellationToken ct, string? apiKeyName = null)
         {
-            // Create a job ID for tracking
+            // First, try to get an immediate result
+            try
+            {
+                var result = await AttemptImmediateEnhancementAsync(text, apiKeyName, ct);
+                if (!string.IsNullOrWhiteSpace(result))
+                {
+                    _logger.LogInformation("Message enhanced immediately. Text length: {TextLength} -> {ResultLength}", 
+                        text?.Length ?? 0, result?.Length ?? 0);
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Immediate enhancement failed, falling back to background job");
+            }
+
+            // Fallback to background job if immediate enhancement fails
             var jobId = Guid.NewGuid().ToString("N");
             
             // Enqueue the job and return immediately
@@ -102,7 +131,7 @@ namespace Application.Services
             
             // Return a placeholder response - in real implementation, you might want to return the job ID
             // and have the client poll for results or use SignalR for real-time updates
-            return Task.FromResult<string?>($"Job enqueued successfully. JobId: {jobId}");
+            return $"Job enqueued successfully. JobId: {jobId}";
         }
 
         public async Task<string?> EnhanceMessageAsync(
@@ -121,6 +150,64 @@ namespace Application.Services
                 jobId, jobIdResult);
             
             return $"Job enqueued successfully. JobId: {jobId}";
+        }
+
+        /// <summary>
+        /// Attempts immediate enhancement without using background jobs
+        /// </summary>
+        private async Task<string?> AttemptImmediateEnhancementAsync(string text, string? apiKeyName, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return null;
+            }
+
+            var adminLogger = new AdminLogger("ImmediateEnhancement", Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                adminLogger.Info($"🚀 Attempting immediate enhancement for text length: {text.Length}", null, "IMMEDIATE");
+
+                // Generate cache key based on text only
+                string contentCacheKey = GenerateContentCacheKey(text, null);
+                adminLogger.Info($"Request content hash: {contentCacheKey}", null, "CACHE");
+
+                // Check cache first
+                if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
+                {
+                    adminLogger.Success("Fulfilled from cache.", null, "CACHE");
+                    return cachedResult;
+                }
+
+                // Get configuration
+                var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
+                if (config == null)
+                {
+                    adminLogger.Failure("No available API configurations found.", null, "CONFIG");
+                    return null;
+                }
+
+                adminLogger.Info($"Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
+
+                // Attempt API call
+                (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+
+                if (wasSuccess && !string.IsNullOrWhiteSpace(result))
+                {
+                    adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
+                    _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
+                    return result;
+                }
+
+                adminLogger.Failure($"Config ID {config.Id} failed.", config.Id, "API_CALL");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                adminLogger.Failure($"Exception during immediate enhancement: {ex.Message}", null, "EXCEPTION");
+                _logger.LogError(ex, "Exception during immediate enhancement");
+                return null;
+            }
         }
 
         /// <summary>
@@ -155,6 +242,7 @@ namespace Application.Services
                     if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
                     {
                         adminLogger.Success("Fulfilled from cache (Idempotency).", null, "CACHE");
+                        _cache.Set($"JobResult_{jobId}", cachedResult, TimeSpan.FromMinutes(30));
                         await NotifyAdminAsync(adminLogger.Render(), ct);
                         return;
                     }
@@ -201,17 +289,12 @@ namespace Application.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unhandled exception in Hangfire job. JobId: {JobId}", jobId);
-                adminLogger.Failure($"CRITICAL ERROR: {ex.GetType().Name} - {ex.Message}", null, "ERROR");
-                _cache.Set($"JobResult_{jobId}", $"ERROR: {ex.Message}", TimeSpan.FromMinutes(30));
+                adminLogger.Failure($"Exception in background job: {ex.Message}", null, "EXCEPTION");
+                _cache.Set($"JobResult_{jobId}", $"FAILED: {ex.Message}", TimeSpan.FromMinutes(30));
                 await NotifyAdminAsync(adminLogger.Render(), ct);
-                throw; // Let Hangfire handle retry
             }
         }
 
-        /// <summary>
-        /// Get the result of a background job
-        /// </summary>
         public async Task<string?> GetJobResultAsync(string jobId, CancellationToken ct)
         {
             if (_cache.TryGetValue($"JobResult_{jobId}", out string? result))
@@ -279,7 +362,9 @@ namespace Application.Services
 
             try
             {
-                var request = BuildRequest(cfg.PromptTemplate, text, images);
+                // Use the configured prompt template or fall back to default
+                var promptTemplate = !string.IsNullOrWhiteSpace(cfg.PromptTemplate) ? cfg.PromptTemplate : DEFAULT_PROMPT_TEMPLATE;
+                var request = BuildRequest(promptTemplate, text);
                 var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
 
                 var sw = Stopwatch.StartNew();
@@ -414,96 +499,72 @@ namespace Application.Services
             }
         }
 
-        #endregion
-
-        #region Policies & Utilities
-
         private AsyncCircuitBreakerPolicy<HttpResponseMessage> GetOrCreateCircuitBreaker(int configId, AdminLogger adminLogger)
         {
-            return _circuitBreakers.GetOrAdd($"ConfigId_{configId}", _ =>
+            var key = $"GeminiConfig_{configId}";
+            return _circuitBreakers.GetOrAdd(key, _ =>
             {
                 adminLogger.Info($"Creating new circuit breaker for Config ID {configId}.", configId, "CIRCUIT_BREAKER");
-
-                // Define the handlers with explicit types to resolve any compiler ambiguity.
-                Action<DelegateResult<HttpResponseMessage>, TimeSpan, Context> handleOnBreak = (resp, ts, ctx) =>
-                {
-                    _logger.LogWarning(
-                        "[Polly] Circuit breaker for ConfigId {ConfigId} is now open for {BreakTime}s due to: {Reason}",
-                        configId,
-                        ts.TotalSeconds,
-                        resp.Exception?.Message ?? resp.Result.StatusCode.ToString());
-                };
-
-                Action<Context> handleOnReset = (ctx) =>
-                {
-                    _logger.LogInformation(
-                        "[Polly] Circuit breaker for ConfigId {ConfigId} has been reset.",
-                        configId);
-                };
-
-                Action handleOnHalfOpen = () =>
-                {
-                    _logger.LogInformation(
-                        "[Polly] Circuit breaker for ConfigId {ConfigId} is now half-open. Next call is a test.",
-                        configId);
-                };
-
                 return Policy<HttpResponseMessage>
-      .Handle<HttpRequestException>()
-      .OrResult(r => (int)r.StatusCode >= 500 || r.StatusCode == HttpStatusCode.BadRequest)
-      .CircuitBreakerAsync(
-          2,                                // handledEventsAllowedBeforeBreaking
-          TimeSpan.FromMinutes(2),         // durationOfBreak
-          handleOnBreak,                    // onBreak
-          handleOnReset,                    // onReset
-          handleOnHalfOpen                  // onHalfOpen
-      );
+                    .Handle<HttpRequestException>()
+                    .OrResult(r => (int)r.StatusCode >= 500)
+                    .CircuitBreakerAsync(
+                        handledEventsAllowedBeforeBreaking: 3,
+                        durationOfBreak: TimeSpan.FromMinutes(2),
+                        onBreak: (outcome, ts) => adminLogger.Failure($"Circuit breaker opened for Config ID {configId}. Break duration: {ts.TotalMinutes} minutes.", configId, "CIRCUIT_BREAKER"),
+                        onReset: () => adminLogger.Info($"Circuit breaker reset for Config ID {configId}.", configId, "CIRCUIT_BREAKER"),
+                        onHalfOpen: () => adminLogger.Info($"Circuit breaker half-open for Config ID {configId}.", configId, "CIRCUIT_BREAKER")
+                    );
             });
         }
 
-
         private bool CheckAndIncrementQuota(string model, string? text)
         {
-            var tokens = text?.Length / 4 ?? 1; // Rough approximation
-            var rpmKey = $"Quota_RPM_{model}";
-            var tpmKey = $"Quota_TPM_{model}";
-            var rpdKey = $"Quota_RPD_{model}";
+            var now = DateTime.UtcNow;
+            var minuteKey = $"quota_rpm_{model}_{now:yyyyMMddHHmm}";
+            var dayKey = $"quota_rpd_{model}_{now:yyyyMMdd}";
+            var tokenKey = $"quota_tpm_{model}_{now:yyyyMMddHHmm}";
 
-            var rpm = _cache.GetOrCreate(rpmKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
-            var tpm = _cache.GetOrCreate(tpmKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
-            var rpd = _cache.GetOrCreate(rpdKey, entry => { entry.AbsoluteExpiration = DateTime.Today.AddDays(1); return 0; });
+            // Check RPM
+            var currentRpm = _cache.GetOrCreate(minuteKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
+            if (currentRpm >= FREE_RPM) return false;
+            _cache.Set(minuteKey, currentRpm + 1, TimeSpan.FromMinutes(1));
 
-            if (rpm >= FREE_RPM || tpm + tokens > FREE_TPM || rpd >= FREE_RPD) return false;
+            // Check RPD
+            var currentRpd = _cache.GetOrCreate(dayKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(1); return 0; });
+            if (currentRpd >= FREE_RPD) return false;
+            _cache.Set(dayKey, currentRpd + 1, TimeSpan.FromDays(1));
 
-            _cache.Set(rpmKey, rpm + 1);
-            _cache.Set(tpmKey, tpm + tokens);
-            _cache.Set(rpdKey, rpd + 1);
+            // Check TPM (rough estimate: 1 token ≈ 4 characters)
+            var estimatedTokens = (text?.Length ?? 0) / 4;
+            var currentTpm = _cache.GetOrCreate(tokenKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
+            if (currentTpm + estimatedTokens > FREE_TPM) return false;
+            _cache.Set(tokenKey, currentTpm + estimatedTokens, TimeSpan.FromMinutes(1));
+
             return true;
         }
 
         private static string GenerateContentCacheKey(string? text, ICollection<byte[]>? images)
         {
-            using var sha = SHA256.Create();
-            using var ms = new MemoryStream();
+            var content = new StringBuilder();
             if (!string.IsNullOrWhiteSpace(text))
             {
-                var b = Encoding.UTF8.GetBytes("TEXT:" + text);
-                ms.Write(b, 0, b.Length);
+                content.Append($"text:{text}");
             }
-            if (images != null)
+            if (images != null && images.Any())
             {
-                foreach (var img in images.OrderBy(i => i.Length))
+                foreach (var img in images)
                 {
-                    var hb = Encoding.UTF8.GetBytes($"IMG_LEN:{img.Length}:");
-                    ms.Write(hb, 0, hb.Length);
-                    ms.Write(img, 0, img.Length);
+                    using var sha256 = SHA256.Create();
+                    var hash = sha256.ComputeHash(img);
+                    content.Append($"img:{Convert.ToBase64String(hash)}");
                 }
             }
-            if (ms.Length == 0) return "EMPTY_CONTENT";
-            ms.Position = 0;
-            var hash = sha.ComputeHash(ms);
-            return $"GeminiContent:{Convert.ToBase64String(hash)}";
+            using var finalHash = SHA256.Create();
+            var finalBytes = finalHash.ComputeHash(Encoding.UTF8.GetBytes(content.ToString()));
+            return $"gemini_content_{Convert.ToBase64String(finalBytes)}";
         }
+        #endregion
 
         private string GetCooldownCacheKey(int configId) => $"GeminiConfig_Cooldown_{configId}";
 
@@ -512,19 +573,19 @@ namespace Application.Services
             try
             {
                 await using var scope = _serviceProvider.CreateAsyncScope();
-                var notifier = scope.ServiceProvider.GetRequiredService<INotificationToAdminService>();
-                await notifier.SendNotificationAsync(message, ct);
+                var notificationService = scope.ServiceProvider.GetService<INotificationToAdminService>();
+                if (notificationService != null)
+                {
+                    await notificationService.SendNotificationAsync(message, ct);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send admin notification.");
+                _logger.LogError(ex, "Failed to send admin notification");
             }
         }
-        #endregion
 
-        #region DTOs and Admin Logger
-
-        private GeminiRequest BuildRequest(string promptTemplate, string? text, ICollection<byte[]>? images)
+        private GeminiRequest BuildRequest(string promptTemplate, string? text)
         {
             var parts = new List<Part>();
 
@@ -548,7 +609,6 @@ namespace Application.Services
             }
             return new GeminiRequest(new List<Content> { new(parts) });
         }
-
 
         public record GeminiRequest(List<Content> contents);
         public record Content(List<Part> parts);
@@ -728,21 +788,18 @@ namespace Application.Services
 
             private string TruncateMessage(string message, int maxLength)
             {
-                if (string.IsNullOrEmpty(message)) return "";
-                return message.Length <= maxLength ? message : message.Substring(0, maxLength - 3) + "...";
+                return message.Length <= maxLength ? message : message[..maxLength] + "...";
             }
 
             private record LogEntry(string Message, TimeSpan Timestamp, int? ConfigId, string Status, string? Category);
         }
-        #endregion
     }
 
     public static class StringExtensions
     {
         public static string Truncate(this string value, int maxLength)
         {
-            if (string.IsNullOrEmpty(value)) return value;
-            return value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
+            return value.Length <= maxLength ? value : value[..maxLength] + "...";
         }
     }
 }
