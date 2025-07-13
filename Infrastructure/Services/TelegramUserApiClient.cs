@@ -92,6 +92,7 @@ namespace Infrastructure.Services
              IOptions<TelegramUserApiSettings> settingsOptions,
              MarkdownParserService markdownParserService, // Add markdown parser service parameter
              IGeminiService geminiService, // Inject GeminiService singleton
+             INotificationToAdminService notificationToAdminService, // Add notification service parameter
              bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
         {
             _memoryCache = memoryCache;
@@ -101,6 +102,7 @@ namespace Infrastructure.Services
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
             _useChannelForDispatch = useChannelForDispatch; // LEVEL 10: Initialize the flag
+            _notifToAdmin = notificationToAdminService ?? throw new ArgumentNullException(nameof(notificationToAdminService)); // Initialize notification service
 
             _markdownParserService = markdownParserService ?? throw new ArgumentNullException(nameof(markdownParserService)); // Initialize markdown parser service
             // Set up the session file path for WTelegramClient's custom session management.
