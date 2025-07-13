@@ -1638,60 +1638,12 @@ namespace Infrastructure.Services
           DateTime? schedule_date = null,
           bool sendAsBot = false)
         {
-            // === STAGE 0: COMPREHENSIVE VALIDATION & CONTEXT SETUP =================================
-            // Check all dependencies that could be null
-            if (_client is null)
+            // === STAGE 0: VALIDATION & CONTEXT SETUP =================================
+            if (_client is null || peer is null || media is null || !media.Any())
             {
-                _logger.LogError("SendMediaGroupAsync: Telegram client (_client) is null. Cannot send media group.");
-                throw new InvalidOperationException("Telegram API client is not initialized.");
-            }
-            
-            if (_notifToAdmin is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: Notification service (_notifToAdmin) is null. Cannot send media group.");
-                throw new InvalidOperationException("Notification service is not initialized.");
-            }
-            
-            if (_geminiService is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: Gemini service (_geminiService) is null. Cannot send media group.");
-                throw new InvalidOperationException("Gemini service is not initialized.");
-            }
-            
-            if (_markdownParserService is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: Markdown parser service (_markdownParserService) is null. Cannot send media group.");
-                throw new InvalidOperationException("Markdown parser service is not initialized.");
-            }
-            
-            if (_memoryCache is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: Memory cache (_memoryCache) is null. Cannot send media group.");
-                throw new InvalidOperationException("Memory cache is not initialized.");
-            }
-            
-            if (_resiliencePipeline is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: Resilience pipeline (_resiliencePipeline) is null. Cannot send media group.");
-                throw new InvalidOperationException("Resilience pipeline is not initialized.");
-            }
-            
-            if (_logger is null)
-            {
-                throw new InvalidOperationException("Logger is not initialized.");
-            }
-            
-            // Check method parameters
-            if (peer is null)
-            {
-                _logger.LogError("SendMediaGroupAsync: Peer parameter is null. Cannot send media group.");
-                throw new ArgumentNullException(nameof(peer), "Peer cannot be null for sending media group.");
-            }
-            
-            if (media is null || !media.Any())
-            {
-                _logger.LogError("SendMediaGroupAsync: Media collection is null or empty. Cannot send media group.");
-                throw new ArgumentException("Media collection cannot be null or empty for sending media group.", nameof(media));
+                _logger.LogError("SendMediaGroupAsync: Critical validation failed at entry. Aborting.");
+                await _notifToAdmin.SendNotificationAsync("❌ SendMediaGroupAsync validation failed. Peer or media was null.", CancellationToken.None);
+                throw new InvalidOperationException("Cannot send media group with invalid arguments.");
             }
 
             long peerIdForLog = GetPeerIdForLog(peer);
@@ -1748,15 +1700,8 @@ namespace Infrastructure.Services
                 string lockKey = $"send_media_group_peer_{peer.GetType().Name}_{peerIdForLog}";
                 using (await AsyncLock.LockAsync(lockKey).ConfigureAwait(false))
                 {
-                    // Double-check that client is still valid before making the API call
-                    if (_client is null)
-                    {
-                        _logger.LogError("SendMediaGroupAsync: Telegram client became null before API call. Cannot send media group.");
-                        throw new InvalidOperationException("Telegram API client became null during operation.");
-                    }
-                    
                     await _resiliencePipeline.ExecuteAsync(async (ctx, ct) =>
-                        await _client.SendAlbumAsync(
+                        await _client!.SendAlbumAsync(
                             peer: peer,
                             medias: media,
                             caption: currentCaption,
