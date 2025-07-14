@@ -1703,27 +1703,42 @@ namespace Infrastructure.Services
                 debugReport.AppendLine("**1. AI Caption Enhancement:**");
 
                 // Call the GeminiService for text-only enhancement using the extracted caption
-                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(extractedCaption, cancellationToken);
+                string? enhancedCaption = null;
                 var (currentCaption, currentEntities) = (extractedCaption, extractedEntities); // Default to extracted
-
-                if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
+                
+                try
                 {
-                    // If we got a direct result (not a job ID), use it immediately
-                    debugReport.AppendLine($"   - ✅ AI service returned enhanced caption.");
-                    (currentCaption, currentEntities) = FormatFinalMessage(enhancedCaption, null, debugReport); // Format the AI response
+                    enhancedCaption = await _geminiService.EnhanceMessageAsync(extractedCaption, cancellationToken);
+                    
+                    if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
+                    {
+                        // If we got a direct result (not a job ID), use it immediately
+                        debugReport.AppendLine($"   - ✅ AI service returned enhanced caption.");
+                        (currentCaption, currentEntities) = FormatFinalMessage(enhancedCaption, null, debugReport); // Format the AI response
+                    }
+                    else if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                    {
+                        // Extract job ID from the response
+                        var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
+                        debugReport.AppendLine($"   - 🔄 AI enhancement job enqueued. JobId: {actualJobId}");
+                        // For now, proceed with original caption and let the enhancement happen in background
+                        (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
+                    }
+                    else
+                    {
+                        debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
+                        (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
+                    }
                 }
-                else if (!string.IsNullOrWhiteSpace(enhancedCaption))
+                catch (Exception aiEx)
                 {
-                    // Extract job ID from the response
-                    var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
-                    debugReport.AppendLine($"   - 🔄 AI enhancement job enqueued. JobId: {actualJobId}");
-                    // For now, proceed with original caption and let the enhancement happen in background
-                    (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
-                }
-                else
-                {
-                    debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
-                    (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
+                    // CRITICAL: If AI enhancement fails, fall back to original caption
+                    debugReport.AppendLine($"   - ❌ AI enhancement failed: {aiEx.Message}");
+                    debugReport.AppendLine($"   - 🔄 Falling back to original caption without enhancement.");
+                    _logger.LogWarning(aiEx, "AI enhancement failed for Peer {PeerId}, falling back to original caption", peerIdForLog);
+                    
+                    // Use the original extracted caption and entities
+                    (currentCaption, currentEntities) = (extractedCaption, extractedEntities);
                 }
 
                 // === STAGE 2: DISPATCH ===================================================
