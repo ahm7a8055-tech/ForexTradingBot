@@ -1802,6 +1802,7 @@ namespace Infrastructure.Services
         }
 
 
+
         /// <summary>
         /// Encapsulates the logic for AI enhancement using text-only input.
         /// </summary>
