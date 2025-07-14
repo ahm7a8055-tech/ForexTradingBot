@@ -1571,56 +1571,144 @@ namespace Infrastructure.Services
         /// <summary>
         /// Generates a unique, deterministic, and collision-resistant cache key for a media group.
         /// This is the core of the idempotency logic to prevent duplicate album processing and sending.
+        /// Enhanced with content-based hashing, comprehensive media type support, and performance optimizations.
         /// </summary>
         /// <param name="media">The collection of media items in the album.</param>
         /// <param name="initialCaption">The initial caption, if any.</param>
         /// <returns>A unique string key suitable for caching.</returns>
         private static string GenerateAlbumCacheKey(ICollection<TL.InputMedia> media, string? initialCaption)
         {
-            // We use a sorted list of unique identifiers to ensure the key is
-            // the same regardless of the order of media items in the collection.
-            var identifiers = new List<string>();
-
-            foreach (var m in media)
+            // Early exit for empty media collections
+            if (media == null || media.Count == 0)
             {
-                switch (m)
-                {
-                    // For newly uploaded media, the local file path is the unique identifier.
-                    case TL.InputMediaUploadedPhoto up:
-                        identifiers.Add($"UPLOAD_PHOTO:{up.file.Name}");
-                        break;
-                    case TL.InputMediaUploadedDocument ud:
-                        identifiers.Add($"UPLOAD_DOC:{ud.file.Name}");
-                        break;
-
-                    // For existing Telegram media, the ID and access hash are the unique identifiers.
-                    case TL.InputMediaPhoto p when p.id is TL.InputPhoto ip:
-                        identifiers.Add($"EXISTING_PHOTO:{ip.id}_{ip.access_hash}");
-                        break;
-                    case TL.InputMediaDocument d when d.id is TL.InputDocument idoc:
-                        identifiers.Add($"EXISTING_DOC:{idoc.id}_{idoc.access_hash}");
-                        break;
-
-                    // Add other media types as needed
-                    default:
-                        // Add a generic identifier for unknown types to be safe
-                        identifiers.Add($"UNKNOWN_MEDIA:{m.GetType().Name}");
-                        break;
-                }
+                return "AlbumSent-EMPTY_MEDIA";
             }
 
-            // Sort the identifiers to make the key order-independent
-            identifiers.Sort(StringComparer.Ordinal);
-
-            // Combine the sorted identifiers and the initial caption into a single string
-            var combinedString = string.Join("|", identifiers) + $"|CAPTION:{initialCaption ?? "NULL"}";
-
-            // Hash the final string to create a short, unique, and safe cache key
-            using var sha256 = System.Security.Cryptography.SHA256.Create();
-            var hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(combinedString));
-            return $"AlbumSent-{Convert.ToBase64String(hashBytes)}";
+            // Use a more efficient StringBuilder for string concatenation
+            var keyBuilder = new StringBuilder(256); // Pre-allocate reasonable capacity
+            
+            // Process media items with comprehensive type support
+            var mediaIdentifiers = new List<string>(media.Count); // Pre-allocate list capacity
+            
+            foreach (var m in media)
+            {
+                if (m == null) continue;
+                
+                string identifier = m switch
+                {
+                    // Uploaded Media - Use file name for uniqueness (WTelegram doesn't expose file size)
+                    TL.InputMediaUploadedPhoto up => $"UPLOAD_PHOTO:{up.file.Name}",
+                    TL.InputMediaUploadedDocument ud => $"UPLOAD_DOC:{ud.file.Name}_{ud.mime_type}",
+                    
+                    // Existing Telegram Media - Use ID, access hash, and file reference
+                    TL.InputMediaPhoto p when p.id is TL.InputPhoto ip => 
+                        $"EXISTING_PHOTO:{ip.id}_{ip.access_hash}_{Convert.ToBase64String(ip.file_reference)}",
+                    TL.InputMediaDocument d when d.id is TL.InputDocument idoc => 
+                        $"EXISTING_DOC:{idoc.id}_{idoc.access_hash}_{Convert.ToBase64String(idoc.file_reference)}",
+                    
+                    // Contact Media
+                    TL.InputMediaContact contact => $"CONTACT:{contact.phone_number}_{contact.first_name}_{contact.last_name}",
+                    
+                    // Game Media
+                    TL.InputMediaGame game => $"GAME:{game.id}",
+                    
+                    // Poll Media
+                    TL.InputMediaPoll poll => $"POLL:{poll.poll.question}_{poll.poll.answers.Length}",
+                   
+                    
+                    // WebPage Media
+                    TL.InputMediaWebPage webPage => $"WEBPAGE:{webPage.url}",
+         
+                    
+                    // Unknown or unsupported types
+                    _ => $"UNKNOWN_MEDIA:{m.GetType().Name}_{m.GetHashCode()}"
+                };
+                
+                mediaIdentifiers.Add(identifier);
+            }
+            
+            // Sort identifiers for deterministic ordering (regardless of input order)
+            mediaIdentifiers.Sort(StringComparer.Ordinal);
+            
+            // Build the combined string efficiently
+            keyBuilder.AppendJoin("|", mediaIdentifiers);
+            
+            // Add caption information with normalization
+            var normalizedCaption = NormalizeCaption(initialCaption);
+            keyBuilder.Append("|CAPTION:");
+            keyBuilder.Append(normalizedCaption);
+            
+            // Add media count for additional uniqueness
+            keyBuilder.Append("|COUNT:");
+            keyBuilder.Append(media.Count);
+            
+            // Generate a more robust hash using multiple algorithms for collision resistance
+            var combinedString = keyBuilder.ToString();
+            var finalHash = GenerateRobustHash(combinedString);
+            
+            return $"AlbumSent-{finalHash}";
         }
-
+        
+        /// <summary>
+        /// Normalizes caption text for consistent hashing by removing extra whitespace and normalizing line endings.
+        /// </summary>
+        /// <param name="caption">The caption to normalize.</param>
+        /// <returns>Normalized caption string.</returns>
+        private static string NormalizeCaption(string? caption)
+        {
+            if (string.IsNullOrWhiteSpace(caption))
+                return "NULL";
+                
+            // Normalize whitespace and line endings
+            return caption
+                .Replace("\r\n", "\n")  // Normalize line endings
+                .Replace("\r", "\n")    // Handle old Mac line endings
+                .Trim()                 // Remove leading/trailing whitespace
+                .Replace("\n", "\\n");  // Escape newlines for consistent representation
+        }
+        
+        /// <summary>
+        /// Generates a robust hash using multiple algorithms to minimize collision probability.
+        /// </summary>
+        /// <param name="input">The input string to hash.</param>
+        /// <returns>A base64-encoded hash string.</returns>
+        private static string GenerateRobustHash(string input)
+        {
+            // Use SHA256 as primary hash
+            using var sha256 = System.Security.Cryptography.SHA256.Create();
+            var hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
+            
+            // For additional collision resistance, we can combine with a simpler hash
+            // This is especially useful for large media collections
+            var combinedHash = new byte[hashBytes.Length + 4];
+            Array.Copy(hashBytes, 0, combinedHash, 0, hashBytes.Length);
+            
+            // Add a simple checksum as additional entropy
+            var checksum = CalculateSimpleChecksum(input);
+            var checksumBytes = BitConverter.GetBytes(checksum);
+            Array.Copy(checksumBytes, 0, combinedHash, hashBytes.Length, 4);
+            
+            // Return a shorter but still unique hash
+            return Convert.ToBase64String(combinedHash)
+                .Replace("+", "-")  // URL-safe characters
+                .Replace("/", "_")
+                .Replace("=", "");  // Remove padding for shorter keys
+        }
+        
+        /// <summary>
+        /// Calculates a simple checksum for additional hash entropy.
+        /// </summary>
+        /// <param name="input">The input string.</param>
+        /// <returns>A 32-bit checksum.</returns>
+        private static uint CalculateSimpleChecksum(string input)
+        {
+            uint checksum = 0;
+            foreach (char c in input)
+            {
+                checksum = ((checksum << 5) + checksum) + c; // Simple rolling hash
+            }
+            return checksum;
+        }
 
         /// <summary>
         /// Sends a group of media items as an album. This operation is IDEMPOTENT, meaning it will

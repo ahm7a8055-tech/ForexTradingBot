@@ -458,6 +458,37 @@ namespace Application.Features.Forwarding.Services
             _logger.LogInformation("Job:{JobId}: ProcessCustomSendAsync: Entering custom send logic for Rule: '{RuleName}'. TargetPeer: {TargetPeerId}. HasMediaGroupItems: {HasMediaGroupItems}. InitialContentPreview: '{InitialContentPreview}'.",
                 jobId, rule.RuleName, GetInputPeerIdValueForLogging(toPeer), mediaGroupItems?.Any() ?? false, TruncateString(initialMessageContentFromOrchestrator, 50));
 
+            // === NEW: EXTRACT CAPTION FROM MEDIA ITEMS ===
+            string extractedCaption = initialMessageContentFromOrchestrator ?? string.Empty;
+            TL.MessageEntity[]? extractedEntities = initialEntitiesFromOrchestrator?.ToArray();
+            
+            // If the main message content is empty but we have media items with captions, extract them
+            if (string.IsNullOrWhiteSpace(extractedCaption) && mediaGroupItems?.Any() == true)
+            {
+                var mediaCaptions = mediaGroupItems
+                    .Where(item => !string.IsNullOrWhiteSpace(item.Caption))
+                    .Select(item => item.Caption)
+                    .ToList();
+                
+                if (mediaCaptions.Any())
+                {
+                    // Use the first non-empty caption from media items
+                    extractedCaption = mediaCaptions.First();
+                    _logger.LogInformation("Job:{JobId}: ProcessCustomSendAsync: Extracted caption from media items: '{ExtractedCaptionPreview}'", 
+                        jobId, TruncateString(extractedCaption, 100));
+                    
+                    // Also extract entities from the first media item that has them
+                    var firstMediaWithEntities = mediaGroupItems.FirstOrDefault(item => item.Entities?.Any() == true);
+                    if (firstMediaWithEntities?.Entities != null)
+                    {
+                        extractedEntities = firstMediaWithEntities.Entities.ToArray();
+                        _logger.LogDebug("Job:{JobId}: ProcessCustomSendAsync: Extracted {EntityCount} entities from media items", 
+                            jobId, extractedEntities.Length);
+                    }
+                }
+            }
+            // === END: EXTRACT CAPTION FROM MEDIA ITEMS ===
+
             string finalCaption;
             TL.MessageEntity[]? finalEntities;
 
@@ -479,10 +510,10 @@ namespace Application.Features.Forwarding.Services
                 else
                 {
                     // If not dropping caption, apply all other text/entity edits.
-                    // Assumes ApplyEditOptions returns (string, TL.MessageEntity[]?).
+                    // Use the extracted caption instead of the original
                     (finalCaption, finalEntities) = ApplyEditOptions(
-                        initialMessageContentFromOrchestrator,
-                        initialEntitiesFromOrchestrator,
+                        extractedCaption, // Use extracted caption instead of initialMessageContentFromOrchestrator
+                        extractedEntities, // Use extracted entities instead of initialEntitiesFromOrchestrator
                         rule.EditOptions,
                         null, // This parameter seems unused or for internal context in ApplyEditOptions
                         jobId
@@ -492,10 +523,10 @@ namespace Application.Features.Forwarding.Services
             }
             else
             {
-                // No edit options, use original content as is.
-                finalCaption = initialMessageContentFromOrchestrator ?? string.Empty;
-                finalEntities = initialEntitiesFromOrchestrator?.ToArray(); // Ensure it's an array if not already.
-                _logger.LogDebug("Job:{JobId}: ProcessCustomSendAsync: No EditOptions configured. Using original content as final.", jobId);
+                // No edit options, use extracted content as is.
+                finalCaption = extractedCaption; // Use extracted caption instead of initialMessageContentFromOrchestrator
+                finalEntities = extractedEntities; // Use extracted entities instead of initialEntitiesFromOrchestrator
+                _logger.LogDebug("Job:{JobId}: ProcessCustomSendAsync: No EditOptions configured. Using extracted content as final.", jobId);
             }
 
             // Level 2: Log the final state of caption and entities after all edits.
