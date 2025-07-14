@@ -137,7 +137,8 @@ try
             var configForDefaults = currentConfigBuilder.Build();
 
             Log.Information("Registering defined settings with DynamicConfigurationService (within ConfigureAppConfiguration)...");
-            void RegisterSetting(string key, bool isSensitive, string description) {
+            void RegisterSetting(string key, bool isSensitive, string description)
+            {
                 service.RegisterSettingDefinition(key, configForDefaults[key], isSensitive, description);
             }
 
@@ -1296,7 +1297,7 @@ finally
 }
 #endregion
 
-    #region Configuration Helper
+#region Configuration Helper
 /// <summary>
 /// Helper class to prompt the user for Telegram API credentials.
 /// </summary>
@@ -1348,7 +1349,7 @@ public static class ConfigurationHelper
     }
     #endregion
 
-#region TelegramPanel
+    #region TelegramPanel
 
     /// <summary>
     /// Prompts the user to enter the Telegram Panel Bot Token.
@@ -1385,7 +1386,7 @@ public static class ConfigurationHelper
 
     #endregion
 
-#region CryptoPay
+    #region CryptoPay
     /// <summary>
     /// Prompt the user for their CryptoPay API token.
     /// </summary>
