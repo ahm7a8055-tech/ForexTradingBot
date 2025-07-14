@@ -38,8 +38,6 @@ using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Logging;
 using TelegramPanel.Infrastructure.Services;
 using WebAPI.Middleware; // Added for AuthRedirectMiddleware
-using Polly;
-using Hangfire.Redis;
 
 #endregion
 
@@ -278,21 +276,13 @@ try
         // This registration is now guaranteed to work because redisConnectionString will always have a value.
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
+            // We re-read from the configuration to ensure we use the potentially updated value.
             string? finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
             ConfigurationOptions options = ConfigurationOptions.Parse(finalConnectionString!);
             options.AbortOnConnectFail = false;
             options.ConnectTimeout = 5000;
             options.SyncTimeout = 5000;
-
-            // Polly retry logic for Redis connection
-            var policy = Polly.Policy
-                .Handle<StackExchange.Redis.RedisConnectionException>()
-                .WaitAndRetry(3, retryAttempt => TimeSpan.FromSeconds(2),
-                    (exception, timeSpan, retryCount, context) =>
-                    {
-                        Log.Warning(exception, $"Retrying Redis connection (attempt {retryCount}) after {timeSpan.TotalSeconds} seconds...");
-                    });
-            return policy.Execute(() => ConnectionMultiplexer.Connect(options));
+            return ConnectionMultiplexer.Connect(options);
         });
 
         Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
@@ -300,6 +290,8 @@ try
     catch (Exception ex)
     {
         Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
+
+        // Register the fallback in-memory Redis service
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             ILogger<FallbackRedisService> logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
@@ -310,8 +302,8 @@ try
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
     // Note: We'll test Redis connectivity after the application starts, not during configuration
     // This allows the EmbeddedRedisService to start the Redis server first if needed.
-    #endregion
 
+    #endregion
 
     #region AutoMapper and LoggingSanitizer (region master)
     builder.Services.AddAutoMapper(typeof(Program));
@@ -1049,8 +1041,8 @@ try
 
         try
         {
-            // Wait a bit longer for the EmbeddedRedisService to start Redis if needed
-            await Task.Delay(TimeSpan.FromSeconds(8));
+            // Wait a bit for the EmbeddedRedisService to start Redis if needed
+            await Task.Delay(TimeSpan.FromSeconds(3));
 
             IConnectionMultiplexer redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
             IDatabase redisDb = redisConnection.GetDatabase();
@@ -1073,9 +1065,11 @@ try
         }
         catch (Exception ex)
         {
+            // SECURITY: Sanitize exception details to prevent sensitive data exposure
             var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
             Log.Warning(sanitizedDetails, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
 
+            // In release mode, prompt user for options
             if (!app.Environment.IsDevelopment())
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
@@ -1573,5 +1567,6 @@ public static class SystemInfoHelper
     }
 }
 #endregion
+
 #endregion
 #endregion

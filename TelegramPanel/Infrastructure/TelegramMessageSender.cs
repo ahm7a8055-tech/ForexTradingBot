@@ -741,18 +741,18 @@ namespace TelegramPanel.Infrastructure
                     if (!response.IsSuccessStatusCode)
                     {
                         _logger.LogError("Image URL check failed: {Url} returned status {StatusCode}", photoUrlOrFileId, response.StatusCode);
-                        throw new InvalidOperationException($"The provided photo URL could not be accessed (status: {response.StatusCode}).");
+                        return; // Skip sending if not accessible
                     }
                     if (!response.Content.Headers.ContentType?.MediaType?.StartsWith("image/") ?? true)
                     {
                         _logger.LogError("Image URL check failed: {Url} is not an image. Content-Type: {ContentType}", photoUrlOrFileId, response.Content.Headers.ContentType);
-                        throw new InvalidOperationException($"The provided photo URL is not a direct image. Content-Type: {response.Content.Headers.ContentType}");
+                        return; // Skip sending if not an image
                     }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to verify image URL before sending to Telegram: {Url}", photoUrlOrFileId);
-                    throw;
+                    return; // Skip sending on any error
                 }
             }
 
