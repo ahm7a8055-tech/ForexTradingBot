@@ -25,6 +25,8 @@ using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Formatters; // For TelegramMessageFormatter
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
+using TelegramPanel.Application.CommandHandlers.MainMenu;
+using Shared.Utilities.DependencyInjection;
 #endregion
 
 namespace BackgroundTasks.Services
@@ -51,6 +53,7 @@ namespace BackgroundTasks.Services
         private const string TELEGRAM_API_THROTTLE_KEY = "telegram-api-global";
         private const int TELEGRAM_MESSAGES_PER_SECOND_LIMIT = 28;
         private readonly ISettingsService _settingsService;
+        private readonly IServiceProvider _serviceProvider;
         #endregion
 
         #region Constructor
@@ -91,7 +94,8 @@ namespace BackgroundTasks.Services
             IUserService userService,
             INewsItemRepository newsItemRepository,
             IConnectionMultiplexer redisConnection, IDistributedThrottler globalApiThrottler,
-            INotificationRateLimiter rateLimiter)
+            INotificationRateLimiter rateLimiter,
+            IServiceProvider serviceProvider)
         {
             _settingsService = settingsService;
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
@@ -101,6 +105,7 @@ namespace BackgroundTasks.Services
             _newsItemRepository = newsItemRepository ?? throw new ArgumentNullException(nameof(newsItemRepository));
             _rateLimiter = rateLimiter ?? throw new ArgumentNullException(nameof(rateLimiter));
             _globalApiThrottler = globalApiThrottler ?? throw new ArgumentNullException(nameof(globalApiThrottler));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
             if (redisConnection == null)
             {
                 throw new ArgumentNullException(nameof(redisConnection));
@@ -813,7 +818,24 @@ namespace BackgroundTasks.Services
             {
                 _logger.LogCritical(apiEx, "PERMANENT Send Failure for User {UserId}. ErrorCode: {ErrorCode}. API Message: '{ApiMessage}'.",
                     payload.TargetTelegramUserId, apiEx.ErrorCode, apiEx.Message);
-
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "NotificationSendingService",
+                        EventType = "SendNotification.ApiRequestException",
+                        Message = apiEx.Message,
+                        Details = apiEx.StackTrace,
+                        Exception = apiEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 if (apiEx.ErrorCode == 403 || (apiEx.ErrorCode == 400 && apiEx.Message.Contains("chat not found", StringComparison.OrdinalIgnoreCase)))
                 {
                     _logger.LogWarning("Attempting to mark user {UserId} as unreachable due to permanent error (Code: {ErrorCode}).", payload.TargetTelegramUserId, apiEx.ErrorCode);
@@ -824,6 +846,24 @@ namespace BackgroundTasks.Services
                     catch (Exception markEx)
                     {
                         _logger.LogError(markEx, "FAILED during self-healing attempt to mark user {UserId} as unreachable. Re-throwing for Hangfire.", payload.TargetTelegramUserId);
+                        // Background error log
+                        _ = Task.Run(async () =>
+                        {
+                            using var scope = _serviceProvider.CreateScope();
+                            var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                            await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                            {
+                                Timestamp = DateTime.UtcNow,
+                                Level = "Error",
+                                Source = "NotificationSendingService",
+                                EventType = "SendNotification.MarkUnreachableError",
+                                Message = markEx.Message,
+                                Details = markEx.StackTrace,
+                                Exception = markEx.ToString(),
+                                Status = "Failed",
+                                CreatedAt = DateTime.UtcNow
+                            });
+                        });
                         throw; // Re-throwing ensures Hangfire knows this job attempt failed.
                     }
                 }
@@ -833,6 +873,24 @@ namespace BackgroundTasks.Services
                 // This catch block handles general exceptions that are not specific API errors.
                 // It's crucial for telling Hangfire that a job attempt failed so it can retry based on [AutomaticRetry].
                 _logger.LogError(ex, "FATAL or UNRESOLVED exception for User {UserId}. Re-throwing for Hangfire.", payload.TargetTelegramUserId);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "NotificationSendingService",
+                        EventType = "SendNotification.GeneralException",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw;
             }
         }

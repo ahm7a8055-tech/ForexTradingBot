@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, ...</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, ...</value>
+  </resheader>
+  <data name="Welcome" xml:space="preserve">
+    <value>🎉 Добро пожаловать в Forex AI Analyzer!</value>
+  </data>
+  <data name="MainMenuTitle" xml:space="preserve">
+    <value>Главное меню</value>
+  </data>
+  <data name="ViewSignals" xml:space="preserve">
+    <value>📈 Просмотр сигналов</value>
+  </data>
+  <data name="MarketAnalysis" xml:space="preserve">
+    <value>📊 Анализ рынка</value>
+  </data>
+  <data name="NewsAnalysis" xml:space="preserve">
+    <value>🔍 Анализ новостей</value>
+  </data>
+  <data name="EconomicCalendar" xml:space="preserve">
+    <value>🗓️ Экономический календарь</value>
+  </data>
+  <data name="CryptoPrices" xml:space="preserve">
+    <value>🪙 Крипто-цены</value>
+  </data>
+  <data name="SubscribePlans" xml:space="preserve">
+    <value>💎 Подписка / Тарифы</value>
+  </data>
+  <data name="LearnGrow" xml:space="preserve">
+    <value>📚 Учиться и расти</value>
+  </data>
+  <data name="Settings" xml:space="preserve">
+    <value>⚙️ Настройки</value>
+  </data>
+  <data name="MyProfile" xml:space="preserve">
+    <value>👤 Мой профиль</value>
+  </data>
+</root> 

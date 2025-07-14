@@ -1,25 +1,33 @@
 ﻿// File: WebAPI/Program.cs
 
 #region Usings
-using Application;                          
+using Application;
 using Application.Common.Interfaces;
 using Application.Features.Forwarding.Extensions;
-using BackgroundTasks;                   
+using Application.Interfaces;
+using Application.Services; // For IDiagnosticsService, ISettingsService
+using BackgroundTasks;
+using BackgroundTasks.Services;
 using Dapper;
-using Hangfire;                            
-using Hangfire.Dashboard;               
+using Hangfire;
+using Hangfire.Dashboard;
 using Hangfire.MemoryStorage;
 using Hangfire.PostgreSql;
 using Hangfire.Storage.SQLite;
+using Infrastructure.Configuration; // For DatabaseConfigurationSource/Provider
 using Infrastructure.Data;
 using Infrastructure.ExternalServices;
 using Infrastructure.Features.Forwarding.Extensions;
+using Infrastructure.Security; // For SettingsProtectionService
 using Infrastructure.Services;
+using Microsoft.AspNetCore.Authentication.Cookies; // Added for Cookie Authentication
+using Microsoft.AspNetCore.DataProtection; // Added for Data Protection
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;             // برای OpenApiInfo
 using Serilog;                              // برای Log, LoggerConfiguration, UseSerilog
 using Serilog.Enrichers.WithCaller;
+using Shared.Security; // For SecureExceptionSanitizer
 using Shared.Settings;                    // برای CryptoPaySettings (از پروژه Shared)
 using StackExchange.Redis;
 using System.Data;
@@ -29,24 +37,9 @@ using System.Text.Json.Serialization;
 using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Logging;
 using TelegramPanel.Infrastructure.Services;
-using System.Security.Cryptography;
-using System.Text;
-using Application.Interfaces;
-using Microsoft.Extensions.Logging;
-using Telegram.Bot;
-using Telegram.Bot.Exceptions;
-using Telegram.Bot.Types.Enums;
-using BackgroundTasks.Services;
-using Microsoft.AspNetCore.Authentication.Cookies; // Added for Cookie Authentication
 using WebAPI.Middleware; // Added for AuthRedirectMiddleware
-using Microsoft.AspNetCore.DataProtection; // Added for Data Protection
-using System.IO; // Added for Path.Combine
-using Infrastructure.Security; // For SettingsProtectionService
-using Infrastructure.Services; // For DynamicConfigurationService, SettingsService, DiagnosticsService
-using Infrastructure.Configuration; // For DatabaseConfigurationSource/Provider
-using Application.Interfaces;
-using Application.Services; // For IDiagnosticsService, ISettingsService
-using Shared.Security; // For SecureExceptionSanitizer
+using Polly;
+using Hangfire.Redis;
 
 #endregion
 
@@ -284,13 +277,21 @@ try
         // This registration is now guaranteed to work because redisConnectionString will always have a value.
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            // We re-read from the configuration to ensure we use the potentially updated value.
             string? finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
             ConfigurationOptions options = ConfigurationOptions.Parse(finalConnectionString!);
             options.AbortOnConnectFail = false;
             options.ConnectTimeout = 5000;
             options.SyncTimeout = 5000;
-            return ConnectionMultiplexer.Connect(options);
+
+            // Polly retry logic for Redis connection
+            var policy = Polly.Policy
+                .Handle<StackExchange.Redis.RedisConnectionException>()
+                .WaitAndRetry(3, retryAttempt => TimeSpan.FromSeconds(2),
+                    (exception, timeSpan, retryCount, context) =>
+                    {
+                        Log.Warning(exception, $"Retrying Redis connection (attempt {retryCount}) after {timeSpan.TotalSeconds} seconds...");
+                    });
+            return policy.Execute(() => ConnectionMultiplexer.Connect(options));
         });
 
         Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
@@ -298,8 +299,6 @@ try
     catch (Exception ex)
     {
         Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
-
-        // Register the fallback in-memory Redis service
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             ILogger<FallbackRedisService> logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
@@ -310,8 +309,8 @@ try
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
     // Note: We'll test Redis connectivity after the application starts, not during configuration
     // This allows the EmbeddedRedisService to start the Redis server first if needed.
-
     #endregion
+
 
     #region AutoMapper and LoggingSanitizer (region master)
     builder.Services.AddAutoMapper(typeof(Program));
@@ -1049,8 +1048,8 @@ try
 
         try
         {
-            // Wait a bit for the EmbeddedRedisService to start Redis if needed
-            await Task.Delay(TimeSpan.FromSeconds(3));
+            // Wait a bit longer for the EmbeddedRedisService to start Redis if needed
+            await Task.Delay(TimeSpan.FromSeconds(8));
 
             IConnectionMultiplexer redisConnection = app.Services.GetRequiredService<IConnectionMultiplexer>();
             IDatabase redisDb = redisConnection.GetDatabase();
@@ -1073,11 +1072,9 @@ try
         }
         catch (Exception ex)
         {
-            // SECURITY: Sanitize exception details to prevent sensitive data exposure
             var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
             Log.Warning(sanitizedDetails, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
 
-            // In release mode, prompt user for options
             if (!app.Environment.IsDevelopment())
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
@@ -1575,6 +1572,5 @@ public static class SystemInfoHelper
     }
 }
 #endregion
-
 #endregion
 #endregion

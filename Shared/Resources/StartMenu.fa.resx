@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, ...</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, ...</value>
+  </resheader>
+  <data name="Welcome" xml:space="preserve">
+    <value>🎉 به تحلیلگر هوشمند فارکس خوش آمدید!</value>
+  </data>
+  <data name="MainMenuTitle" xml:space="preserve">
+    <value>منوی اصلی</value>
+  </data>
+  <data name="ViewSignals" xml:space="preserve">
+    <value>📈 مشاهده سیگنال‌ها</value>
+  </data>
+  <data name="MarketAnalysis" xml:space="preserve">
+    <value>📊 تحلیل بازار</value>
+  </data>
+  <data name="NewsAnalysis" xml:space="preserve">
+    <value>🔍 تحلیل اخبار</value>
+  </data>
+  <data name="EconomicCalendar" xml:space="preserve">
+    <value>🗓️ تقویم اقتصادی</value>
+  </data>
+  <data name="CryptoPrices" xml:space="preserve">
+    <value>🪙 قیمت ارزهای دیجیتال</value>
+  </data>
+  <data name="SubscribePlans" xml:space="preserve">
+    <value>💎 اشتراک / پلن‌ها</value>
+  </data>
+  <data name="LearnGrow" xml:space="preserve">
+    <value>📚 یادگیری و رشد</value>
+  </data>
+  <data name="Settings" xml:space="preserve">
+    <value>⚙️ تنظیمات</value>
+  </data>
+  <data name="MyProfile" xml:space="preserve">
+    <value>👤 پروفایل من</value>
+  </data>
+</root> 

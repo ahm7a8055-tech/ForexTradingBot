@@ -1,4 +1,7 @@
-﻿using Microsoft.Extensions.Caching.Memory;
+﻿using Application.Common.Interfaces;
+using Domain.Entities;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Polly; // اضافه شده برای Polly
 using Polly.Retry; // اضافه شده برای سیاست‌های Retry
@@ -327,6 +330,23 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
             {
                 // 3. LAUNCHER SAFETY NET: Prevents the main pipeline from crashing due to an error here.
                 _logger.LogError(ex, "An unexpected error occurred while trying to launch the 'unknown update' handler for Update ID {UpdateId}.", update.Id);
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UpdateProcessingService",
+                        EventType = "HandleUnknownOrUnmatchedUpdateAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
             }
 
             return Task.CompletedTask;
@@ -391,6 +411,23 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
             {
                 // Catch all other exceptions to prevent the background task from crashing the application.
                 _logger.LogError(ex, "An unhandled exception occurred in the 'RespondToUnknownUpdateAndForgetAsync' background task for ChatId {ChatId}.", chatId);
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UpdateProcessingService",
+                        EventType = "RespondToUnknownUpdateAndForgetAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
             }
         }
 
@@ -408,6 +445,23 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
                 update.Id,
                 exception.GetType().Name,
                 exception.Message);
+            _ = Task.Run(async () =>
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                await repo.AddAsync(new ProMonitoringLog
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Level = "Error",
+                    Source = "UpdateProcessingService",
+                    EventType = "HandleProcessingErrorAsync",
+                    Message = exception.Message,
+                    Details = exception.StackTrace,
+                    Exception = exception.ToString(),
+                    Status = "Failed",
+                    CreatedAt = DateTime.UtcNow
+                });
+            });
 
             // 2. MORE COMPREHENSIVE ChatId/UserId retrieval.
             long? chatId = update.Message?.Chat?.Id
@@ -449,6 +503,23 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
                         chatId.Value,
                         update.Id,
                         exception.GetType().Name); // Include original exception type for context.
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Critical",
+                            Source = "UpdateProcessingService",
+                            EventType = "HandleProcessingErrorAsync.SendError",
+                            Message = sendEx.Message,
+                            Details = sendEx.StackTrace,
+                            Exception = sendEx.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                 }
             }
             else

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, ...</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, ...</value>
+  </resheader>
+  <data name="Welcome" xml:space="preserve">
+    <value>🎉 Welcome to the Forex AI Analyzer!</value>
+  </data>
+  <data name="MainMenuTitle" xml:space="preserve">
+    <value>Main Menu</value>
+  </data>
+  <data name="ViewSignals" xml:space="preserve">
+    <value>📈 View Signals</value>
+  </data>
+  <data name="MarketAnalysis" xml:space="preserve">
+    <value>📊 Market Analysis</value>
+  </data>
+  <data name="NewsAnalysis" xml:space="preserve">
+    <value>🔍 News Analysis</value>
+  </data>
+  <data name="EconomicCalendar" xml:space="preserve">
+    <value>🗓️ Economic Calendar</value>
+  </data>
+  <data name="CryptoPrices" xml:space="preserve">
+    <value>🪙 Crypto Prices</value>
+  </data>
+  <data name="SubscribePlans" xml:space="preserve">
+    <value>💎 Subscribe / Plans</value>
+  </data>
+  <data name="LearnGrow" xml:space="preserve">
+    <value>📚 Learn &amp; Grow</value>
+  </data>
+  <data name="Settings" xml:space="preserve">
+    <value>⚙️ Settings</value>
+  </data>
+  <data name="MyProfile" xml:space="preserve">
+    <value>👤 My Profile</value>
+  </data>
+</root> 

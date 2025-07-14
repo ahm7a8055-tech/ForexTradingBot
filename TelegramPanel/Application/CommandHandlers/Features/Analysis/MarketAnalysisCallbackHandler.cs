@@ -1,4 +1,7 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Application.Common.Interfaces;
+using Domain.Entities;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -18,6 +21,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
         private readonly ILogger<MarketAnalysisCallbackHandler> _logger;
         private readonly ITelegramMessageSender _messageSender;
         private readonly IMarketDataService _marketDataService;
+        private readonly IServiceProvider _serviceProvider;
 
         private const string MarketAnalysisCallback = "market_analysis";
         private const string RefreshMarketDataCallback = "refresh_market_data";
@@ -66,12 +70,14 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
             ILogger<MarketAnalysisCallbackHandler> logger,
             ITelegramMessageSender messageSender,
             IMarketDataService marketDataService,
-            IActualTelegramMessageActions directMessageSender)
+            IActualTelegramMessageActions directMessageSender,
+            IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _messageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
             _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
             _directMessageSender = directMessageSender ?? throw new ArgumentNullException(nameof(directMessageSender));
+            _serviceProvider = serviceProvider;
         }
 
         public bool CanHandle(Update update)
@@ -669,6 +675,24 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
                 _logger.LogError(exWhileReporting, "An error occurred within the error reporting tasks for {Symbol}. Some reporting might have failed.", symbol);
                 // Do NOT re-throw exWhileReporting if you want the primary service error to be the main focus.
                 // This method's primary goal is to log the original error and attempt reporting.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "MarketAnalysisCallbackHandler",
+                        EventType = "HandleServiceErrorAsync.ReportingError",
+                        Message = exWhileReporting.Message,
+                        Details = exWhileReporting.StackTrace,
+                        Exception = exWhileReporting.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
             }
 
             // The original service error (ex) has already been logged at the start of the method.

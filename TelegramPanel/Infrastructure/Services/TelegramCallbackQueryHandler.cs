@@ -1,3 +1,6 @@
+using Application.Common.Interfaces;
+using Domain.Entities;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -20,6 +23,7 @@ namespace TelegramPanel.Infrastructure.Services
         private readonly ILogger<TelegramCallbackQueryHandler> _logger;
         private readonly ITelegramBotClient _botClient;
         private readonly IMarketDataService _marketDataService;
+        private readonly IServiceProvider _serviceProvider;
 
         #endregion
 
@@ -31,15 +35,18 @@ namespace TelegramPanel.Infrastructure.Services
         /// <param name="logger">The logger for logging messages.</param>
         /// <param name="botClient">The Telegram bot client for interacting with the Telegram API.</param>
         /// <param name="marketDataService">The service for retrieving market data.</param>
+        /// <param name="serviceProvider">The service provider for dependency injection.</param>
         /// <exception cref="ArgumentNullException">Thrown if logger, botClient, or marketDataService is null.</exception>
         public TelegramCallbackQueryHandler(
             ILogger<TelegramCallbackQueryHandler> logger,
             ITelegramBotClient botClient,
-            IMarketDataService marketDataService)
+            IMarketDataService marketDataService,
+            IServiceProvider serviceProvider)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
             _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         }
 
         #endregion
@@ -94,6 +101,24 @@ namespace TelegramPanel.Infrastructure.Services
                 catch (Exception ackEx)
                 {
                     _logger.LogError(ackEx, "Failed to acknowledge callback query with empty data. CallbackQueryID: {CallbackQueryId}", callbackQuery.Id);
+                    // Background error log
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "TelegramCallbackQueryHandler",
+                            EventType = "AcknowledgeCallbackQuery.EmptyData",
+                            Message = ackEx.Message,
+                            Details = ackEx.StackTrace,
+                            Exception = ackEx.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                 }
                 return;
             }
@@ -132,6 +157,24 @@ namespace TelegramPanel.Infrastructure.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error handling callback query for data: {CallbackData}. CallbackQueryID: {CallbackQueryId}", callbackQuery.Data, callbackQuery.Id);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "TelegramCallbackQueryHandler",
+                        EventType = "HandleCallbackQuery.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 try
                 {
                     // Attempt to notify the user about the error.
@@ -141,6 +184,24 @@ namespace TelegramPanel.Infrastructure.Services
                 catch (Exception ackEx)
                 {
                     _logger.LogError(ackEx, "Failed to acknowledge callback query after error. CallbackQueryID: {CallbackQueryId}", callbackQuery.Id);
+                    // Background error log
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "TelegramCallbackQueryHandler",
+                            EventType = "AcknowledgeCallbackQuery.Error",
+                            Message = ackEx.Message,
+                            Details = ackEx.StackTrace,
+                            Exception = ackEx.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                 }
             }
         }

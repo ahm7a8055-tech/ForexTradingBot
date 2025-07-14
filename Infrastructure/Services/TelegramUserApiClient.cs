@@ -9,12 +9,10 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Retry;
-using System;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Channels;
 using TL;
 #endregion
@@ -934,6 +932,23 @@ namespace Infrastructure.Services
             catch (IOException ioEx)
             {
                 _logger.LogError(ioEx, "ConnectAndLoginAsync: A low-level network I/O error occurred. Check network connectivity.");
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "TelegramUserApiClient",
+                        EventType = "ConnectAndLoginAsync.IOError",
+                        Message = ioEx.Message,
+                        Details = ioEx.StackTrace,
+                        Exception = ioEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 IsConnected = false;
                 throw;
             }
@@ -946,12 +961,46 @@ namespace Infrastructure.Services
             catch (TL.RpcException rpcEx)
             {
                 _logger.LogError(rpcEx, "ConnectAndLoginAsync: Telegram API (RPC) error: {ErrorTypeString}, Code: {ErrorCode}.", rpcEx.Message, rpcEx.Code);
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "TelegramUserApiClient",
+                        EventType = "ConnectAndLoginAsync.RpcError",
+                        Message = rpcEx.Message,
+                        Details = rpcEx.StackTrace,
+                        Exception = rpcEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 IsConnected = false;
                 throw;
             }
             catch (Exception ex)
             {
                 _logger.LogCritical(ex, "ConnectAndLoginAsync: Critical, unclassified error occurred.");
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "TelegramUserApiClient",
+                        EventType = "ConnectAndLoginAsync.Critical",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 IsConnected = false;
                 throw;
             }

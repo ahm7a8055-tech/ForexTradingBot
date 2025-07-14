@@ -20,6 +20,7 @@ using Hangfire;
 using HtmlAgilityPack;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -203,6 +204,8 @@ namespace Infrastructure.Services
         /// </summary>
         private readonly AsyncRetryPolicy _dbRetryPolicy;
 
+        private readonly IServiceProvider _serviceProvider;
+
         #endregion
 
         #region Database Column Length Constants
@@ -377,6 +380,7 @@ namespace Infrastructure.Services
         /// <param name="mapper">AutoMapper instance for object-to-object mapping.</param>
         /// <param name="logger">Logger for capturing detailed diagnostic information.</param>
         /// <param name="backgroundJobClient">Hangfire client to enqueue background processing jobs.</param>
+        /// <param name="serviceProvider">Service provider for dependency injection.</param>
         /// <exception cref="ArgumentNullException">Thrown if any injected dependency is null.</exception>
         /// <exception cref="InvalidOperationException">Thrown if the required database connection string is not found.</exception>
         public RssReaderService(
@@ -386,7 +390,8 @@ namespace Infrastructure.Services
         IOptions<RssReaderServiceSettings> settingsOptions,
         IMapper mapper,
         ILogger<RssReaderService> logger,
-        IBackgroundJobClient backgroundJobClient)
+        IBackgroundJobClient backgroundJobClient,
+        IServiceProvider serviceProvider)
         {
             // --- Dependency Validation ---
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -397,6 +402,7 @@ namespace Infrastructure.Services
             _redis = redis;
             _connectionString = configuration.GetConnectionString("DefaultConnection")
                                 ?? throw new InvalidOperationException("The 'DefaultConnection' connection string was not found in the application configuration.");
+            _serviceProvider = serviceProvider;
 
             _logger.LogInformation("Initializing RssReaderService with UserAgent: {UserAgent}", _settings.UserAgent);
 
@@ -544,6 +550,23 @@ namespace Infrastructure.Services
             {
                 // Case E: A final safety net for any other unexpected errors during the pipeline.
                 _logger.LogCritical(ex, "An unexpected critical error occurred during the fetch pipeline for RssSource '{SourceName}' (ID: {RssSourceId}).", rssSource.SourceName, rssSource.Id);
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "RssReaderService",
+                        EventType = "FetchPipeline",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 outcome = RssFetchOutcome.Failure(RssFetchErrorType.Unknown, $"An unexpected error occurred: {ex.Message}", ex);
             }
 
@@ -581,6 +604,23 @@ namespace Infrastructure.Services
             catch (Exception deleteEx)
             {
                 _logger.LogCritical(deleteEx, "SELF-HEALING FAILED: Could not delete source {RssSourceId}. Manual inspection is required.", rssSource.Id);
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "RssReaderService",
+                        EventType = "HandleDatabaseErrorByDeletingSourceAsync",
+                        Message = deleteEx.Message,
+                        Details = deleteEx.StackTrace,
+                        Exception = deleteEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"Failed to delete source '{rssSource.SourceName}' after a database error.", deleteEx);
             }
         }

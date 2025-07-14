@@ -159,6 +159,24 @@ namespace TelegramPanel.Application.Pipeline
             {
                 #region Critical Failure Handling
                 _logger.LogCritical(ex, "A critical, unhandled error occurred during the authentication/authorization process.");
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "AuthenticationMiddleware",
+                        EventType = "InvokeAsync.CriticalException",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 await HandleCriticalFailureAsync(telegramUser.Id, scope, "A server error occurred during authentication.", cancellationToken);
                 #endregion
             }

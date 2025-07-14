@@ -1,4 +1,7 @@
 ﻿// File: TelegramPanel/Infrastructure/TelegramBotService.cs
+using Application.Common.Interfaces;
+using Domain.Entities;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -12,6 +15,7 @@ using Telegram.Bot.Types.Enums; // ✅ برای UpdateType
 using TelegramPanel.Infrastructure.Services;
 using TelegramPanel.Queue;
 using TelegramPanel.Settings;
+using User = Telegram.Bot.Types.User;
 
 namespace TelegramPanel.Infrastructure
 {
@@ -24,12 +28,14 @@ namespace TelegramPanel.Infrastructure
         private CancellationTokenSource? _cancellationTokenSourceForPolling; // جداگانه برای Polling
         private readonly BotCommandSetupService _commandSetupService; // برای تنظیم کامندها
         private readonly ActivitySource _activitySource;
+        private readonly IServiceProvider _serviceProvider;
         public TelegramBotService(
             ILogger<TelegramBotService> logger,
             ITelegramBotClient botClient,
             IOptions<TelegramPanelSettings> settingsOptions,
             ITelegramUpdateChannel updateChannel,
-            IBotCommandSetupService commandSetupService) // تزریق BotCommandSetupService
+            IBotCommandSetupService commandSetupService,
+            IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             _activitySource = new ActivitySource("TelegramPanel.Infrastructure");
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -37,6 +43,7 @@ namespace TelegramPanel.Infrastructure
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
             _updateChannel = updateChannel ?? throw new ArgumentNullException(nameof(updateChannel));
             _commandSetupService = (BotCommandSetupService?)commandSetupService ?? throw new ArgumentNullException(nameof(commandSetupService));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         }
 
 
@@ -60,6 +67,23 @@ namespace TelegramPanel.Infrastructure
             catch (Exception ex)
             {
                 _logger.LogCritical(ex, "Failed to get bot info (GetMeAsync). Bot token might be invalid, network issues, or Telegram API is down. Bot service will not start.");
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "TelegramBotService",
+                        EventType = "StartAsync.GetMeAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 return; // بدون اطلاعات ربات، ادامه کار ممکن نیست.
             }
             #endregion
@@ -128,6 +152,23 @@ namespace TelegramPanel.Infrastructure
                 {
                     _logger.LogError(ex, "Failed to set or verify webhook at {WebhookAddress}. Error: {ErrorMessage}. Will fall back to polling.",
                         _settings.WebhookAddress, ex.Message);
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "TelegramBotService",
+                            EventType = "StartAsync.WebhookSetup",
+                            Message = ex.Message,
+                            Details = ex.StackTrace,
+                            Exception = ex.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     // Attempt to delete Webhook if its setup failed.
                     await TryDeleteWebhookAsync(_cancellationTokenSourceForPolling.Token, "Webhook setup failed, preparing for polling.");
                 }
@@ -172,6 +213,23 @@ namespace TelegramPanel.Infrastructure
                 catch (Exception ex)
                 {
                     _logger.LogCritical(ex, "CRITICAL: Failed to start polling for bot {BotUsername}. The bot may not receive updates via polling.", me.Username);
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Critical",
+                            Source = "TelegramBotService",
+                            EventType = "StartAsync.PollingSetup",
+                            Message = ex.Message,
+                            Details = ex.StackTrace,
+                            Exception = ex.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     // در این حالت، اگر Webhook هم تنظیم نشده باشد، ربات کار نخواهد کرد.
                 }
                 #endregion
@@ -416,11 +474,45 @@ namespace TelegramPanel.Infrastructure
                 using (_logger.BeginScope(logScopeProps))
                 {
                     _logger.LogError(exception, "{LogMessage}", logMessage);
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "TelegramBotService",
+                            EventType = "HandleErrorAsync",
+                            Message = exception.Message,
+                            Details = exception.StackTrace,
+                            Exception = exception.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                 }
 
                 if (exception is ApiRequestException apiExForPollingStop && apiExForPollingStop.ErrorCode == 401)
                 {
                     _logger.LogCritical("CRITICAL: Unauthorized (401) error detected. Stopping polling to prevent further issues.");
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Critical",
+                            Source = "TelegramBotService",
+                            EventType = "HandleErrorAsync.401",
+                            Message = "Unauthorized (401) error detected. Stopping polling to prevent further issues.",
+                            Details = null,
+                            Exception = null,
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     _cancellationTokenSourceForPolling?.Cancel();
                 }
 
@@ -437,6 +529,23 @@ namespace TelegramPanel.Infrastructure
             {
                 Console.Error.WriteLine($"FATAL ERROR IN HandleErrorAsync: Handler failed. Original: {exception?.GetType().Name ?? "Unknown"}, Handler: {handlerEx.GetType().Name}.");
                 _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Handler failed: {handlerEx.GetType().Name}"));
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "TelegramBotService",
+                        EventType = "HandleErrorAsync.HandlerFailed",
+                        Message = handlerEx.Message,
+                        Details = handlerEx.StackTrace,
+                        Exception = handlerEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
             }
             finally
             {

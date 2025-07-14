@@ -7,6 +7,7 @@ using Domain.Features.Forwarding.Repositories; // For IForwardingRuleRepository
 using Hangfire; // For [AutomaticRetry], IBackgroundJobClient
 // Specific usings for caching and shared models
 using Microsoft.Extensions.Caching.Memory; // For IMemoryCache, MemoryCacheEntryOptions
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 // MODIFICATION START: Add Polly namespaces for resilience policies
 using Polly;
@@ -27,6 +28,7 @@ namespace Application.Features.Forwarding.Services
         // Caching fields for performance
         private readonly IMemoryCache _memoryCache;
         private readonly TimeSpan _rulesCacheExpiration = TimeSpan.FromMinutes(5); // Cache rules for 5 minutes
+        private readonly IServiceProvider _serviceProvider;
 
         // MODIFICATION START: Declare Polly retry policy for database operations (rule retrieval)
         private readonly AsyncRetryPolicy<IEnumerable<ForwardingRule>> _ruleRetrievalRetryPolicy;
@@ -40,7 +42,8 @@ namespace Application.Features.Forwarding.Services
              ILogger<ForwardingService> logger,
              IBackgroundJobClient backgroundJobClient,
              IMemoryCache memoryCache,
-             MessageProcessingService messageProcessingService) // ADDED: Inject MessageProcessingService
+             MessageProcessingService messageProcessingService, // ADDED: Inject MessageProcessingService
+             IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             _context = context ?? throw new ArgumentNullException(nameof(context)); // Ensure context is not null
             _ruleRepository = ruleRepository ?? throw new ArgumentNullException(nameof(ruleRepository));
@@ -48,6 +51,7 @@ namespace Application.Features.Forwarding.Services
             _backgroundJobClient = backgroundJobClient ?? throw new ArgumentNullException(nameof(backgroundJobClient));
             _memoryCache = memoryCache ?? throw new ArgumentNullException(nameof(memoryCache));
             _messageProcessingService = messageProcessingService ?? throw new ArgumentNullException(nameof(messageProcessingService)); // Initialize messageProcessingService
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
             // MODIFICATION START: Initialize the Polly retry policy for rule retrieval using Policy<IEnumerable<ForwardingRule>>
             _ruleRetrievalRetryPolicy = Policy<IEnumerable<ForwardingRule>> // <--- Changed from 'Policy' to 'Policy<IEnumerable<ForwardingRule>>'
@@ -325,6 +329,23 @@ namespace Application.Features.Forwarding.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "An unexpected error occurred during rule creation process for '{RuleName}'.", sanitizedRuleName);
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "ForwardingService",
+                        EventType = "CreateRuleAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new ApplicationException("An unexpected error occurred during rule creation. Please try again later.", ex);
             }
         }
@@ -408,7 +429,23 @@ namespace Application.Features.Forwarding.Services
                 // Catch any other unexpected technical exceptions.
                 // Log the critical technical error.
                 _logger.LogError(ex, "An unexpected error occurred during rule update process for '{RuleName}'.", rule.RuleName);
-
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "ForwardingService",
+                        EventType = "UpdateRuleAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 // Throw a generic application exception indicating a critical failure.
                 throw new ApplicationException("An unexpected error occurred during rule update. Please try again later.", ex);
             }
@@ -485,7 +522,23 @@ namespace Application.Features.Forwarding.Services
                 // Catch any other unexpected technical exceptions.
                 // Log the critical technical error.
                 _logger.LogError(ex, "An unexpected error occurred during rule deletion process for '{RuleName}'.", ruleName);
-
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "ForwardingService",
+                        EventType = "DeleteRuleAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 // Throw a generic application exception indicating a critical failure.
                 throw new ApplicationException("An unexpected error occurred during rule deletion. Please try again later.", ex);
             }
@@ -565,6 +618,23 @@ namespace Application.Features.Forwarding.Services
                     // if any of these inner operations throw a persistent error.
                     _logger.LogError(ex, "FORWARDING_SERVICE_ERROR: Error processing message {MessageId} from SourceForMatching {SourceForMatching} for rule '{RuleName}'. This will cause the main job to retry.",
                         originalMessageId, sourceChannelIdForMatching, rule.RuleName);
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "ForwardingService",
+                            EventType = "ProcessMessageAsync",
+                            Message = ex.Message,
+                            Details = ex.StackTrace,
+                            Exception = ex.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     // Throwing here ensures Hangfire retries the entire ProcessMessageAsync job,
                     // which will re-attempt all rules for this message.
                     throw;

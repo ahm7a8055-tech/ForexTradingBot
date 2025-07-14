@@ -22,6 +22,7 @@ using System.Linq.Expressions;
 using System.Text;
 using System.Text.Json; // Still included, but will throw NotSupportedException
 using System.Text.Json.Serialization; // Added for IntToBoolJsonConverter
+using Microsoft.Extensions.DependencyInjection;
 #endregion
 
 // --- Add IntToBoolJsonConverter for local use ---
@@ -95,6 +96,7 @@ namespace Infrastructure.Repositories
         private readonly UserSqlProvider _sql;
         private readonly DbProviderService _dbProvider;
         private readonly IDbConnectionFactory _dbConnectionFactory;
+        private readonly IServiceProvider _serviceProvider;
         private class UserWithRelatedDataDto
         {
             // --- User Properties (from Users table) ---
@@ -309,13 +311,15 @@ namespace Infrastructure.Repositories
         ILogger<UserRepository> logger,
         ILoggingSanitizer logSanitizer,
         DbProviderService dbProviderService, // <<< INJECTED: Provides the database provider context.
-        UserSqlProvider userSqlProvider)     // <<< INJECTED: Provides SQL statements tailored to the database.
+        UserSqlProvider userSqlProvider,     // <<< INJECTED: Provides SQL statements tailored to the database.
+        IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             #region Constructor Initialization
             _dbConnectionFactory = dbConnectionFactory;
             // --- Assign Injected Dependencies ---
             _logger = logger;
             _logSanitizer = logSanitizer;
+            _serviceProvider = serviceProvider;
 
             // Assign the injected database provider service and SQL provider to internal fields.
             _dbProvider = dbProviderService;
@@ -530,8 +534,25 @@ namespace Infrastructure.Repositories
             }
             catch (Exception ex)
             {
-                // --- 4. Exception Handling ---
                 _logger.LogError(ex, "UserRepository: Error fetching users for news notification.");
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "FetchUsersForNewsNotification.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException("Failed to fetch users for news notification.", ex);
             }
         }
@@ -663,11 +684,47 @@ namespace Infrastructure.Repositories
             catch (TimeoutRejectedException ex)
             {
                 _logger.LogError(ex, "UserRepository: Operation timed out while fetching user by ID {UserId}.", 30, id);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "GetUserById.Timeout",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"The operation to fetch user by ID {id} timed out.", ex);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to get user by ID {UserId} after retries and within timeout.", id);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "GetUserById.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"An error occurred while fetching user by ID: {id}", ex);
             }
         }
@@ -713,6 +770,24 @@ namespace Infrastructure.Repositories
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to get user by TelegramID {TelegramId}", telegramId);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "GetUserByTelegramId.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"An error occurred while fetching user by TelegramID: {telegramId}", ex);
             }
         }
@@ -777,7 +852,24 @@ namespace Infrastructure.Repositories
                 // SECURITY: Log the error with sanitized email and exception message
                 _logger.LogError(ex, "UserRepository: Error fetching user by email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
-
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "GetByEmail.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"Failed to fetch user by email '{sanitizedEmail}'.", ex);
             }
         }
@@ -828,6 +920,24 @@ namespace Infrastructure.Repositories
         {
             _logger.LogError("UserRepository: FindAsync with Expression<Func<User, bool>> is not directly supported by Dapper. " +
                              "Please refactor to use specific Get methods or pass raw SQL conditions.");
+            // Background error log
+            _ = Task.Run(async () =>
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Level = "Error",
+                    Source = "UserRepository",
+                    EventType = "FindAsync.NotSupported",
+                    Message = "FindAsync with Expression<Func<User, bool>> is not directly supported by Dapper.",
+                    Details = null,
+                    Exception = null,
+                    Status = "Failed",
+                    CreatedAt = DateTime.UtcNow
+                });
+            });
             throw new NotSupportedException("Arbitrary LINQ Expression predicates are not supported by this Dapper repository. " +
                                             "Please use specific query methods (e.g., GetByTelegramIdAsync, GetByEmailAsync) " +
                                             "or extend the repository with methods that accept SQL query parts and parameters.");
@@ -957,7 +1067,24 @@ namespace Infrastructure.Repositories
                 // Catch any exceptions that might have propagated from the combined policy or the initial validation.
                 // Log the error, providing context about the user that failed to be added.
                 _logger.LogError(ex, "An error occurred while adding user '{SanitizedUsername}'.", sanitizedUsername);
-                // Re-throw the exception to allow upstream layers to handle it appropriately.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "AddUser.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw;
             }
         }
@@ -1120,22 +1247,53 @@ namespace Infrastructure.Repositories
             // --- Handle Specific Concurrency/Not Found Exception ---
             catch (InvalidOperationException concEx)
             {
-                // Log a specific error for concurrency conflicts or if the user wasn't found.
                 _logger.LogError(concEx, "UserRepository: Concurrency conflict or user not found while updating user {Username}.", user.Username);
-                // Re-throw the exception to propagate the error to the caller.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "UpdateUser.ConcurrencyConflict",
+                        Message = concEx.Message,
+                        Details = concEx.StackTrace,
+                        Exception = concEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw;
             }
             // --- Handle General Exceptions ---
             catch (Exception ex)
             {
-                // Log any other general exceptions that occurred during the update process.
                 _logger.LogError(ex, "UserRepository: An error occurred while updating user {Username}.", user.Username);
-                // Wrap the exception in a RepositoryException if it's not already one, providing a common error type.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "UpdateUser.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 if (ex is not RepositoryException)
                 {
                     throw new RepositoryException($"Failed to update user '{user.Username}'.", ex);
                 }
-                // If it's already a RepositoryException, just re-throw it.
                 throw;
             }
 
@@ -1228,17 +1386,49 @@ namespace Infrastructure.Repositories
             // --- Handle Timeout Specific Exception ---
             catch (TimeoutRejectedException ex)
             {
-                // Log a specific error when the operation times out.
                 _logger.LogError(ex, "UserRepository: Operation timed out while fetching user by TelegramID {TelegramId}.", telegramId);
-                // Wrap the timeout exception in a RepositoryException for consistent error handling.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "GetUserByTelegramIdWithNotifications.Timeout",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"The operation to fetch user by TelegramID {telegramId} timed out.", ex);
             }
             // --- Handle General Exceptions ---
             catch (Exception ex)
             {
-                // Log any other exceptions that occurred during the operation after retries.
                 _logger.LogError(ex, "Failed to get user by TelegramID {TelegramId} after retries.", telegramId);
-                // Wrap the exception in a RepositoryException, providing context about the failed operation.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "GetUserByTelegramIdWithNotifications.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"An error occurred while fetching user by TelegramID: {telegramId}", ex);
             }
 
@@ -1335,12 +1525,26 @@ namespace Infrastructure.Repositories
             // --- Handle General Exceptions During Operation ---
             catch (Exception ex)
             {
-                // SECURITY: Log the error with sanitized email and exception message
                 _logger.LogError(ex, "UserRepository: Error checking existence for email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
-
-                // Wrap the original exception in a RepositoryException for consistent error reporting.
-                // This provides a common exception type for repository-level failures.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "CheckExistsByEmail.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"Failed to check existence for email '{sanitizedEmail}'.", ex);
             }
 
@@ -1407,12 +1611,26 @@ namespace Infrastructure.Repositories
             // Catch any exceptions that occur during the execution of the retry policy or the database operation itself.
             catch (Exception ex)
             {
-                // SECURITY: Log the error with sanitized Telegram ID and exception message
                 _logger.LogError(ex, "UserRepository: Error checking existence by TelegramID {SanitizedTelegramId}. Exception (Sanitized): {SanitizedException}",
                     sanitizedTelegramId, _logSanitizer.Sanitize(ex.Message));
-
-                // Wrap the original exception in a custom RepositoryException.
-                // This provides a consistent error type for consumers of the repository and abstracts away the underlying data access details.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "CheckExistsByTelegramId.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 throw new RepositoryException($"Failed to check existence by TelegramID '{sanitizedTelegramId}'.", ex);
             }
 
@@ -1546,19 +1764,71 @@ namespace Infrastructure.Repositories
             catch (InvalidOperationException concEx)
             {
                 _logger.LogError(concEx, "UserRepository: Concurrency conflict or user not found while deleting user with ID {UserId}.", userId);
-                throw; // Re-throw the original exception.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "DeleteUser.ConcurrencyConflict",
+                        Message = concEx.Message,
+                        Details = concEx.StackTrace,
+                        Exception = concEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                throw;
             }
-            // Handle repository-specific errors that might have already been wrapped by the inner catch block.
             catch (RepositoryException dbEx)
             {
                 _logger.LogError(dbEx, "UserRepository: Error deleting user with ID {UserId} from the database after retries.", userId);
-                throw; // Re-throw the RepositoryException.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "DeleteUser.RepositoryException",
+                        Message = dbEx.Message,
+                        Details = dbEx.StackTrace,
+                        Exception = dbEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                throw;
             }
-            // Catch any other unexpected exceptions.
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UserRepository: An unexpected error occurred while deleting user with ID {UserId}.", userId);
-                throw; // Re-throw the original exception.
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "UserRepository",
+                        EventType = "DeleteUser.Error",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                throw;
             }
         }
     }

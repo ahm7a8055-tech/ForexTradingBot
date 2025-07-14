@@ -1,7 +1,9 @@
 ﻿// File: TelegramPanel/Infrastructure/TelegramMessageSender.cs
 using Application.Common.Interfaces;
 using Application.Interfaces;
+using Domain.Entities;
 using Hangfire;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
@@ -68,6 +70,7 @@ namespace TelegramPanel.Infrastructure
         private readonly AsyncRetryPolicy _answerCallbackQueryPolicy;
         private readonly IUserService _userService;
         private static readonly int[] RetryDelaysMinutes = { 1, 5, 10 };
+        private readonly IServiceProvider _serviceProvider;
 
         public ActualTelegramMessageActions(ILoggingSanitizer logSanitizer,
             ITelegramBotClient botClient,
@@ -75,7 +78,8 @@ namespace TelegramPanel.Infrastructure
             IUserRepository userRepository,
             INotificationJobScheduler jobScheduler,
             IAppDbContext context,
-            IUserService userService)
+            IUserService userService,
+            IServiceProvider serviceProvider)
         {
             _jobScheduler = jobScheduler ?? throw new ArgumentNullException(nameof(jobScheduler));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
@@ -84,6 +88,7 @@ namespace TelegramPanel.Infrastructure
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _logSanitizer = logSanitizer;
             _userService = userService ?? throw new ArgumentNullException(nameof(userService));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
 
             _sendMessagePolicy = CreateTelegramRetryPolicy(
@@ -529,11 +534,47 @@ namespace TelegramPanel.Infrastructure
                 {
                     _logger.LogCritical(apiEx, "Job (UltimateEdit): PERMANENT failure for Msg {MessageId}, Chat {ChatId}. ErrorCode: {ErrorCode}, API Message: '{ApiMessage}'. Job will terminate.",
                         messageId, chatId, apiEx.ErrorCode, apiEx.Message);
+                    // Background error log
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Critical",
+                            Source = "TelegramMessageSender",
+                            EventType = "UltimateEdit.ApiRequestException",
+                            Message = apiEx.Message,
+                            Details = apiEx.StackTrace,
+                            Exception = apiEx.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                 }
                 else
                 {
                     _logger.LogError(apiEx, "Job (UltimateEdit): TRANSIENT failure for Msg {MessageId}, Chat {ChatId}. ErrorCode: {ErrorCode}. Re-throwing for Hangfire retry.",
                         messageId, chatId, apiEx.ErrorCode);
+                    // Background error log
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "TelegramMessageSender",
+                            EventType = "UltimateEdit.TransientApiRequestException",
+                            Message = apiEx.Message,
+                            Details = apiEx.StackTrace,
+                            Exception = apiEx.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     throw;
                 }
             }
@@ -689,6 +730,31 @@ namespace TelegramPanel.Infrastructure
         {
             string sanitizedLogCaption = SanitizeSensitiveData(caption);
             _logger.LogDebug("Sending photo. ChatID: {ChatId}, Photo: {PhotoIdOrUrl}, Caption: {Caption}", chatId, photoUrlOrFileId, sanitizedLogCaption);
+
+            // --- NEW: Check if the photoUrlOrFileId is a direct image URL ---
+            if (Uri.TryCreate(photoUrlOrFileId, UriKind.Absolute, out var uri) && (uri.Scheme == "http" || uri.Scheme == "https"))
+            {
+                try
+                {
+                    using var httpClient = new HttpClient();
+                    using var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, uri), cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogError("Image URL check failed: {Url} returned status {StatusCode}", photoUrlOrFileId, response.StatusCode);
+                        throw new InvalidOperationException($"The provided photo URL could not be accessed (status: {response.StatusCode}).");
+                    }
+                    if (!response.Content.Headers.ContentType?.MediaType?.StartsWith("image/") ?? true)
+                    {
+                        _logger.LogError("Image URL check failed: {Url} is not an image. Content-Type: {ContentType}", photoUrlOrFileId, response.Content.Headers.ContentType);
+                        throw new InvalidOperationException($"The provided photo URL is not a direct image. Content-Type: {response.Content.Headers.ContentType}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to verify image URL before sending to Telegram: {Url}", photoUrlOrFileId);
+                    throw;
+                }
+            }
 
             Context pollyContext = new($"SendPhoto_{chatId}_{Guid.NewGuid():N}", new Dictionary<string, object>
     {

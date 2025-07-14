@@ -541,6 +541,23 @@ Enhanced message:";
                 _logger.LogError(ex, "Unexpected exception during API call for Config ID {ConfigId}", cfg.Id);
                 adminLogger.Failure($"Unexpected exception: {ex.Message}", cfg.Id, "EXCEPTION");
                 // Unexpected errors are safer to be classified as non-retryable to avoid poison messages.
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "GeminiService",
+                        EventType = "AttemptApiCallAsync",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 return ResilientResponse<string>.CreateNonRetryableError(500, $"An unexpected error occurred: {ex.Message}", "UNEXPECTED_EXCEPTION");
             }
         }

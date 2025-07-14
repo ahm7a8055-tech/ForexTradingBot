@@ -1,3 +1,5 @@
+using Application.Common.Interfaces;
+using Domain.Entities;
 using Microsoft.Extensions.Options; // Essential for configurable options
 
 // Define configuration options for the worker service.
@@ -83,6 +85,7 @@ namespace BackgroundTasks
         private readonly ILogger<Worker> _logger;
         private readonly WorkerOptions _options;
         private readonly ITaskProcessor _taskProcessor;
+        private readonly IServiceProvider _serviceProvider;
 
         // Circuit Breaker state variables.
         private int _consecutiveFailures;
@@ -90,12 +93,13 @@ namespace BackgroundTasks
         private bool _isCircuitOpen;
 
         // Constructor for dependency injection. All required services are injected.
-        public Worker(ILogger<Worker> logger, IOptions<WorkerOptions> options, ITaskProcessor taskProcessor)
+        public Worker(ILogger<Worker> logger, IOptions<WorkerOptions> options, ITaskProcessor taskProcessor, IServiceProvider serviceProvider)
         {
             // Robust null checks for injected dependencies.
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
             _taskProcessor = taskProcessor ?? throw new ArgumentNullException(nameof(taskProcessor));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
             // Initialize circuit breaker state.
             _consecutiveFailures = 0;
@@ -161,17 +165,49 @@ namespace BackgroundTasks
                 {
                     // Catch any unhandled exceptions during the main processing cycle.
                     _logger.LogError(ex, "An unhandled error occurred during processing cycle. This might be a critical issue.");
-
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "Worker",
+                            EventType = "ExecuteAsync",
+                            Message = ex.Message,
+                            Details = ex.StackTrace,
+                            Exception = ex.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     // Apply circuit breaker logic on failure.
                     _consecutiveFailures++;
                     _logger.LogWarning("Processing failed. Current consecutive failures: {ConsecutiveFailures}", _consecutiveFailures);
-
                     if (_consecutiveFailures >= _options.ConsecutiveFailureThreshold)
                     {
                         _isCircuitOpen = true;
                         _circuitOpenedTime = DateTimeOffset.UtcNow;
                         _logger.LogError("Circuit breaker opened due to {ConsecutiveFailures} consecutive failures. Will re-attempt after {ResetTime}ms.",
                                          _consecutiveFailures, _options.CircuitBreakerResetMilliseconds);
+                        _ = Task.Run(async () =>
+                        {
+                            using var scope = _serviceProvider.CreateScope();
+                            var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                            await repo.AddAsync(new ProMonitoringLog
+                            {
+                                Timestamp = DateTime.UtcNow,
+                                Level = "Error",
+                                Source = "Worker",
+                                EventType = "CircuitBreakerOpen",
+                                Message = $"Circuit breaker opened due to {_consecutiveFailures} consecutive failures.",
+                                Details = null,
+                                Exception = null,
+                                Status = "Failed",
+                                CreatedAt = DateTime.UtcNow
+                            });
+                        });
                     }
                 }
 
@@ -220,12 +256,9 @@ namespace BackgroundTasks
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Task processing failed on attempt {AttemptNumber}. Error: {ErrorMessage}", currentRetryAttempt + 1, ex.Message);
-
                     if (currentRetryAttempt < _options.MaxRetries)
                     {
                         currentRetryAttempt++;
-                        // Implement a simple exponential backoff for retry delay.
-                        // This uses currentRetryAttempt to increase delay for subsequent retries.
                         int currentRetryDelay = _options.RetryDelayMilliseconds * currentRetryAttempt;
                         _logger.LogWarning("Retrying in {RetryDelay}ms...", currentRetryDelay);
                         await Task.Delay(TimeSpan.FromMilliseconds(currentRetryDelay), stoppingToken);
@@ -234,6 +267,23 @@ namespace BackgroundTasks
                     {
                         // All retry attempts exhausted. Re-throw the exception.
                         _logger.LogError(ex, "All {MaxRetries} retry attempts failed for task processing.", _options.MaxRetries);
+                        _ = Task.Run(async () =>
+                        {
+                            using var scope = _serviceProvider.CreateScope();
+                            var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                            await repo.AddAsync(new ProMonitoringLog
+                            {
+                                Timestamp = DateTime.UtcNow,
+                                Level = "Error",
+                                Source = "Worker",
+                                EventType = "ExecuteProcessingWithRetries",
+                                Message = ex.Message,
+                                Details = ex.StackTrace,
+                                Exception = ex.ToString(),
+                                Status = "Failed",
+                                CreatedAt = DateTime.UtcNow
+                            });
+                        });
                         throw;
                     }
                 }

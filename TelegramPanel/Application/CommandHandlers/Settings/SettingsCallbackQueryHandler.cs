@@ -7,6 +7,7 @@ using Application.Common.Interfaces; // برای IUserRepository, IUserSignalPre
 using Application.DTOs;
 using Application.Interfaces;        // برای IUserService, ISubscriptionService از پروژه اصلی Application
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging; // برای ILogger
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
@@ -18,8 +19,6 @@ using Telegram.Bot.Types;           // برای Update, CallbackQuery, Message, 
 using Telegram.Bot.Types.Enums;     // برای UpdateType, ParseMode
 using Telegram.Bot.Types.ReplyMarkups; // برای InlineKeyboardMarkup, InlineKeyboardButton, IReplyMarkup
 using TelegramPanel.Application.CommandHandlers.MainMenu;
-
-
 // Project specific: TelegramPanel Layer
 using TelegramPanel.Application.Interfaces; // برای ITelegramCommandHandler, ITelegramStateMachine
 using TelegramPanel.Application.States;   // برای IUserConversationStateService, UserConversationState
@@ -53,6 +52,7 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
         private readonly IUserConversationStateService _userConversationStateService; // For storing temporary user choices during a conversation
         private readonly IAppDbContext _appDbContext;                   // For committing changes after User entity modifications
         private readonly IUserRepository _userRepository;               // For fetching and updating the User entity directly
+        private readonly IServiceProvider _serviceProvider;
         #endregion
 
         #region Public Callback Data Constants
@@ -91,7 +91,8 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
             ITelegramStateMachine stateMachine,
             IUserConversationStateService userConversationStateService,
             IAppDbContext appDbContext,
-            IUserRepository userRepository)
+            IUserRepository userRepository,
+            IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _messageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
@@ -104,6 +105,7 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
             _userConversationStateService = userConversationStateService ?? throw new ArgumentNullException(nameof(userConversationStateService));
             _appDbContext = appDbContext ?? throw new ArgumentNullException(nameof(appDbContext));
             _userRepository = userRepository ?? throw new ArgumentNullException(nameof(userRepository));
+            _serviceProvider = serviceProvider;
         }
         #endregion
 
@@ -205,12 +207,48 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
                 // Handle API-specific errors that might occur during processing.
                 // These are often recoverable or indicate a client-side issue (e.g., bot blocked).
                 _logger.LogError(apiEx, "A Telegram API error occurred while processing CallbackQueryId {CallbackQueryId}.", callbackQuery.Id);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "SettingsCallbackQueryHandler",
+                        EventType = "ProcessCallbackQuery.ApiRequestException",
+                        Message = apiEx.Message,
+                        Details = apiEx.StackTrace,
+                        Exception = apiEx.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 // It's often not necessary to message the user again, as a previous API call likely already failed.
             }
             catch (Exception ex)
             {
                 // This is a safety net for any truly unexpected exceptions within the dispatchers.
                 _logger.LogCritical(ex, "A critical unhandled error occurred while processing CallbackQueryId {CallbackQueryId}.", callbackQuery.Id);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "SettingsCallbackQueryHandler",
+                        EventType = "ProcessCallbackQuery.CriticalException",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
 
                 try
                 {
@@ -1270,6 +1308,24 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
                     "A critical, non-API error occurred while trying to answer CallbackQueryID {CallbackQueryId}. Text sent: '{Text}'",
                     callbackQueryId,
                     text);
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical",
+                        Source = "SettingsCallbackQueryHandler",
+                        EventType = "AnswerCallbackQuery.CriticalException",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
             }
         }
 

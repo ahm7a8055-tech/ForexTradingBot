@@ -3,6 +3,7 @@
 using Application.Common.Interfaces; // For IRssSourceRepository, IRssReaderService
 using Domain.Entities;               // For RssSource
 using Hangfire;                      // For JobDisplayName, AutomaticRetry
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Polly;                         // For Polly policies
 using Polly.Retry;                   // For Retry policies
@@ -49,6 +50,7 @@ namespace Infrastructure.Services
         private readonly IRssReaderService _rssReaderService;
         private readonly ILogger<RssFetchingCoordinatorService> _logger;
         private readonly AsyncRetryPolicy _coordinatorRetryPolicy; // This policy is for the coordinator's processing of individual feeds
+        private readonly IServiceProvider _serviceProvider;
 
         // Level 5: Limit concurrency to avoid overloading the VPS. Configurable constant.
         private const int MaxConcurrentFeedFetches = 4; // Adjust based on VPS cores and I/O capacity (e.g., 2x-4x cores)
@@ -102,11 +104,13 @@ namespace Infrastructure.Services
         public RssFetchingCoordinatorService(
             IRssSourceRepository rssSourceRepository,
             IRssReaderService rssReaderService,
-            ILogger<RssFetchingCoordinatorService> logger)
+            ILogger<RssFetchingCoordinatorService> logger,
+            IServiceProvider serviceProvider) // Inject IServiceProvider
         {
             _rssSourceRepository = rssSourceRepository ?? throw new ArgumentNullException(nameof(rssSourceRepository));
             _rssReaderService = rssReaderService ?? throw new ArgumentNullException(nameof(rssReaderService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _serviceProvider = serviceProvider;
 
             // Level 3/4: Initialize Polly policy for retrying transient errors at the coordinator level.
             // This policy specifically handles exceptions that bubble up from `_rssReaderService.FetchAndProcessFeedAsync`.
@@ -347,6 +351,24 @@ namespace Infrastructure.Services
                     // Level 9: Catch any exceptions that Polly's coordinator policy did NOT handle/retry (e.g., non-retryable errors or after max retries).
                     _logger.LogError(ex, "Critical unhandled error while processing RSS source '{SourceName}' (ID: {RssSourceId}) after all coordinator retries. Error: {ErrorMessage}",
                         source.SourceName, source.Id.ToString(), ex.Message);
+                    // Background error log
+                    _ = Task.Run(async () =>
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        await repo.AddAsync(new ProMonitoringLog
+                        {
+                            Timestamp = DateTime.UtcNow,
+                            Level = "Error",
+                            Source = "RssFetchingCoordinatorService",
+                            EventType = "ProcessRssSource.CriticalUnhandledError",
+                            Message = ex.Message,
+                            Details = ex.StackTrace,
+                            Exception = ex.ToString(),
+                            Status = "Failed",
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    });
                     // Error is logged, not re-thrown, allowing other feeds to proceed.
                 }
             }
