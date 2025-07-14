@@ -469,10 +469,12 @@ namespace Application.Features.Forwarding.Services
 
                 if (shouldDropCaptionThisRun)
                 {
-                    // If dropping caption, ensure it's empty and entities are null.
+                    // If dropping caption, we'll let AI enhancement generate a new one
+                    // instead of just setting it to empty. This allows AI to create
+                    // professional captions even when the original is dropped.
                     finalCaption = string.Empty;
                     finalEntities = null;
-                    _logger.LogInformation("Job:{JobId}: ProcessCustomSendAsync: Rule '{RuleName}' has DropMediaCaptions enabled for a media message. Caption and entities will be cleared.", jobId, rule.RuleName);
+                    _logger.LogInformation("Job:{JobId}: ProcessCustomSendAsync: Rule '{RuleName}' has DropMediaCaptions enabled for a media message. Original caption cleared, AI enhancement will generate new caption.", jobId, rule.RuleName);
                 }
                 else
                 {

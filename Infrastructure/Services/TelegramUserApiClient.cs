@@ -1650,33 +1650,16 @@ namespace Infrastructure.Services
             var debugReport = new StringBuilder($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**\n");
 
             // === NEW: CAPTION EXTRACTION FROM MEDIA =================================
-            // If no album caption is provided, try to extract from InputMediaWithCaption objects
+            // If no album caption is provided, we cannot extract from TL.InputMedia objects
+            // as they don't contain caption information. The caption should be provided
+            // through the albumCaption parameter from the forwarding context.
             string? extractedCaption = albumCaption;
             TL.MessageEntity[]? extractedEntities = albumEntities;
             
             if (string.IsNullOrWhiteSpace(extractedCaption))
             {
-                debugReport.AppendLine("**Caption Extraction:** 🔍 No album caption provided, extracting from media objects...");
-                
-                // Look for the first non-empty caption in InputMediaWithCaption objects
-                foreach (var mediaItem in media)
-                {
-                    if (mediaItem is InputMediaWithCaption inputMediaWithCaption)
-                    {
-                        if (!string.IsNullOrWhiteSpace(inputMediaWithCaption.Caption))
-                        {
-                            extractedCaption = inputMediaWithCaption.Caption;
-                            extractedEntities = inputMediaWithCaption.Entities;
-                            debugReport.AppendLine($"**Caption Found:** ✅ Extracted caption from media: `{TruncateString(extractedCaption, 50)}`");
-                            break;
-                        }
-                    }
-                }
-                
-                if (string.IsNullOrWhiteSpace(extractedCaption))
-                {
-                    debugReport.AppendLine("**Caption Status:** ⚠️ No captions found in media objects either.");
-                }
+                debugReport.AppendLine("**Caption Status:** ⚠️ No album caption provided.");
+                debugReport.AppendLine("**Note:** Captions should be passed via albumCaption parameter from forwarding context.");
             }
             else
             {
@@ -1726,7 +1709,15 @@ namespace Infrastructure.Services
                     }
                     else
                     {
-                        debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
+                        // AI service returned no enhancement
+                        if (string.IsNullOrWhiteSpace(extractedCaption))
+                        {
+                            debugReport.AppendLine($"   - 🚫 AI service returned no enhancement and original caption was empty (possibly due to DropMediaCaptions rule).");
+                        }
+                        else
+                        {
+                            debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
+                        }
                         (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
                     }
                 }
