@@ -158,7 +158,7 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions (now uses encryption)
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 var errorId = Guid.NewGuid().ToString("N")[..8];
                 _logger.LogError(sanitizedException, "Error listing log files. ErrorId: {ErrorId}", errorId);
@@ -245,7 +245,7 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions (now uses encryption)
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 var errorId = Guid.NewGuid().ToString("N")[..8];
                 _logger.LogError(sanitizedException, "Error viewing log file: {SanitizedFileName}. ErrorId: {ErrorId}", 
@@ -304,7 +304,7 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                // SECURITY: Use SecureExceptionSanitizer for logging exceptions
+                // SECURITY: Use SecureExceptionSanitizer for logging exceptions (now uses encryption)
                 var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 var errorId = Guid.NewGuid().ToString("N")[..8];
                 _logger.LogError(sanitizedException, "Error downloading log files as ZIP. ErrorId: {ErrorId}", errorId);

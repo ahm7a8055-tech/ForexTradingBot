@@ -63,7 +63,9 @@ namespace Shared.Security
         /// <returns>Sanitized exception string with security hash</returns>
         public static string SanitizeForLogging(Exception exception)
         {
-            return _sanitizer.Sanitize(exception, includeHash: true);
+            // SECURITY: Encrypt sanitized exception for logging. Replace with secure key management in production.
+            const string encryptionKey = "YourSecureEncryptionKey"; // TODO: Use a secure key vault or environment variable
+            return _sanitizer.SanitizeWithEncryption(exception, encryptionKey);
         }
 
         /// <summary>

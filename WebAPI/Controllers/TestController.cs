@@ -65,7 +65,8 @@ namespace WebAPI.Controllers
             {
                 // Use the enhanced sanitizer for detailed error reporting
                 var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex);
-                _logger.LogError(sanitizedDetails, "Test error triggered: {ErrorType}", type);
+                var sanitizedType = SanitizeForLog(type);
+                _logger.LogError(sanitizedDetails, "Test error triggered: {ErrorType}", sanitizedType);
                 
                 return Ok(new
                 {
@@ -103,6 +104,14 @@ namespace WebAPI.Controllers
                     Comparison = "The new way provides detailed error analysis while still protecting sensitive data"
                 });
             }
+        }
+
+        // Add a helper method to sanitize user input for logs
+        private static string SanitizeForLog(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return string.Empty;
+            // Remove newlines and other log-forging characters
+            return input.Replace("\r", "").Replace("\n", "").Replace("|", "").Replace("\u2028", "").Replace("\u2029", "");
         }
     }
 } 

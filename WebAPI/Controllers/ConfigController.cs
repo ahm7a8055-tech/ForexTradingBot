@@ -83,6 +83,35 @@ namespace WebAPI.Controllers
             }
         }
 
+        // --- Replace RedactSensitiveData with EncryptSensitiveData for sensitive data logging ---
+        private static string EncryptSensitiveData(string? sensitiveData)
+        {
+            if (string.IsNullOrEmpty(sensitiveData)) return string.Empty;
+            try
+            {
+                using var aes = System.Security.Cryptography.Aes.Create();
+                aes.Key = GetEncryptionKey();
+                aes.IV = new byte[16]; // For demo only; use a random IV in production
+                var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
+                using var ms = new System.IO.MemoryStream();
+                using (var cs = new System.Security.Cryptography.CryptoStream(ms, encryptor, System.Security.Cryptography.CryptoStreamMode.Write))
+                using (var writer = new System.IO.StreamWriter(cs))
+                {
+                    writer.Write(sensitiveData);
+                }
+                return System.Convert.ToBase64String(ms.ToArray());
+            }
+            catch
+            {
+                return "[ENCRYPTION_FAILED]";
+            }
+        }
+        private static byte[] GetEncryptionKey()
+        {
+            // Replace with secure key management (e.g., environment variables, key vaults)
+            return System.Text.Encoding.UTF8.GetBytes("YourSecureKey123456"); // Example key, 16 bytes for AES-128
+        }
+
         private IActionResult CreateSecureErrorResponse(int statusCode, string userMessage, string? internalErrorId = null)
         {
             var response = new
@@ -348,13 +377,13 @@ namespace WebAPI.Controllers
                             response.BotUsername = usernameElement.GetString();
                         }
                         response.TelegramStatus = "OK";
-                        var encryptedBotUsername = RedactSensitiveData(response.BotUsername);
+                        var encryptedBotUsername = EncryptSensitiveData(response.BotUsername);
                         _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {EncryptedBotUsername}", encryptedBotUsername);
                     }
                     else
                     {
                         var errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
-                        var encryptedErrorContent = RedactSensitiveData(errorContent);
+                        var encryptedErrorContent = EncryptSensitiveData(errorContent);
                         var errorId = Guid.NewGuid().ToString("N")[..8];
                         _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {EncryptedErrorContent}, ErrorId: {ErrorId}",
                             telegramApiResponse.StatusCode, encryptedErrorContent, errorId);
@@ -415,9 +444,9 @@ namespace WebAPI.Controllers
             // This current logging is for demonstration purposes only for this project.
             
             // SECURITY: Encrypt all sensitive configuration data before logging.
-            var encryptedBotToken = RedactSensitiveData(model.BotToken);
-            var encryptedDbConn = RedactSensitiveData(validatedDbConn);
-            var encryptedRedisConn = RedactSensitiveData(validatedRedisConn);
+            var encryptedBotToken = EncryptSensitiveData(model.BotToken);
+            var encryptedDbConn = EncryptSensitiveData(validatedDbConn);
+            var encryptedRedisConn = EncryptSensitiveData(validatedRedisConn);
             
             _logger.LogWarning("Received configuration to save (PLACEHOLDER - NOT SAVING TO APPSETTINGS.JSON):");
             _logger.LogWarning("BotToken: {EncryptedBotToken}", encryptedBotToken);

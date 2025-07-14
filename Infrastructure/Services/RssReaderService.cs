@@ -38,6 +38,7 @@ using System.ServiceModel.Syndication;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
+using System.Net.Http;
 
 #endregion
 
@@ -1129,7 +1130,7 @@ namespace Infrastructure.Services
                 return null;
             }
 
-            string? imageUrl = ExtractImageUrlWithHtmlAgility(syndicationItem, syndicationItem.Summary?.Text, syndicationItem.Content?.ToString());
+            string? imageUrl = ExtractImageUrlWithHtmlAgility(context, syndicationItem.Summary?.Text, syndicationItem.Content?.ToString());
             if (!string.IsNullOrWhiteSpace(imageUrl))
             {
                 try
@@ -1862,43 +1863,55 @@ namespace Infrastructure.Services
         /// otherwise, <c>null</c> if no suitable image URL could be identified or if an error occurred during extraction.
         /// The returned URL is guaranteed to be absolute.
         /// </returns>
-        private string? ExtractImageUrlWithHtmlAgility(SyndicationItem item, string? summary, string? content)
+        private string? ExtractImageUrlWithHtmlAgility(NewsItemCreationContext context, string? summary, string? content)
         {
             const string methodName = nameof(ExtractImageUrlWithHtmlAgility);
+            var item = context.SyndicationItem;
             _logger.LogTrace("Entering {MethodName} for item '{ItemTitle}'", methodName, item.Title?.Text.Truncate(50));
 
             // --- Strategy 1: Enhanced media:content (from Media RSS extension) ---
             string? mediaContentUrl = TryExtractFromMediaContent(item);
             if (!string.IsNullOrWhiteSpace(mediaContentUrl))
             {
-                _logger.LogDebug("Found image URL via media:content: {ImageUrl}", mediaContentUrl);
-                return mediaContentUrl;
+                if (IsImageUrlValidAsync(mediaContentUrl, item.Title?.Text ?? "Untitled", context.RssSource, methodName, CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    _logger.LogDebug("Found image URL via media:content: {ImageUrl}", mediaContentUrl);
+                    return mediaContentUrl;
+                }
             }
 
             // --- Strategy 2: Enclosure links (with image media type) ---
             string? enclosureUrl = TryExtractFromEnclosure(item);
             if (!string.IsNullOrWhiteSpace(enclosureUrl))
             {
-                _logger.LogDebug("Found image URL via enclosure: {ImageUrl}", enclosureUrl);
-                return enclosureUrl;
+                if (IsImageUrlValidAsync(enclosureUrl, item.Title?.Text ?? "Untitled", context.RssSource, methodName, CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    _logger.LogDebug("Found image URL via enclosure: {ImageUrl}", enclosureUrl);
+                    return enclosureUrl;
+                }
             }
 
             // --- Strategy 3: Open Graph meta tags (og:image) in HTML content/summary ---
             string? metaImageUrl = TryExtractFromMetaTags(item, content, summary);
             if (!string.IsNullOrWhiteSpace(metaImageUrl))
             {
-                _logger.LogDebug("Found image URL via Open Graph meta tag: {ImageUrl}", metaImageUrl);
-                return metaImageUrl;
+                if (IsImageUrlValidAsync(metaImageUrl, item.Title?.Text ?? "Untitled", context.RssSource, methodName, CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    _logger.LogDebug("Found image URL via Open Graph meta tag: {ImageUrl}", metaImageUrl);
+                    return metaImageUrl;
+                }
             }
 
             // --- Strategy 4: Robust HTML <img> tag parsing ---
-            // Prioritize content over summary for image extraction if both contain HTML.
             string? htmlToParse = !string.IsNullOrWhiteSpace(content) ? content : summary;
             string? imageUrlFromHtml = TryExtractFromHtmlImages(item, htmlToParse);
             if (!string.IsNullOrWhiteSpace(imageUrlFromHtml))
             {
-                _logger.LogDebug("Found image URL via <img> tag in HTML: {ImageUrl}", imageUrlFromHtml);
-                return imageUrlFromHtml;
+                if (IsImageUrlValidAsync(imageUrlFromHtml, item.Title?.Text ?? "Untitled", context.RssSource, methodName, CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    _logger.LogDebug("Found image URL via <img> tag in HTML: {ImageUrl}", imageUrlFromHtml);
+                    return imageUrlFromHtml;
+                }
             }
 
             _logger.LogDebug("No image URL could be extracted from the item '{ItemTitle}'.", item.Title?.Text.Truncate(50));
@@ -2138,6 +2151,39 @@ namespace Infrastructure.Services
             return null; // Return null if it couldn't be made absolute.
         }
 
+        /// <summary>
+        /// Checks if an image URL is reachable and is a valid image by sending a HEAD request.
+        /// </summary>
+        private async Task<bool> IsImageUrlValidAsync(string imageUrl, string newsTitle, RssSource rssSource, string methodName, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var httpClient = _httpClientFactory.CreateClient();
+                using var request = new HttpRequestMessage(HttpMethod.Head, imageUrl);
+                request.Headers.UserAgent.ParseAdd(_settings.UserAgent);
+                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (!response.IsSuccessStatusCode || response.Content.Headers.ContentType == null || !response.Content.Headers.ContentType.MediaType.StartsWith("image/"))
+                {
+                    _logger.LogError(
+                        "Image URL check failed: \"{ImageUrl}\" returned status {StatusCode} for news item \"{NewsTitle}\" (Source: {SourceName}, SourceId: {SourceId}) in {MethodName}",
+                        imageUrl,
+                        response.StatusCode,
+                        newsTitle,
+                        rssSource.SourceName,
+                        rssSource.Id,
+                        methodName
+                    );
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Image URL check failed with exception for \"{ImageUrl}\" for news item \"{NewsTitle}\" (Source: {SourceName}, SourceId: {SourceId}) in {MethodName}",
+                    imageUrl, newsTitle, rssSource.SourceName, rssSource.Id, methodName);
+                return false;
+            }
+        }
 
         #endregion
     }

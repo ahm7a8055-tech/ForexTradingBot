@@ -310,9 +310,11 @@ Enhanced message:";
 
                 // ✅ Behavior Rule 2: Telemetry + Metrics
                 // The response object itself contains all necessary telemetry data.
+                // Sanitize jobId to prevent log forging
+                var sanitizedJobId = jobId.Replace("\n", "").Replace("\r", "");
                 _logger.LogInformation(
                     "Job {JobId} completed with Type: {ResponseType}. Success: {IsSuccess}. Reason: {Reason}",
-                    jobId, response.Type, response.Success, response.Error?.Reason ?? "N/A"
+                    sanitizedJobId, response.Type, response.Success, response.Error?.Reason ?? "N/A"
                 );
 
                 // Cache the final response, regardless of success or failure, to prevent re-computation for non-retryable errors.

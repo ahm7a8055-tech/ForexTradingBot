@@ -111,7 +111,8 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to get job result for JobId: {JobId}", jobId);
+                var sanitizedJobId = jobId.Replace("\n", "").Replace("\r", "");
+                _logger.LogError(ex, "Failed to get job result for JobId: {JobId}", sanitizedJobId);
                 return StatusCode(500, new { Message = "Failed to get job result", Error = ex.Message });
             }
         }
