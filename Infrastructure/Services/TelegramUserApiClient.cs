@@ -1649,8 +1649,43 @@ namespace Infrastructure.Services
             long peerIdForLog = GetPeerIdForLog(peer);
             var debugReport = new StringBuilder($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**\n");
 
+            // === NEW: CAPTION EXTRACTION FROM MEDIA =================================
+            // If no album caption is provided, try to extract from InputMediaWithCaption objects
+            string? extractedCaption = albumCaption;
+            TL.MessageEntity[]? extractedEntities = albumEntities;
+            
+            if (string.IsNullOrWhiteSpace(extractedCaption))
+            {
+                debugReport.AppendLine("**Caption Extraction:** 🔍 No album caption provided, extracting from media objects...");
+                
+                // Look for the first non-empty caption in InputMediaWithCaption objects
+                foreach (var mediaItem in media)
+                {
+                    if (mediaItem is InputMediaWithCaption inputMediaWithCaption)
+                    {
+                        if (!string.IsNullOrWhiteSpace(inputMediaWithCaption.Caption))
+                        {
+                            extractedCaption = inputMediaWithCaption.Caption;
+                            extractedEntities = inputMediaWithCaption.Entities;
+                            debugReport.AppendLine($"**Caption Found:** ✅ Extracted caption from media: `{TruncateString(extractedCaption, 50)}`");
+                            break;
+                        }
+                    }
+                }
+                
+                if (string.IsNullOrWhiteSpace(extractedCaption))
+                {
+                    debugReport.AppendLine("**Caption Status:** ⚠️ No captions found in media objects either.");
+                }
+            }
+            else
+            {
+                debugReport.AppendLine($"**Caption Status:** ✅ Using provided album caption: `{TruncateString(extractedCaption, 50)}`");
+            }
+            // =========================================================================
+
             // === NEW: IDEMPOTENCY CHECK - THE CORE FIX FOR DUPLICATES =================
-            string albumCacheKey = GenerateAlbumCacheKey(media, albumCaption);
+            string albumCacheKey = GenerateAlbumCacheKey(media, extractedCaption);
             if (_memoryCache.TryGetValue(albumCacheKey, out _))
             {
                 _logger.LogInformation("CACHE HIT: Album with key {AlbumCacheKey} has already been sent recently. Skipping.", albumCacheKey);
@@ -1667,9 +1702,9 @@ namespace Infrastructure.Services
                 debugReport.AppendLine("\n---");
                 debugReport.AppendLine("**1. AI Caption Enhancement:**");
 
-                // Call the GeminiService for text-only enhancement
-                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(albumCaption, cancellationToken);
-                var (currentCaption, currentEntities) = (albumCaption, albumEntities); // Default to original
+                // Call the GeminiService for text-only enhancement using the extracted caption
+                string? enhancedCaption = await _geminiService.EnhanceMessageAsync(extractedCaption, cancellationToken);
+                var (currentCaption, currentEntities) = (extractedCaption, extractedEntities); // Default to extracted
 
                 if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
                 {
@@ -1683,12 +1718,12 @@ namespace Infrastructure.Services
                     var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
                     debugReport.AppendLine($"   - 🔄 AI enhancement job enqueued. JobId: {actualJobId}");
                     // For now, proceed with original caption and let the enhancement happen in background
-                    (currentCaption, currentEntities) = FormatFinalMessage(albumCaption, albumEntities, debugReport); // Format the original
+                    (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
                 }
                 else
                 {
                     debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
-                    (currentCaption, currentEntities) = FormatFinalMessage(albumCaption, albumEntities, debugReport); // Format the original
+                    (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
                 }
 
                 // === STAGE 2: DISPATCH ===================================================
