@@ -213,6 +213,7 @@ namespace Infrastructure.Data
             _ = services.AddSingleton<IAdviceService, AdviceService>();
             _ = services.AddSingleton<IHashtagService, HashtagService>();
             _ = services.AddSingleton<MarkdownParserService>();
+            _ = services.AddScoped<IProMonitoringLogRepository, ProMonitoringLogRepository>();
             #endregion
 
             // =================================================================

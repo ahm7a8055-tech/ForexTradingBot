@@ -3,6 +3,7 @@ using System;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250714134516_AddProMonitoringLog")]
+    partial class AddProMonitoringLog
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -291,15 +294,6 @@ namespace Infrastructure.Migrations
 
                     b.HasIndex("Level", "Timestamp")
                         .HasDatabaseName("IX_ProMonitoringLog_Level_Timestamp");
-
-                    b.HasIndex("Tags", "Timestamp")
-                        .HasDatabaseName("IX_ProMonitoringLog_Tags_Timestamp");
-
-                    b.HasIndex("Level", "Status", "Timestamp")
-                        .HasDatabaseName("IX_ProMonitoringLog_Level_Status_Timestamp");
-
-                    b.HasIndex("Source", "EventType", "Timestamp")
-                        .HasDatabaseName("IX_ProMonitoringLog_Source_EventType_Timestamp");
 
                     b.ToTable("ProMonitoringLogs", (string)null);
                 });

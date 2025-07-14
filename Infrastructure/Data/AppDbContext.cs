@@ -73,6 +73,7 @@ namespace Infrastructure.Data
         /// </summary>
         public DbSet<NewsItem> NewsItems => Set<NewsItem>();
 
+        public DbSet<ProMonitoringLog> ProMonitoringLogs => Set<ProMonitoringLog>();
 
         public DbSet<Setting> Settings { get; set; } // Existing generic settings table
 

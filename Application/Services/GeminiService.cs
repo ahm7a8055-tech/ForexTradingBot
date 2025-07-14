@@ -1,4 +1,5 @@
 ﻿using Application.Common.Interfaces;
+using Application.Common.Models;
 using Domain.Entities;
 using Hangfire;
 using Microsoft.Extensions.Caching.Memory;
@@ -117,6 +118,24 @@ Enhanced message:";
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Immediate enhancement failed, falling back to background job");
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "GeminiService",
+                        EventType = "ImmediateEnhancement",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
             }
 
             // Fallback to background job if immediate enhancement fails
@@ -168,62 +187,83 @@ Enhanced message:";
             {
                 adminLogger.Info($"🚀 Attempting immediate enhancement for text length: {text.Length}", null, "IMMEDIATE");
 
-                // Generate cache key based on text only
                 string contentCacheKey = GenerateContentCacheKey(text, null);
                 adminLogger.Info($"Request content hash: {contentCacheKey}", null, "CACHE");
 
-                // Check cache first
                 if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
                 {
                     adminLogger.Success("Fulfilled from cache.", null, "CACHE");
                     return cachedResult;
                 }
 
-                // Try all available configurations until one succeeds
                 int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
                 for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
                     var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
                     if (config == null)
                     {
-                        adminLogger.Failure("No available API configurations found.", null, "CONFIG");
+                        adminLogger.Failure("No available API configurations found. Halting.", null, "CONFIG");
                         break;
                     }
 
                     adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
 
-                    // Attempt API call
-                    (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+                    // CHANGE 1: Receive the full ResilientResponse object instead of deconstructing.
+                    var response = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
 
-                    if (wasSuccess && !string.IsNullOrWhiteSpace(result))
+                    // CHANGE 2: Check for success using the 'Success' property.
+                    if (response.Success && !string.IsNullOrWhiteSpace(response.Data))
                     {
                         adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
-                        _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
-                        return result;
+                        _cache.Set(contentCacheKey, response.Data, TimeSpan.FromHours(1));
+                        return response.Data; // Return the successful result.
                     }
 
-                    adminLogger.Failure($"Config ID {config.Id} failed. Moving to next configuration.", config.Id, "ROTATION");
+                    // --- Failure Handling ---
+                    // Log the detailed error from our structured response.
+                    var reason = response.Error?.Reason ?? "An unknown error occurred";
+                    adminLogger.Failure($"Config ID {config.Id} failed. Reason: {reason}", config.Id, "ROTATION");
+
+                    // This key failed, so put it on cooldown and move it to the back of the queue.
                     await ReportFailureAndRotateAsync(config.Id);
-                    
-                    // If this was the last attempt, break
-                    if (attempt == maxAttempts)
+
+                    // CHANGE 3: Be smart about failures. If the error is permanent for the *request*, stop trying.
+                    if (response.Type == ResilientResponseType.NonRetryableError)
                     {
-                        adminLogger.Failure($"All {maxAttempts} available API configurations failed.", null, "FINAL");
-                        break;
+                        adminLogger.Failure($"A non-retryable error occurred: '{reason}'. Halting all further attempts.", null, "FINAL");
+                        break; // Exit the loop. No other key will fix a bad request.
                     }
-                    
-                    // Small delay before trying next config (optional)
+
+                    // If it was a retryable error (like a rate limit or server error), the loop will continue with the next key.
                     await Task.Delay(100, ct);
                 }
 
-                adminLogger.Failure("All available API configurations failed.", null, "FINAL");
+                adminLogger.Failure("All available API configurations were tried and failed, or a permanent error was hit.", null, "FINAL");
                 await NotifyAdminAsync(adminLogger.Render(), ct);
-                return null;
+                return null; // Return null as the immediate attempt failed.
             }
             catch (Exception ex)
             {
-                adminLogger.Failure($"Exception during immediate enhancement: {ex.Message}", null, "EXCEPTION");
+                adminLogger.Failure($"An unexpected exception occurred during immediate enhancement: {ex.Message}", null, "EXCEPTION");
                 _logger.LogError(ex, "Exception during immediate enhancement");
+                // Background error log
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "GeminiService",
+                        EventType = "AttemptImmediateEnhancement",
+                        Message = ex.Message,
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
                 await NotifyAdminAsync(adminLogger.Render(), ct);
                 return null;
             }
@@ -232,96 +272,283 @@ Enhanced message:";
         /// <summary>
         /// Hangfire background job method for processing message enhancement
         /// </summary>
-        [AutomaticRetry(Attempts = 2)]
-        public async Task ProcessEnhanceMessageJobAsync(string? text, string jobId, string? apiKeyName, CancellationToken ct)
+        [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Delete)] // Let Hangfire retry on exceptions
+        public async Task ProcessEnhanceMessageJobAsync(string text, string idempotencyKey, string jobId, CancellationToken ct)
         {
-            var adminLogger = new AdminLogger("EnhanceMessage", jobId);
+            var adminLogger = new AdminLogger("EnhanceMessageJob", jobId);
+            adminLogger.Info($"🚀 Hangfire job started. IdempotencyKey: {idempotencyKey}", null, "HANGFIRE_JOB");
+
+            // ✅ Behavior Rule 1: Lock with Timeout
+            // The lock is acquired to prevent concurrent processing for the same idempotency key.
+            var requestLock = _requestLocks.GetOrAdd(idempotencyKey, _ => new SemaphoreSlim(1, 1));
+
+            // Use a timeout for acquiring the lock itself, to prevent jobs from getting stuck indefinitely.
+            bool lockAcquired = await requestLock.WaitAsync(TimeSpan.FromSeconds(60), ct);
+
+            if (!lockAcquired)
+            {
+                // Another job is processing this key, and our wait timed out.
+                // This is a temporary failure; we should retry later.
+                adminLogger.Failure("Failed to acquire idempotency lock within 60s. Job will be retried.", null, "LOCKING");
+                await NotifyAdminAsync(adminLogger.Render(), ct);
+                throw new RetryableJobException("Idempotency lock timed out. Another process may be running.");
+            }
 
             try
             {
-                adminLogger.Info($"🚀 Hangfire job started for text enhancement. JobId: {jobId}", null, "HANGFIRE");
-
-                // 1. Input Validation & Idempotency
-                if (string.IsNullOrWhiteSpace(text))
+                // First, check if a result already exists from a previous successful run.
+                if (_cache.TryGetValue(idempotencyKey, out ResilientResponse<string>? cachedResponse) && cachedResponse!.Success)
                 {
-                    adminLogger.Failure("Aborted: Text was null or empty.", null, "VALIDATION");
+                    adminLogger.Success("Fulfilled from cache (Idempotency).", null, "CACHE");
                     await NotifyAdminAsync(adminLogger.Render(), ct);
+                    // The job is successful, no need to do anything else.
                     return;
                 }
 
-                // Generate cache key based on text only
-                string contentCacheKey = GenerateContentCacheKey(text, null);
-                adminLogger.Info($"Request content hash (text-only): {contentCacheKey}", null, "CACHE");
+                // Execute the core logic for enhancement.
+                var response = await ExecuteResilientEnhancementAsync(text, adminLogger, ct);
 
-                var requestLock = _requestLocks.GetOrAdd(contentCacheKey, _ => new SemaphoreSlim(1, 1));
-                await requestLock.WaitAsync(ct);
+                // ✅ Behavior Rule 2: Telemetry + Metrics
+                // The response object itself contains all necessary telemetry data.
+                _logger.LogInformation(
+                    "Job {JobId} completed with Type: {ResponseType}. Success: {IsSuccess}. Reason: {Reason}",
+                    jobId, response.Type, response.Success, response.Error?.Reason ?? "N/A"
+                );
 
+                // Cache the final response, regardless of success or failure, to prevent re-computation for non-retryable errors.
+                _cache.Set(idempotencyKey, response, TimeSpan.FromHours(1));
+
+                // Now, act based on the response type to guide the Hangfire system.
+                switch (response.Type)
+                {
+                    case ResilientResponseType.Success:
+                        adminLogger.Success("Job completed successfully.", null, "FINAL");
+                        // Do nothing, let the job complete as successful.
+                        break;
+
+                    case ResilientResponseType.RetryableError:
+                        adminLogger.Failure($"Job failed with a retryable error: {response.Error!.Reason}. Hangfire will retry.", null, "FINAL");
+                        // Throw an exception to trigger Hangfire's automatic retry mechanism.
+                        throw new RetryableJobException(response.Error!.Reason);
+
+                    case ResilientResponseType.NonRetryableError:
+                        adminLogger.Failure($"Job failed with a non-retryable error: {response.Error!.Reason}. Moved to Failed queue.", null, "FINAL");
+                        // ✅ Behavior Rule 3: Fallback Action
+                        // For permanent failures, throw a standard exception.
+                        // After Hangfire exhausts its retries, it will move the job to the Failed queue (our DeadLetterQueue).
+                        throw new InvalidOperationException(response.Error!.Reason);
+                }
+            }
+            finally
+            {
+                requestLock.Release();
+                await NotifyAdminAsync(adminLogger.Render(), ct);
+            }
+        }
+
+        /// <summary>
+        /// The core logic that attempts to get a response by rotating through available API keys.
+        /// This method is the heart of the resilient strategy.
+        /// </summary>
+        private async Task<ResilientResponse<string>> ExecuteResilientEnhancementAsync(string text, AdminLogger adminLogger, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return ResilientResponse<string>.CreateNonRetryableError(400, "Invalid Request: Input text cannot be empty.");
+            }
+
+            int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                var config = await GetNextActiveConfigAsync(null, adminLogger, ct);
+
+                // ✅ Behavior Rule 3: Fallback Action (Part 1)
+                // If we run out of configs to try.
+                if (config == null)
+                {
+                    adminLogger.Failure("All API keys are exhausted or on cooldown.", null, "CONFIG");
+                    return ResilientResponse<string>.CreateNonRetryableError(503, "Service Unavailable: All available API keys are exhausted. Job should be moved to a DeadLetterQueue.");
+                }
+
+                adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
+
+                // Attempt the API call for the selected configuration.
+                var response = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+
+                // If the call was successful, we're done.
+                if (response.Success)
+                {
+                    return response;
+                }
+
+                // If the error is non-retryable for this KEY (e.g., Invalid Key), we mark it and try the next.
+                // If the error is non-retryable for the REQUEST (e.g., Bad Request), we should stop immediately.
+                if (response.Type == ResilientResponseType.NonRetryableError && response.Error!.Code == 400)
+                {
+                    adminLogger.Failure($"Non-retryable request error with Config ID {config.Id}: {response.Error.Reason}. Halting execution.", config.Id, "API_RESPONSE");
+                    return response; // Propagate the non-retryable error up.
+                }
+
+                // For any other failure (retryable, or non-retryable key-specific), rotate the key and continue the loop.
+                adminLogger.Failure($"Config ID {config.Id} failed. Reason: {response.Error!.Reason}. Moving to next.", config.Id, "ROTATION");
+                await ReportFailureAndRotateAsync(config.Id);
+
+                await Task.Delay(100, ct); // Small delay before trying the next key.
+            }
+
+            // ✅ Behavior Rule 3: Fallback Action (Part 2)
+            // If the loop finishes, it means all keys were tried and all of them failed.
+            adminLogger.Failure("All available API configurations failed after trying each one.", null, "FINAL");
+            return ResilientResponse<string>.CreateNonRetryableError(503, "Service Unavailable: All API keys failed. Job should be moved to a DeadLetterQueue.");
+        }
+
+        /// <summary>
+        /// Attempts a single API call and translates the HTTP outcome into a structured ResilientResponse.
+        /// This method is now responsible for interpreting API results.
+        /// </summary>
+        /// <summary>
+        /// Attempts a single API call and translates the HTTP outcome into a structured ResilientResponse.
+        /// This method intelligently parses the Gemini error response body to provide precise failure reasons.
+        /// </summary>
+        private async Task<ResilientResponse<string>> AttemptApiCallAsync(
+            AiApiConfiguration cfg, string text, ICollection<byte[]>? images, AdminLogger adminLogger, CancellationToken ct)
+        {
+            // Pre-flight checks (Quota, Circuit Breaker) remain the same.
+            if (!CheckAndIncrementQuota(cfg.ModelName, text))
+            {
+                adminLogger.Info($"Quota exceeded for model {cfg.ModelName}; skipping.", cfg.Id, "QUOTA");
+                // This is a retryable condition for the job, as another key might have quota.
+                return GeminiErrors.ResourceExhausted<string>();
+            }
+
+            var circuitBreaker = GetOrCreateCircuitBreaker(cfg.Id, adminLogger);
+            if (circuitBreaker.CircuitState == CircuitState.Open)
+            {
+                adminLogger.Info($"Circuit breaker is open for Config ID {cfg.Id}. Skipping.", cfg.Id, "CIRCUIT_BREAKER");
+                return GeminiErrors.ServiceUnavailable<string>(); // Circuit breaker open means service is unavailable
+            }
+
+            // Policy setup remains the same
+            var policyWrap = Policy.WrapAsync(_timeoutPolicy, circuitBreaker, _retryPolicy);
+            var pollyCtx = new Context($"GeminiCall-{cfg.Id}", new Dictionary<string, object> { { "ConfigId", cfg.Id.ToString() } });
+
+            try
+            {
+                var request = BuildRequest(cfg.PromptTemplate ?? DEFAULT_PROMPT_TEMPLATE, text);
+                var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
+
+                var sw = Stopwatch.StartNew();
+                HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
+                sw.Stop();
+
+                adminLogger.Info($"HTTP POST returned {(int)response.StatusCode} {response.ReasonPhrase} in {sw.ElapsedMilliseconds}ms.", cfg.Id, "API_CALL");
+
+                // --- SUCCESS PATH ---
+                if (response.IsSuccessStatusCode)
+                {
+                    var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
+
+                    // Check for safety blocks or recitation issues which appear in a successful response body.
+                    if (geminiResponse?.Candidates == null || !geminiResponse.Candidates.Any())
+                    {
+                        var finishReason = geminiResponse?.PromptFeedback?.BlockReason ?? "UNKNOWN";
+                        adminLogger.Failure($"API returned success status but content was blocked. Reason: {finishReason}", cfg.Id, "SAFETY_BLOCK");
+                        // Safety blocks are non-retryable for this specific prompt.
+                        return ResilientResponse<string>.CreateNonRetryableError(400, $"Content blocked due to safety settings. Reason: {finishReason}", "SAFETY_SETTINGS");
+                    }
+
+                    var responseText = geminiResponse.Candidates.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
+                    if (!string.IsNullOrWhiteSpace(responseText))
+                    {
+                        return ResilientResponse<string>.CreateSuccess(responseText);
+                    }
+
+                    // Success status but empty content is a temporary server-side issue.
+                    adminLogger.Failure("API returned success status but content was empty.", cfg.Id, "API_RESPONSE");
+                    return GeminiErrors.InternalError<string>(); // Treat as an internal error
+                }
+
+                // --- ERROR PATH ---
+                var errorContent = await response.Content.ReadAsStringAsync(ct);
+                GeminiErrorResponse? geminiError = null;
                 try
                 {
-                    if (_cache.TryGetValue(contentCacheKey, out string? cachedResult))
-                    {
-                        adminLogger.Success("Fulfilled from cache (Idempotency).", null, "CACHE");
-                        _cache.Set($"JobResult_{jobId}", cachedResult, TimeSpan.FromMinutes(30));
-                        await NotifyAdminAsync(adminLogger.Render(), ct);
-                        return;
-                    }
-                    adminLogger.Info("Cache miss, proceeding to API call.", null, "CACHE");
-
-                    // 2. Main Execution Loop: Try available configs in order
-                    int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
-                    for (int attempt = 1; attempt <= maxAttempts; attempt++)
-                    {
-                        var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
-                        if (config == null)
-                        {
-                            adminLogger.Failure("No available API configurations found. Halting operation.", null, "CONFIG");
-                            break;
-                        }
-
-                        adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Trying with Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
-
-                        (string? result, bool wasSuccess) = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
-
-                        if (wasSuccess)
-                        {
-                            adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
-                            _cache.Set(contentCacheKey, result, TimeSpan.FromHours(1));
-                            
-                            // Store the result in cache with job ID for retrieval
-                            _cache.Set($"JobResult_{jobId}", result, TimeSpan.FromMinutes(30));
-                            adminLogger.Success($"Job completed successfully. Result stored with JobId: {jobId}", null, "HANGFIRE");
-                            return;
-                        }
-
-                        adminLogger.Failure($"Config ID {config.Id} failed. Moving to next configuration.", config.Id, "ROTATION");
-                        await ReportFailureAndRotateAsync(config.Id);
-                        
-                        // If this was the last attempt, break
-                        if (attempt == maxAttempts)
-                        {
-                            adminLogger.Failure($"All {maxAttempts} available API configurations failed.", null, "FINAL");
-                            break;
-                        }
-                        
-                        // Small delay before trying next config (optional)
-                        await Task.Delay(100, ct);
-                    }
-
-                    adminLogger.Failure("All available API configurations failed.", null, "FINAL");
-                    _cache.Set($"JobResult_{jobId}", "FAILED: All configurations failed", TimeSpan.FromMinutes(30));
+                    geminiError = JsonSerializer.Deserialize<GeminiErrorResponse>(errorContent, _jsonOpts);
                 }
-                finally
+                catch (JsonException)
                 {
-                    requestLock.Release();
-                    await NotifyAdminAsync(adminLogger.Render(), ct);
+                    adminLogger.Warning($"Failed to deserialize Gemini error response for status {(int)response.StatusCode}. Content: {errorContent.Truncate(100)}", cfg.Id, "DESERIALIZATION");
                 }
+
+                // ✅ Behavior Rule 2 & 4: Map HTTP errors and Google-specific statuses to our response types
+                switch (response.StatusCode)
+                {
+                    case HttpStatusCode.BadRequest: // 400
+                        if (geminiError?.Error?.Status == "FAILED_PRECONDITION")
+                            return GeminiErrors.FailedPrecondition<string>();
+                        return GeminiErrors.InvalidArgument<string>(geminiError?.Error?.Message ?? errorContent);
+
+                    case HttpStatusCode.Forbidden: // 403
+                        return GeminiErrors.PermissionDenied<string>();
+
+                    case HttpStatusCode.NotFound: // 404
+                        return GeminiErrors.NotFound<string>(geminiError?.Error?.Message ?? "The requested model or resource was not found.");
+
+                    case HttpStatusCode.TooManyRequests: // 429
+                        return GeminiErrors.ResourceExhausted<string>();
+
+                    case HttpStatusCode.InternalServerError: // 500
+                        return GeminiErrors.InternalError<string>();
+
+                    case HttpStatusCode.ServiceUnavailable: // 503
+                        return GeminiErrors.ServiceUnavailable<string>();
+
+                    case HttpStatusCode.GatewayTimeout: // 504
+                        return GeminiErrors.DeadlineExceeded<string>();
+
+                    default:
+                        // Fallback for unexpected status codes
+                        adminLogger.Failure($"Unhandled HTTP status code: {(int)response.StatusCode}. Raw content: {errorContent.Truncate(150)}", cfg.Id, "UNHANDLED_ERROR");
+                        if ((int)response.StatusCode >= 500)
+                        {
+                            return ResilientResponse<string>.CreateRetryableError((int)response.StatusCode, $"Unhandled Server Error: {response.ReasonPhrase}", "UNKNOWN_SERVER_ERROR");
+                        }
+                        else
+                        {
+                            return ResilientResponse<string>.CreateNonRetryableError((int)response.StatusCode, $"Unhandled Client Error: {response.ReasonPhrase}", "UNKNOWN_CLIENT_ERROR");
+                        }
+                }
+            }
+            // --- EXCEPTION PATH ---
+            catch (BrokenCircuitException)
+            {
+                adminLogger.Failure("Circuit breaker tripped and is now open.", cfg.Id, "CIRCUIT_BREAKER");
+                return GeminiErrors.ServiceUnavailable<string>();
+            }
+            catch (TimeoutRejectedException)
+            {
+                adminLogger.Failure("Request timed out by Polly policy.", cfg.Id, "TIMEOUT");
+                return GeminiErrors.DeadlineExceeded<string>(); // A timeout is equivalent to a deadline exceeded
+            }
+            catch (HttpRequestException ex)
+            {
+                adminLogger.Failure($"HTTP request exception: {ex.Message}", cfg.Id, "NETWORK");
+                // Network errors are typically temporary.
+                return ResilientResponse<string>.CreateRetryableError(503, $"Network Error: {ex.Message}", "NETWORK_ERROR");
             }
             catch (Exception ex)
             {
-                adminLogger.Failure($"Exception in background job: {ex.Message}", null, "EXCEPTION");
-                _cache.Set($"JobResult_{jobId}", $"FAILED: {ex.Message}", TimeSpan.FromMinutes(30));
-                await NotifyAdminAsync(adminLogger.Render(), ct);
+                _logger.LogError(ex, "Unexpected exception during API call for Config ID {ConfigId}", cfg.Id);
+                adminLogger.Failure($"Unexpected exception: {ex.Message}", cfg.Id, "EXCEPTION");
+                // Unexpected errors are safer to be classified as non-retryable to avoid poison messages.
+                return ResilientResponse<string>.CreateNonRetryableError(500, $"An unexpected error occurred: {ex.Message}", "UNEXPECTED_EXCEPTION");
             }
+        }
+
+        // A simple custom exception to signal Hangfire to retry
+        public class RetryableJobException : Exception
+        {
+            public RetryableJobException(string message) : base(message) { }
         }
 
         public async Task<string?> GetJobResultAsync(string jobId, CancellationToken ct)
@@ -363,112 +590,6 @@ Enhanced message:";
         }
 
         #region Core Logic Helpers
-
-        private async Task<(string? result, bool wasSuccess)> AttemptApiCallAsync(
-            AiApiConfiguration cfg,
-            string? text,
-            ICollection<byte[]>? images,
-            AdminLogger adminLogger,
-            CancellationToken ct)
-        {
-            // Quota Check
-            if (!CheckAndIncrementQuota(cfg.ModelName, text))
-            {
-                adminLogger.Info($"Quota exceeded for model {cfg.ModelName}; skipping.", cfg.Id, "QUOTA");
-                await NotifyAdminAsync(adminLogger.Render(), ct);
-                return (null, false);
-            }
-
-            // Get the specific circuit breaker for this key
-            var circuitBreaker = GetOrCreateCircuitBreaker(cfg.Id, adminLogger);
-            if (circuitBreaker.CircuitState == CircuitState.Open)
-            {
-                adminLogger.Info($"Circuit breaker is open for Config ID {cfg.Id}. Skipping.", cfg.Id, "CIRCUIT_BREAKER");
-                return (null, false);
-            }
-
-            var policyWrap = Policy.WrapAsync<HttpResponseMessage>(_timeoutPolicy, circuitBreaker, _retryPolicy);
-            var pollyCtx = new Context($"GeminiCall-{cfg.Id}", new Dictionary<string, object> { { "ConfigId", cfg.Id.ToString() } });
-
-            try
-            {
-                // Use the configured prompt template or fall back to default
-                var promptTemplate = !string.IsNullOrWhiteSpace(cfg.PromptTemplate) ? cfg.PromptTemplate : DEFAULT_PROMPT_TEMPLATE;
-                var request = BuildRequest(promptTemplate, text);
-                var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
-
-                var sw = Stopwatch.StartNew();
-                
-                // Wait for the API response with timeout
-                HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
-                sw.Stop();
-
-                adminLogger.Info($"HTTP POST returned {(int)response.StatusCode} {response.ReasonPhrase} in {sw.ElapsedMilliseconds}ms.", cfg.Id, "API_CALL");
-
-                // Check if we got a successful response (200 OK)
-                if (response.IsSuccessStatusCode)
-                {
-                    var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
-                    var responseText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
-                    if (!string.IsNullOrWhiteSpace(responseText))
-                    {
-                        adminLogger.Success($"Successfully received valid response from Config ID {cfg.Id}.", cfg.Id, "API_CALL");
-                        return (responseText, true);
-                    }
-                    adminLogger.Failure("API returned success status but content was empty.", cfg.Id, "API_RESPONSE");
-                    return (null, false);
-                }
-
-                // Handle specific error cases
-                if (response.StatusCode == HttpStatusCode.TooManyRequests)
-                {
-                    adminLogger.Failure("API returned 429 TooManyRequests. This key will be on cooldown.", cfg.Id, "QUOTA");
-                    await NotifyAdminAsync(adminLogger.Render(), ct);
-                }
-                else if (response.StatusCode == HttpStatusCode.Unauthorized)
-                {
-                    adminLogger.Failure("API returned 401 Unauthorized. Invalid API key.", cfg.Id, "AUTH");
-                }
-                else if (response.StatusCode == HttpStatusCode.BadRequest)
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync(ct);
-                    adminLogger.Failure($"API returned 400 Bad Request. Error: {errorContent.Truncate(100)}", cfg.Id, "API_RESPONSE");
-                }
-                else
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync(ct);
-                    adminLogger.Failure($"API returned non-success status: {(int)response.StatusCode}. Error: {errorContent.Truncate(100)}", cfg.Id, "API_RESPONSE");
-                }
-
-                return (null, false);
-            }
-            catch (BrokenCircuitException)
-            {
-                adminLogger.Failure("Circuit breaker tripped and is now open.", cfg.Id, "CIRCUIT_BREAKER");
-                return (null, false);
-            }
-            catch (TimeoutRejectedException)
-            {
-                adminLogger.Failure("Request timed out by Polly policy.", cfg.Id, "TIMEOUT");
-                return (null, false);
-            }
-            catch (TaskCanceledException)
-            {
-                adminLogger.Failure("Request was cancelled.", cfg.Id, "CANCELLATION");
-                return (null, false);
-            }
-            catch (HttpRequestException ex)
-            {
-                adminLogger.Failure($"HTTP request exception: {ex.Message}", cfg.Id, "NETWORK");
-                return (null, false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Exception during API call for Config ID {ConfigId}", cfg.Id);
-                adminLogger.Failure($"Unexpected exception: {ex.Message}", cfg.Id, "EXCEPTION");
-                return (null, false);
-            }
-        }
 
         private async Task<AiApiConfiguration?> GetNextActiveConfigAsync(string? apiKeyName, AdminLogger adminLogger, CancellationToken ct)
         {
@@ -619,6 +740,8 @@ Enhanced message:";
             var finalBytes = finalHash.ComputeHash(Encoding.UTF8.GetBytes(content.ToString()));
             return $"gemini_content_{Convert.ToBase64String(finalBytes)}";
         }
+
+
         #endregion
 
         private string GetCooldownCacheKey(int configId) => $"GeminiConfig_Cooldown_{configId}";
@@ -669,12 +792,118 @@ Enhanced message:";
             return new GeminiRequest(new List<Content> { new(parts) });
         }
 
-        public record GeminiRequest(List<Content> contents);
-        public record Content(List<Part> parts);
-        public record Part([property: JsonPropertyName("text")] string? Text, [property: JsonPropertyName("inline_data")] InlineData? InlineData);
-        public record InlineData([property: JsonPropertyName("mime_type")] string MimeType, [property: JsonPropertyName("data")] string Data);
-        public record GeminiResponse([property: JsonPropertyName("candidates")] List<Candidate>? Candidates);
-        public record Candidate([property: JsonPropertyName("content")] Content? Content);
+        // Place these records within the GeminiService class or in a dedicated file like 'GeminiModels.cs'
+
+        #region Request Models
+
+        /// <summary>
+        /// The top-level request payload sent to the Gemini API.
+        /// </summary>
+        /// <param name="contents">A list of content blocks, typically just one for a single prompt.</param>
+        public record GeminiRequest(
+            [property: JsonPropertyName("contents")] List<Content> contents
+        );
+
+        /// <summary>
+        /// Represents a single block of content in a request, containing various parts.
+        /// </summary>
+        /// <param name="parts">The different parts of the content, such as text or image data.</param>
+        public record Content(
+            [property: JsonPropertyName("parts")] List<Part> parts
+        );
+
+        /// <summary>
+        /// A single part of a prompt, which can be either text or inline data (like a base64-encoded image).
+        /// </summary>
+        /// <param name="Text">The text content of the part.</param>
+        /// <param name="InlineData">The inline data content of the part.</param>
+        public record Part(
+            [property: JsonPropertyName("text")] string? Text,
+            [property: JsonPropertyName("inline_data")] InlineData? InlineData
+        );
+
+        /// <summary>
+        /// Represents inline data, such as an image, sent as part of a prompt.
+        /// </summary>
+        /// <param name="MimeType">The MIME type of the data (e.g., "image/jpeg").</param>
+        /// <param name="Data">The base64-encoded data.</param>
+        public record InlineData(
+            [property: JsonPropertyName("mime_type")] string MimeType,
+            [property: JsonPropertyName("data")] string Data
+        );
+
+        #endregion
+
+        #region Success & Feedback Response Models
+
+        /// <summary>
+        /// The top-level response from the Gemini API for a successful request.
+        /// </summary>
+        /// <param name="Candidates">A list of generated candidate responses from the model.</param>
+        /// <param name="PromptFeedback">Feedback regarding the prompt, including any blocking reasons.</param>
+        public record GeminiResponse(
+            [property: JsonPropertyName("candidates")] List<Candidate>? Candidates,
+            [property: JsonPropertyName("promptFeedback")] PromptFeedback? PromptFeedback
+        );
+
+        /// <summary>
+        /// A single candidate response generated by the model.
+        /// </summary>
+        /// <param name="Content">The content of the response.</param>
+        /// <param name="FinishReason">The reason the model stopped generating text.</param>
+        /// <param name="SafetyRatings">A list of safety ratings for the candidate response.</param>
+        public record Candidate(
+            [property: JsonPropertyName("content")] Content? Content,
+            [property: JsonPropertyName("finishReason")] string? FinishReason,
+            [property: JsonPropertyName("safetyRatings")] List<SafetyRating>? SafetyRatings
+        );
+
+        /// <summary>
+        /// Contains feedback for the prompt sent in the request, especially if it was blocked.
+        /// </summary>
+        /// <param name="BlockReason">The reason the prompt was blocked, if applicable.</param>
+        /// <param name="SafetyRatings">Safety ratings associated with the prompt itself.</param>
+        public record PromptFeedback(
+            [property: JsonPropertyName("blockReason")] string? BlockReason,
+            [property: JsonPropertyName("safetyRatings")] List<SafetyRating>? SafetyRatings
+        );
+
+        /// <summary>
+        /// Represents the safety rating for a piece of content.
+        /// </summary>
+        /// <param name="Category">The safety category (e.g., "HARM_CATEGORY_HARASSMENT").</param>
+        /// <param name="Probability">The likelihood of the content falling into this category (e.g., "NEGLIGIBLE").</param>
+        public record SafetyRating(
+            [property: JsonPropertyName("category")] string Category,
+            [property: JsonPropertyName("probability")] string Probability
+        );
+
+        #endregion
+
+        #region Error Response Models
+
+        /// <summary>
+        /// The top-level structure for a standard error response from the Gemini API.
+        /// This is crucial for parsing detailed error information when the HTTP status is not 200 OK.
+        /// </summary>
+        /// <param name="Error">The detailed error payload.</param>
+        private record GeminiErrorResponse(
+            [property: JsonPropertyName("error")] GeminiErrorPayload Error
+        );
+
+        /// <summary>
+        /// The detailed error payload containing the specific reason for the failure.
+        /// </summary>
+        /// <param name="Code">The HTTP status code.</param>
+        /// <param name="Message">A developer-facing error message.</param>
+        /// <param name="Status">A Google-specific status code (e.g., "INVALID_ARGUMENT", "RESOURCE_EXHAUSTED").</param>
+        private record GeminiErrorPayload(
+            [property: JsonPropertyName("code")] int Code,
+            [property: JsonPropertyName("message")] string Message,
+            [property: JsonPropertyName("status")] string Status
+        );
+
+        #endregion
 
         private class AdminLogger
         {
@@ -686,6 +915,7 @@ Enhanced message:";
             private int _successCount = 0;
             private int _failureCount = 0;
             private int _infoCount = 0;
+            private int _warningCount = 0; // Added for warnings
             private readonly Dictionary<int, int> _configUsageCount = new();
 
             public string CorrelationId { get; }
@@ -723,6 +953,14 @@ Enhanced message:";
                 if (configId.HasValue)
                     _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
                 if (_finalStatus == null) _finalStatus = "❌ FAILURE";
+            }
+
+            public void Warning(string message, int? configId = null, string? category = null)
+            {
+                _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "WARNING", category));
+                _warningCount++; // Increment warning count
+                if (configId.HasValue)
+                    _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
             }
 
             public string Render()
@@ -874,6 +1112,9 @@ Enhanced message:";
                     _ => "📋"
                 };
             }
+
+
+         
 
             private string FormatDuration(TimeSpan duration)
             {

@@ -63,6 +63,8 @@ namespace Application.Common.Interfaces
         /// </summary>
         DbSet<Domain.Features.Forwarding.Entities.ForwardingRule> ForwardingRules { get; }
 
+        DbSet<ProMonitoringLog> ProMonitoringLogs { get; }
+
         // سایر متدها و خصوصیات DbContext که ممکن است لایه Application به آن‌ها نیاز داشته باشد:
         // Microsoft.EntityFrameworkCore.ChangeTracking.ChangeTracker ChangeTracker { get; }
         // Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
