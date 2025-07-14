@@ -64,7 +64,8 @@ namespace WebAPI.Controllers
             catch (Exception ex)
             {
                 // Use the enhanced sanitizer for detailed error reporting
-                var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex);
+                const string encryptionKey = "YourSecureEncryptionKey"; // TODO: Replace with a secure key management solution
+                var sanitizedDetails = SecureExceptionSanitizer.SanitizeWithEncryption(ex, encryptionKey);
                 var sanitizedType = SanitizeForLog(type);
                 _logger.LogError(sanitizedDetails, "Test error triggered: {ErrorType}", sanitizedType);
                 

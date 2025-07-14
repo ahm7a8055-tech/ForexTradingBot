@@ -75,6 +75,9 @@ namespace WebAPI.Controllers
                     @"[a-zA-Z0-9\-_]{20,}", "[API_KEY_REDACTED]", 
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
+                // Ensure encryption is applied after redaction
+                redacted = EncryptData(redacted);
+
                 return redacted;
             }
             catch
@@ -83,33 +86,20 @@ namespace WebAPI.Controllers
             }
         }
 
-        // --- Replace RedactSensitiveData with EncryptSensitiveData for sensitive data logging ---
-        private static string EncryptSensitiveData(string? sensitiveData)
+        // Utility method to encrypt data using ProtectedData
+        private static string EncryptData(string data)
         {
-            if (string.IsNullOrEmpty(sensitiveData)) return string.Empty;
+            if (string.IsNullOrEmpty(data)) return string.Empty;
             try
             {
-                using var aes = System.Security.Cryptography.Aes.Create();
-                aes.Key = GetEncryptionKey();
-                aes.IV = new byte[16]; // For demo only; use a random IV in production
-                var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
-                using var ms = new System.IO.MemoryStream();
-                using (var cs = new System.Security.Cryptography.CryptoStream(ms, encryptor, System.Security.Cryptography.CryptoStreamMode.Write))
-                using (var writer = new System.IO.StreamWriter(cs))
-                {
-                    writer.Write(sensitiveData);
-                }
-                return System.Convert.ToBase64String(ms.ToArray());
+                var bytes = System.Text.Encoding.UTF8.GetBytes(data);
+                var encrypted = System.Security.Cryptography.ProtectedData.Protect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                return System.Convert.ToBase64String(encrypted);
             }
             catch
             {
                 return "[ENCRYPTION_FAILED]";
             }
-        }
-        private static byte[] GetEncryptionKey()
-        {
-            // Replace with secure key management (e.g., environment variables, key vaults)
-            return System.Text.Encoding.UTF8.GetBytes("YourSecureKey123456"); // Example key, 16 bytes for AES-128
         }
 
         private IActionResult CreateSecureErrorResponse(int statusCode, string userMessage, string? internalErrorId = null)
@@ -377,13 +367,13 @@ namespace WebAPI.Controllers
                             response.BotUsername = usernameElement.GetString();
                         }
                         response.TelegramStatus = "OK";
-                        var encryptedBotUsername = EncryptSensitiveData(response.BotUsername);
+                        var encryptedBotUsername = EncryptData(response.BotUsername);
                         _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {EncryptedBotUsername}", encryptedBotUsername);
                     }
                     else
                     {
                         var errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
-                        var encryptedErrorContent = EncryptSensitiveData(errorContent);
+                        var encryptedErrorContent = EncryptData(errorContent);
                         var errorId = Guid.NewGuid().ToString("N")[..8];
                         _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {EncryptedErrorContent}, ErrorId: {ErrorId}",
                             telegramApiResponse.StatusCode, encryptedErrorContent, errorId);
@@ -444,9 +434,9 @@ namespace WebAPI.Controllers
             // This current logging is for demonstration purposes only for this project.
             
             // SECURITY: Encrypt all sensitive configuration data before logging.
-            var encryptedBotToken = EncryptSensitiveData(model.BotToken);
-            var encryptedDbConn = EncryptSensitiveData(validatedDbConn);
-            var encryptedRedisConn = EncryptSensitiveData(validatedRedisConn);
+            var encryptedBotToken = EncryptData(model.BotToken);
+            var encryptedDbConn = EncryptData(validatedDbConn);
+            var encryptedRedisConn = EncryptData(validatedRedisConn);
             
             _logger.LogWarning("Received configuration to save (PLACEHOLDER - NOT SAVING TO APPSETTINGS.JSON):");
             _logger.LogWarning("BotToken: {EncryptedBotToken}", encryptedBotToken);
