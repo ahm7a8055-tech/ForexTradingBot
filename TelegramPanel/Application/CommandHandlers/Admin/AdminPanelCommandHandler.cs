@@ -65,6 +65,9 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                     InlineKeyboardButton.WithCallbackData("☠️ Execute SQL", "admin_execute_sql"),
                     InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", "admin_purge_hangfire")
                 },
+                new[] { // Row 4: Pro Monitoring
+                    InlineKeyboardButton.WithCallbackData("🛡️ Pro Monitoring", "admin_pro_monitoring")
+                },
                 new[] { // Row 5: Navigation
                     InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral)
                 }

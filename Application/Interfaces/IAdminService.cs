@@ -62,5 +62,10 @@ namespace Application.Interfaces
         /// <param name="lineCount">Optional: The number of lines from the end of the file to return. If null or 0, returns full content.</param>
         /// <returns>The content of the log file, or null if not found or an error occurs.</returns>
         Task<string?> GetLogFileContentAsync(string fileName, int? lineCount = null, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Gets the most recent pro monitoring logs for admin/monitoring purposes.
+        /// </summary>
+        Task<List<Domain.Entities.ProMonitoringLog>> GetRecentProMonitoringLogsAsync(int count = 20, CancellationToken cancellationToken = default);
     }
 }

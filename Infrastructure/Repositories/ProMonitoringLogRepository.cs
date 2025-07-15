@@ -28,6 +28,15 @@ namespace Infrastructure.Repositories
         {
             return await _db.ProMonitoringLogs.AsNoTracking().ToListAsync(cancellationToken);
         }
+
+        public async Task<List<ProMonitoringLog>> GetRecentAsync(int count, CancellationToken cancellationToken = default)
+        {
+            return await _db.ProMonitoringLogs
+                .AsNoTracking()
+                .OrderByDescending(x => x.Timestamp)
+                .Take(count)
+                .ToListAsync(cancellationToken);
+        }
         #endregion
 
         #region Update

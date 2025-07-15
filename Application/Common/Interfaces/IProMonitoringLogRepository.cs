@@ -15,6 +15,7 @@ namespace Application.Common.Interfaces
         #region Read
         Task<ProMonitoringLog?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
         Task<List<ProMonitoringLog>> GetAllAsync(CancellationToken cancellationToken = default);
+        Task<List<ProMonitoringLog>> GetRecentAsync(int count, CancellationToken cancellationToken = default);
         #endregion
 
         #region Update

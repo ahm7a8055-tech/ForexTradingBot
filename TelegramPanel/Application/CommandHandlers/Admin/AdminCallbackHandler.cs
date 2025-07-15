@@ -38,6 +38,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private const string PurgeHangfireCallback = "admin_purge_hangfire";
         private const string BackToAdminPanelCallback = "admin_panel_main";
         private const string DownloadLogsCallback = "admin_download_logs";
+        private const string ProMonitoringCallback = "admin_pro_monitoring";
 
         public AdminCallbackHandler(
             ILogger<AdminCallbackHandler> logger,
@@ -72,7 +73,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                    AdminManualRssFetchCallback or    // "admin_manual_rss"
                    PurgeHangfireCallback or          // "admin_purge_hangfire"
                    DownloadLogsCallback or         // "admin_download_logs"
-                   BackToAdminPanelCallback;         // "admin_panel_main"
+                   BackToAdminPanelCallback or
+                   ProMonitoringCallback; // "admin_pro_monitoring"
         }
 
 
@@ -92,6 +94,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 PurgeHangfireCallback => HandlePurgeHangfireAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                 DownloadLogsCallback => HandleDownloadLogsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken), // NEW
                 BackToAdminPanelCallback => ShowAdminPanelAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                ProMonitoringCallback => HandleProMonitoringAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                 _ => Task.CompletedTask
             };
             await handlerTask;
@@ -222,6 +225,31 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 _logger.LogError(ex, "Failed to purge Hangfire jobs.");
                 await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while purging Hangfire jobs.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
+        }
+
+        private async Task HandleProMonitoringAsync(long chatId, int messageId, CancellationToken cancellationToken)
+        {
+            await _messageSender.EditMessageTextAsync(chatId, messageId, "🛡️ Fetching recent pro monitoring logs...", cancellationToken: cancellationToken);
+            var logs = await _adminService.GetRecentProMonitoringLogsAsync(20, cancellationToken);
+            if (logs == null || logs.Count == 0)
+            {
+                await _messageSender.EditMessageTextAsync(chatId, messageId, "ℹ️ No pro monitoring logs found.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                return;
+            }
+            var sb = new StringBuilder();
+            sb.AppendLine("🛡️ <b>Pro Monitoring Logs (Last 20)</b>");
+            foreach (var log in logs)
+            {
+                sb.AppendLine($"<b>{log.Timestamp:yyyy-MM-dd HH:mm:ss}</b> [{log.Level}] <i>{log.Source}</i>");
+                sb.AppendLine($"{log.Message}");
+                if (!string.IsNullOrWhiteSpace(log.Status)) sb.AppendLine($"Status: {log.Status}");
+                if (!string.IsNullOrWhiteSpace(log.EventType)) sb.AppendLine($"Event: {log.EventType}");
+                if (!string.IsNullOrWhiteSpace(log.Exception)) sb.AppendLine($"<code>{log.Exception}</code>");
+                sb.AppendLine("──────────────");
+            }
+            string text = sb.ToString();
+            if (text.Length > 4000) text = text.Substring(0, 3990) + "...\n(Truncated)";
+            await _messageSender.EditMessageTextAsync(chatId, messageId, text, Telegram.Bot.Types.Enums.ParseMode.Html, GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
         }
 
         private Task ShowAdminPanelAsync(long chatId, int messageId, CancellationToken cancellationToken)

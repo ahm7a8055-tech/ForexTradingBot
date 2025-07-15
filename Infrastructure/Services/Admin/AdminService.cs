@@ -37,13 +37,15 @@ namespace Infrastructure.Services.Admin
         private readonly ICacheService _cacheService;
         private readonly IUserRepository _userRepository;
         private readonly ISignalRepository _signalRepository;
+        private readonly IProMonitoringLogRepository _proMonitoringLogRepository;
 
         public AdminService(
             IConfiguration configuration,
             ILogger<AdminService> logger,
             ICacheService cacheService,
             IUserRepository userRepository,
-            ISignalRepository signalRepository)
+            ISignalRepository signalRepository,
+            IProMonitoringLogRepository proMonitoringLogRepository)
         {
             _connectionString = configuration.GetConnectionString("DefaultConnection")
                                 ?? throw new InvalidOperationException("DefaultConnection string is not found in configuration.");
@@ -51,6 +53,7 @@ namespace Infrastructure.Services.Admin
             _cacheService = cacheService;
             _userRepository = userRepository;
             _signalRepository = signalRepository;
+            _proMonitoringLogRepository = proMonitoringLogRepository;
         }
         #endregion
 
@@ -506,6 +509,13 @@ namespace Infrastructure.Services.Admin
             _logger.LogInformation("Admin dashboard statistics compiled successfully.");
             return stats;
         }
+
+        #region Pro Monitoring Logs
+        public async Task<List<ProMonitoringLog>> GetRecentProMonitoringLogsAsync(int count = 20, CancellationToken cancellationToken = default)
+        {
+            return await _proMonitoringLogRepository.GetRecentAsync(count, cancellationToken);
+        }
+        #endregion
 
         #region Log File Operations
         public async Task<List<string>> ListLogFilesAsync(CancellationToken cancellationToken = default)
