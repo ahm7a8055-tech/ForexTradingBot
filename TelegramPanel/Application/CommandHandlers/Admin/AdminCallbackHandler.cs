@@ -505,24 +505,56 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, keyboard, cancellationToken);
         }
         /// <summary>
-/// Executes the deletion of all logs after confirmation.
-/// </summary>
-private async Task HandleDeleteLogsConfirmAsync(long chatId, int messageId, CancellationToken cancellationToken)
-{
-    await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Deleting all logs, please wait...", cancellationToken: cancellationToken);
-    
-    try
-    {
-        int deletedCount = await _adminService.DeleteAllProMonitoringLogsAsync(cancellationToken);
-        string successMessage = $"✅ Success! Deleted *{deletedCount:N0}* log entries permanently.";
-        await _messageSender.EditMessageTextAsync(chatId, messageId, successMessage, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken);
-    }
-    catch (Exception ex)
-    {
-        _logger.LogError(ex, "Failed to delete all pro monitoring logs.");
-        await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while deleting logs. Please check server logs for details.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
-    }
-}
+        /// Executes the deletion of all logs after confirmation.
+        /// </summary>
+        /// <summary>
+        /// Executes the deletion of all logs after confirmation, with enhanced error logging.
+        /// </summary>
+        private async Task HandleDeleteLogsConfirmAsync(long chatId, int messageId, CancellationToken cancellationToken)
+        {
+            await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Deleting all logs, please wait...", cancellationToken: cancellationToken);
+
+            try
+            {
+                int deletedCount = await _adminService.DeleteAllProMonitoringLogsAsync(cancellationToken);
+                string successMessage = $"✅ Success! Deleted *{deletedCount:N0}* log entries permanently.";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, successMessage, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // 1. Log the error to the primary logging system (e.g., console, file) for immediate visibility.
+                _logger.LogError(ex, "Failed to delete all pro monitoring logs during admin confirmation step.");
+
+                // --- ENHANCEMENT: Log the failure to the database in a background task ---
+                // This creates a persistent record of the failed administrative action.
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Critical", // This is a critical failure of an admin function
+                        Source = "AdminCallbackHandler",
+                        EventType = "DeleteAllLogsConfirm",
+                        Message = "An exception occurred while attempting to delete all pro monitoring logs.",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                // --- END OF ENHANCEMENT ---
+
+                // 2. Inform the admin user that the operation failed.
+                await _messageSender.EditMessageTextAsync(
+                    chatId: chatId,
+                    messageId: messageId,
+                    text: "❌ An error occurred while deleting logs. The failure has been logged for review.",
+                    replyMarkup: GetBackToAdminPanelKeyboard(),
+                    cancellationToken: cancellationToken);
+            }
+        }
 
 
 
