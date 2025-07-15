@@ -181,36 +181,73 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         private async Task HandleDownloadLogsAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
-            // Give immediate feedback to the admin
-            await _messageSender.EditMessageTextAsync(chatId, messageId, "🗜️ Finding and zipping log files, please wait...", cancellationToken: cancellationToken);
-
-            (byte[] zipContents, string fileName, string errorMessage) = await _adminService.GetLogFilesAsZipAsync(cancellationToken);
-
-            if (zipContents != null && zipContents.Length > 0)
+            try
             {
-                _logger.LogInformation("Sending log archive '{FileName}' to admin chat {ChatId}.", fileName, chatId);
+                // Give immediate feedback to the admin
+                await _messageSender.EditMessageTextAsync(chatId, messageId, "🗜️ Finding and zipping log files, please wait...", cancellationToken: cancellationToken);
 
-                // ✅ CORRECTED: Call the new method on your sender interface with the serializable types.
-                // The sender will now handle enqueuing this to Hangfire correctly.
-                await _messageSender.SendDocumentAsync(
-                    chatId: chatId,
-                    documentContents: zipContents,
-                    fileName: fileName,
-                    caption: "Here are the server logs.",
-                    cancellationToken: cancellationToken
-                );
+                // This service call is the primary point of potential failure
+                (byte[] zipContents, string fileName, string errorMessage) = await _adminService.GetLogFilesAsZipAsync(cancellationToken);
 
-                // Clean up the "zipping..." message by editing it back to the main panel
-                await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ Log archive sent successfully. The file will arrive shortly.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                // This block handles the expected outcomes (success or known failure)
+                if (zipContents != null && zipContents.Length > 0)
+                {
+                    _logger.LogInformation("Sending log archive '{FileName}' to admin chat {ChatId}.", fileName, chatId);
+
+                    await _messageSender.SendDocumentAsync(
+                        chatId: chatId,
+                        documentContents: zipContents,
+                        fileName: fileName,
+                        caption: "Here are the server logs.",
+                        cancellationToken: cancellationToken
+                    );
+
+                    await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ Log archive sent successfully. The file will arrive shortly.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                }
+                else
+                {
+                    // This is a "graceful" failure, where the process worked but found no files or had a specific issue.
+                    _logger.LogWarning("Failed to create log archive: {Error}", errorMessage);
+                    string errorText = $"❌ Could not retrieve logs. Reason: `{errorMessage}`";
+                    await _messageSender.EditMessageTextAsync(chatId, messageId, errorText, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                }
             }
-            else
+            catch (Exception ex)
             {
-                _logger.LogWarning("Failed to send log archive to admin: {Error}", errorMessage);
-                string errorText = $"❌ Could not retrieve logs. Reason: `{errorMessage}`";
-                await _messageSender.EditMessageTextAsync(chatId, messageId, errorText, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                // This block handles unexpected exceptions (e.g., file permissions, out of memory).
+
+                // 1. Log the error to the primary logging system.
+                _logger.LogError(ex, "An unexpected error occurred while preparing log files for download.");
+
+                // --- ENHANCEMENT: Log the failure to the database in a background task ---
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "AdminCallbackHandler",
+                        EventType = "DownloadLogs",
+                        Message = "An unexpected exception occurred while zipping and sending log files.",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                // --- END OF ENHANCEMENT ---
+
+                // 2. Inform the admin user that the operation failed.
+                await _messageSender.EditMessageTextAsync(
+                    chatId: chatId,
+                    messageId: messageId,
+                    text: "❌ An unexpected error occurred while trying to create the log archive. The failure has been logged for review.",
+                    replyMarkup: GetBackToAdminPanelKeyboard(),
+                    cancellationToken: cancellationToken);
             }
         }
-
         private async Task HandleServerStatsAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             await _messageSender.EditMessageTextAsync(chatId, messageId, "\ud83d\udcca Fetching server stats...", cancellationToken: cancellationToken);
@@ -350,118 +387,148 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         private async Task HandleProMonitoringAsync(long chatId, int messageId, string callbackData, CancellationToken cancellationToken)
         {
-            const int PageSize = 5; // Reduced page size for better readability on mobile
-            const int MaxMessageLength = 4096;
-            const int PreviewLength = 200;
-
-            int.TryParse(callbackData.Replace(ProMonitoringCallbackPrefix, ""), out int offset);
-
-            string loadingMessage = offset > 0 ? "🔄 Fetching next page of logs..." : "🔍 Retrieving Pro Monitoring Logs...";
-            await _messageSender.EditMessageTextAsync(chatId, messageId, loadingMessage, cancellationToken: cancellationToken);
-
-            var logs = await _adminService.GetRecentProMonitoringLogsAsync(PageSize, offset, cancellationToken);
-
-            if (logs == null || logs.Count == 0)
+            try
             {
-                await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ No further pro monitoring logs found.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
-                return;
-            }
+                const int PageSize = 5; // Reduced page size for better readability on mobile
+                const int MaxMessageLength = 4096;
+                const int PreviewLength = 200;
 
-            // --- Time Zone Conversion Setup ---
-            var iranTimeZone = GetIranTimeZone();
-            var sb = new StringBuilder();
-            int currentPage = (offset / PageSize) + 1;
+                int.TryParse(callbackData.Replace(ProMonitoringCallbackPrefix, ""), out int offset);
 
-            sb.AppendLine($"📋 *Pro Monitoring Log* (Page {currentPage})");
-            sb.AppendLine("`" + new string('─', 32) + "`");
+                string loadingMessage = offset > 0 ? "🔄 Fetching next page of logs..." : "🔍 Retrieving Pro Monitoring Logs...";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, loadingMessage, cancellationToken: cancellationToken);
 
-            foreach (var log in logs)
-            {
-                // --- Timestamp Conversion ---
-                var utcTime = DateTime.SpecifyKind(log.Timestamp, DateTimeKind.Utc);
-                string iranTimeFormatted = "N/A";
-                if (iranTimeZone != null)
+                // --- Fetch logs from the service ---
+                var logs = await _adminService.GetRecentProMonitoringLogsAsync(PageSize, offset, cancellationToken);
+
+                if (logs == null || logs.Count == 0)
                 {
-                    var iranTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, iranTimeZone);
-                    iranTimeFormatted = iranTime.ToString("yyyy-MM-dd HH:mm:ss");
-                }
-                string utcTimeFormatted = utcTime.ToString("yyyy-MM-dd HH:mm:ss");
-
-                // --- Build Log Entry with Pro UI/UX ---
-                string levelEmoji = GetLevelEmoji(log.Level);
-                sb.AppendLine($"{levelEmoji} *{log.Level}* | `{EscapeMarkdownV1(log.Source)}`");
-                sb.AppendLine($"`Message:` {EscapeMarkdownV1(log.Message)}");
-                sb.AppendLine(); // Whitespace for readability
-
-                // Details Section (only if there are details)
-                if (!string.IsNullOrWhiteSpace(log.Status) || !string.IsNullOrWhiteSpace(log.EventType) || !string.IsNullOrWhiteSpace(log.Exception))
-                {
-                    sb.AppendLine("    *Details*");
-                    if (!string.IsNullOrWhiteSpace(log.Status))
-                        sb.AppendLine($"      `Status:` {EscapeMarkdownV1(log.Status)}");
-                    if (!string.IsNullOrWhiteSpace(log.EventType))
-                        sb.AppendLine($"      `Event:` {EscapeMarkdownV1(log.EventType)}");
-                    if (!string.IsNullOrWhiteSpace(log.Exception))
-                    {
-                        string exceptionContent = log.Exception;
-                        if (exceptionContent.Length > PreviewLength)
-                        {
-                            exceptionContent = exceptionContent.Substring(0, PreviewLength) + "...";
-                        }
-                        sb.AppendLine($"      `Exception:`\n```\n{exceptionContent}\n```");
-                    }
-                    sb.AppendLine();
+                    await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ No further pro monitoring logs found.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                    return;
                 }
 
-                // Timestamp Section
-                sb.AppendLine("    ⏰ *Time*");
-                sb.AppendLine($"      `🇮🇷 Tehran:` `{iranTimeFormatted}`");
-                sb.AppendLine($"      `🌍 UTC:`     `{utcTimeFormatted}`");
+                // --- Time Zone Conversion Setup ---
+                var iranTimeZone = GetIranTimeZone();
+                var sb = new StringBuilder();
+                int currentPage = (offset / PageSize) + 1;
 
+                sb.AppendLine($"📋 *Pro Monitoring Log* (Page {currentPage})");
                 sb.AppendLine("`" + new string('─', 32) + "`");
+
+                foreach (var log in logs)
+                {
+                    // --- Timestamp Conversion ---
+                    var utcTime = DateTime.SpecifyKind(log.Timestamp, DateTimeKind.Utc);
+                    string iranTimeFormatted = "N/A";
+                    if (iranTimeZone != null)
+                    {
+                        var iranTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, iranTimeZone);
+                        iranTimeFormatted = iranTime.ToString("yyyy-MM-dd HH:mm:ss");
+                    }
+                    string utcTimeFormatted = utcTime.ToString("yyyy-MM-dd HH:mm:ss");
+
+                    // --- Build Log Entry with Pro UI/UX ---
+                    string levelEmoji = GetLevelEmoji(log.Level);
+                    sb.AppendLine($"{levelEmoji} *{log.Level}* | `{EscapeMarkdownV1(log.Source)}`");
+                    sb.AppendLine($"`Message:` {EscapeMarkdownV1(log.Message)}");
+                    sb.AppendLine(); // Whitespace for readability
+
+                    // Details Section
+                    if (!string.IsNullOrWhiteSpace(log.Status) || !string.IsNullOrWhiteSpace(log.EventType) || !string.IsNullOrWhiteSpace(log.Exception))
+                    {
+                        sb.AppendLine("    *Details*");
+                        if (!string.IsNullOrWhiteSpace(log.Status))
+                            sb.AppendLine($"      `Status:` {EscapeMarkdownV1(log.Status)}");
+                        if (!string.IsNullOrWhiteSpace(log.EventType))
+                            sb.AppendLine($"      `Event:` {EscapeMarkdownV1(log.EventType)}");
+                        if (!string.IsNullOrWhiteSpace(log.Exception))
+                        {
+                            string exceptionContent = log.Exception;
+                            if (exceptionContent.Length > PreviewLength)
+                            {
+                                exceptionContent = exceptionContent.Substring(0, PreviewLength) + "...";
+                            }
+                            sb.AppendLine($"      `Exception:`\n```\n{exceptionContent}\n```");
+                        }
+                        sb.AppendLine();
+                    }
+
+                    // Timestamp Section
+                    sb.AppendLine("    ⏰ *Time*");
+                    sb.AppendLine($"      `🇮🇷 Tehran:` `{iranTimeFormatted}`");
+                    sb.AppendLine($"      `🌍 UTC:`     `{utcTimeFormatted}`");
+
+                    sb.AppendLine("`" + new string('─', 32) + "`");
+                }
+
+                // --- Build Keyboard ---
+                var keyboardRows = new List<List<InlineKeyboardButton>>();
+                var navigationRow = new List<InlineKeyboardButton>();
+
+                if (offset > 0)
+                {
+                    navigationRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{ProMonitoringCallbackPrefix}{Math.Max(0, offset - PageSize)}"));
+                }
+                if (logs.Count == PageSize)
+                {
+                    navigationRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{ProMonitoringCallbackPrefix}{offset + PageSize}"));
+                }
+                if (navigationRow.Any())
+                {
+                    keyboardRows.Add(navigationRow);
+                }
+
+                var destructiveActionsRow = new List<InlineKeyboardButton>
+        {
+            InlineKeyboardButton.WithCallbackData("🗑️ Delete All Logs", $"{ProMonitoringDeletePromptPrefix}{offset}")
+        };
+                keyboardRows.Add(destructiveActionsRow);
+
+                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Back to Admin Panel", BackToAdminPanelCallback) });
+                var replyMarkup = new InlineKeyboardMarkup(keyboardRows);
+
+                // --- Send Message ---
+                string text = sb.ToString();
+                if (text.Length > MaxMessageLength)
+                {
+                    text = text.Substring(0, MaxMessageLength - 50) + "...\n_(Message truncated)_";
+                }
+
+                await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, replyMarkup, cancellationToken);
             }
-
-            // --- Navigation and Sending (no changes needed here) ---
-            var keyboardRows = new List<List<InlineKeyboardButton>>();
-            var navigationRow = new List<InlineKeyboardButton>();
-
-            // "Previous" button
-            if (offset > 0)
+            catch (Exception ex)
             {
-                navigationRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{ProMonitoringCallbackPrefix}{Math.Max(0, offset - PageSize)}"));
+                // 1. Log the error to the primary logging system (e.g., console, file).
+                _logger.LogError(ex, "Failed to display Pro Monitoring logs for callback: {CallbackData}", callbackData);
+
+                // --- ENHANCEMENT: Log the failure to the database in a background task ---
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "AdminCallbackHandler",
+                        EventType = "HandleProMonitoring",
+                        Message = $"An exception occurred while trying to display logs for callback: {callbackData}",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                // --- END OF ENHANCEMENT ---
+
+                // 2. Inform the admin user that the operation failed.
+                await _messageSender.EditMessageTextAsync(
+                    chatId: chatId,
+                    messageId: messageId,
+                    text: "❌ An error occurred while fetching or displaying the logs. The failure has been logged for review.",
+                    replyMarkup: GetBackToAdminPanelKeyboard(),
+                    cancellationToken: cancellationToken);
             }
-
-            // "Next" button
-            if (logs.Count == PageSize)
-            {
-                navigationRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{ProMonitoringCallbackPrefix}{offset + PageSize}"));
-            }
-
-            if (navigationRow.Any())
-            {
-                keyboardRows.Add(navigationRow);
-            }
-
-            // --- NEW: Add the "Delete All" button row ---
-            // We pass the current offset so we can return if the user cancels.
-            var destructiveActionsRow = new List<InlineKeyboardButton>
-    {
-        InlineKeyboardButton.WithCallbackData("🗑️ Delete All Logs", $"{ProMonitoringDeletePromptPrefix}{offset}")
-    };
-            keyboardRows.Add(destructiveActionsRow);
-
-            // "Back to Admin Panel" button
-            keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Back to Admin Panel", BackToAdminPanelCallback) });
-            var replyMarkup = new InlineKeyboardMarkup(keyboardRows);
-
-            string text = sb.ToString();
-
-            if (text.Length > MaxMessageLength)
-            {
-                text = text.Substring(0, MaxMessageLength - 50) + "...\n_(Message truncated)_";
-            }
-
-            await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, replyMarkup, cancellationToken);
         }
 
         // --- Helper method to get Emojis based on log level ---
