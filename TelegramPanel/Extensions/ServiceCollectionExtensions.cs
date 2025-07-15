@@ -53,7 +53,7 @@ namespace TelegramPanel.Extensions
 
 
 
-
+            _ = services.AddSingleton<IUserRateLimiterService, UserRateLimiterService>();
             // 3. Register ITelegramMessageSender
             _ = services.AddScoped<ITelegramCallbackQueryHandler, CryptoCallbackHandler>();
 

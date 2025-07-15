@@ -29,14 +29,16 @@ namespace TelegramPanel.Infrastructure
         private readonly BotCommandSetupService _commandSetupService; // برای تنظیم کامندها
         private readonly ActivitySource _activitySource;
         private readonly IServiceProvider _serviceProvider;
+        private readonly IUserRateLimiterService _rateLimiter;
         public TelegramBotService(
             ILogger<TelegramBotService> logger,
-            ITelegramBotClient botClient,
+            ITelegramBotClient botClient, IUserRateLimiterService rateLimiter,
             IOptions<TelegramPanelSettings> settingsOptions,
             ITelegramUpdateChannel updateChannel,
             IBotCommandSetupService commandSetupService,
             IServiceProvider serviceProvider) // Inject IServiceProvider
         {
+            _rateLimiter = rateLimiter ?? throw new ArgumentNullException(nameof(rateLimiter));
             _activitySource = new ActivitySource("TelegramPanel.Infrastructure");
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _botClient = botClient ?? throw new ArgumentNullException(nameof(botClient));
@@ -272,20 +274,19 @@ namespace TelegramPanel.Infrastructure
 
 
         #region IUpdateHandler Implementation (for Polling)
+        #region IUpdateHandler Implementation (for Polling)
         /// <summary>
         /// This method is invoked by the Telegram.Bot library's Polling mechanism for every new update.
         /// Its responsibility is to safely and efficiently send the update to the internal processing channel (<see cref="ITelegramUpdateChannel"/>).
         /// This enhanced version prioritizes robustness, detailed logging, and graceful handling of various scenarios.
         /// </summary>
-        /// <param name="botClient">The bot client that received the update (typically the same as <see cref="_botClient"/>).</param>
-        /// <param name="update">The update object received from Telegram.</param>
-        /// <param name="cancellationToken">A token passed by the Polling loop, indicating a request to stop polling.</param>
         public async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
         {
             // --- 1. Input Validation ---
             if (botClient == null)
             {
                 // Critical configuration error, should halt startup or be caught higher up.
+                // NEW: This is a developer error, so throwing is appropriate.
                 throw new ArgumentNullException(nameof(botClient), "The bot client cannot be null when handling an update.");
             }
 
@@ -297,26 +298,47 @@ namespace TelegramPanel.Infrastructure
                 return;
             }
 
+            // --- ADDED: Early User Extraction & Validation ---
+            // Extract the user ID first, as it's essential for all subsequent steps.
+            long? userId = update.Message?.From?.Id ?? update.CallbackQuery?.From?.Id;
+            if (!userId.HasValue)
+            {
+                _logger.LogWarning("Skipping update {UpdateId} of type {UpdateType} because it has no identifiable user.", update.Id, update.Type);
+                return;
+            }
+
+            // --- ADDED: Per-User Rate Limiting (Security Guard) ---
+            // Apply rate limiting as early as possible after identifying the user.
+            if (!await _rateLimiter.IsRequestAllowedAsync(userId.Value))
+            {
+                // The user is rate-limited. We log this event and drop the update immediately.
+                _logger.LogWarning("User {UserId} was rate-limited. Dropping update {UpdateId} to prevent spam.", userId.Value, update.Id);
+                return; // Halt processing for this update immediately.
+            }
+
             // --- 2. Distributed Tracing Setup ---
             // Use a descriptive name for the activity. ActivityKind.Internal is suitable for internal processing.
-            using Activity? activity = _activitySource.CreateActivity("HandleUpdateAsync", ActivityKind.Internal);
+            using Activity? activity = _activitySource.CreateActivity("TelegramUpdate.Process", ActivityKind.Internal);
+
+            // Start the activity (trace span).
+            // NEW: Start the activity before adding tags.
+            activity?.Start();
 
             // Add common tags for tracing context. These tags are visible in distributed tracing systems (like Jaeger, Zipkin).
-            _ = (activity?.AddTag("app.update.id", update.Id));
-            _ = (activity?.AddTag("app.update.type", update.Type.ToString()));
+            activity?.SetTag("app.update.id", update.Id);
+            activity?.SetTag("app.update.type", update.Type.ToString());
 
             // Extract user ID and add it as a tag if available.
-            long? userId = update.Message?.From?.Id ?? update.CallbackQuery?.From?.Id;
-            if (userId.HasValue)
-            {
-                _ = (activity?.AddTag("app.telegram.user.id", userId.Value));
-            }
+            // We already have userId, so we just use it.
+            activity?.SetTag("app.telegram.user.id", userId.Value);
+            // NEW: Add a tag to confirm the request was allowed by the rate limiter.
+            activity?.SetTag("app.rate_limit.status", "allowed");
 
             // Extract chat ID and add it as a tag if available.
             long? chatId = update.Message?.Chat?.Id ?? update.CallbackQuery?.Message?.Chat?.Id;
             if (chatId.HasValue)
             {
-                _ = (activity?.AddTag("app.telegram.chat.id", chatId.Value));
+                activity?.SetTag("app.telegram.chat.id", chatId.Value);
             }
 
             // Log a snippet of message text for context, but only if it's a message update.
@@ -326,11 +348,8 @@ namespace TelegramPanel.Infrastructure
                 messageTextSnippet = update.Message.Text.Length > 50
                     ? update.Message.Text[..50] + "..."
                     : update.Message.Text;
-                _ = (activity?.AddTag("app.message.text.snippet", messageTextSnippet));
+                activity?.SetTag("app.message.text.snippet", messageTextSnippet);
             }
-
-            // Start the activity (trace span).
-            _ = (activity?.Start());
 
             // --- 3. Structured Logging Context ---
             // Combine tracing tags with logging scope properties for comprehensive context.
@@ -341,7 +360,7 @@ namespace TelegramPanel.Infrastructure
                 ["UpdateType"] = update.Type.ToString(),
                 ["TelegramUserId"] = userId,
                 ["TelegramChatId"] = chatId,
-                ["MessageTextSnippet"] = messageTextSnippet,
+                // NEW: Removed messageTextSnippet from here as it's less critical for the primary scope. It's already in the trace.
                 // Add a reference to the current trace/span ID for easier log correlation
                 ["TraceId"] = activity?.TraceId.ToString(),
                 ["SpanId"] = activity?.SpanId.ToString()
@@ -349,7 +368,8 @@ namespace TelegramPanel.Infrastructure
 
             using (_logger.BeginScope(logScopeProps))
             {
-                _logger.LogDebug("Received update. Attempting to enqueue for processing.");
+                // NEW: More descriptive log message.
+                _logger.LogDebug("Update validated and allowed. Attempting to enqueue for pipeline processing.");
 
                 // --- 4. Channel Write Operation with Enhanced Error Handling ---
                 try
@@ -359,35 +379,29 @@ namespace TelegramPanel.Infrastructure
                     await _updateChannel.WriteAsync(update, cancellationToken).ConfigureAwait(false);
 
                     _logger.LogTrace("Update successfully enqueued to the processing channel.");
-                    // Potential Metric: Increment a counter for successful enqueues
-                    // _metrics.EnqueueSuccessCount.Inc();
+                    // NEW: Explicitly set the activity status to OK on success.
+                    activity?.SetStatus(ActivityStatusCode.Ok, "Update enqueued successfully");
                 }
                 catch (OperationCanceledException oce) when (cancellationToken.IsCancellationRequested)
                 {
                     // Expected during graceful shutdown. Log as Information.
                     _logger.LogInformation(oce, "Enqueueing update was canceled due to polling cancellation request.");
-                    // Potential Metric: Increment a counter for canceled operations
-                    // _metrics.EnqueueCanceledCount.Inc();
+                    // NEW: Set activity status for cancellation.
+                    activity?.SetStatus(ActivityStatusCode.Ok, "Operation Canceled");
                 }
                 catch (ChannelClosedException cce)
                 {
                     // Critical error: Channel is closed, cannot enqueue. Application shutdown likely.
-                    _logger.LogError(cce, "Failed to enqueue update to the processing channel because the channel is closed. Application might be shutting down or channel terminated unexpectedly.");
-                    // Potential Metric: Increment a counter for channel closed errors
-                    // _metrics.EnqueueChannelClosedErrorCount.Inc();
-
+                    _logger.LogError(cce, "CRITICAL: Failed to enqueue update because the channel is closed. Application might be shutting down or in a faulty state.");
                     // Mark the activity as failed if the channel write fails critically.
-                    _ = (activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue"));
+                    activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue");
                 }
                 catch (Exception ex)
                 {
                     // Catch-all for any other unexpected errors during the enqueue operation.
                     _logger.LogError(ex, "An unexpected error occurred while enqueueing update from polling to the processing channel.");
-                    // Potential Metric: Increment a counter for general enqueue errors
-                    // _metrics.EnqueueGenericErrorCount.Inc();
-
                     // Mark the activity as failed.
-                    _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}"));
+                    activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}");
                 }
                 finally
                 {
@@ -396,7 +410,6 @@ namespace TelegramPanel.Infrastructure
                 }
             }
         }
-
 
         #endregion
 
