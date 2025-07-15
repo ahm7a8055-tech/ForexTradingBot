@@ -239,6 +239,22 @@ namespace TelegramPanel.Application.Pipeline
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send 'Join Channel' message with button to UserID {UserId}.", telegramId);
+
+                // --- ENHANCEMENT: Log this failure to the database ---
+                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Level = "Error",
+                    Source = "AuthenticationMiddleware",
+                    EventType = "HandleNotAMemberAsync",
+                    Message = $"Failed to send 'Force Join' prompt to user {telegramId}.",
+                    Details = ex.StackTrace,
+                    Exception = ex.ToString(),
+                    Status = "Failed",
+                    CreatedAt = DateTime.UtcNow
+                }, cancellationToken); // Pass cancellationToken if method supports it
+                                       // --- END OF ENHANCEMENT ---
             }
         }
         private async ValueTask HandleUnauthenticatedAccessAsync(long telegramId, AsyncServiceScope scope, CancellationToken cancellationToken)
@@ -258,6 +274,22 @@ namespace TelegramPanel.Application.Pipeline
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send 'Access Denied' message to UserID {UserId}.", telegramId);
+
+                // --- ENHANCEMENT: Log this failure to the database ---
+                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Level = "Error",
+                    Source = "AuthenticationMiddleware",
+                    EventType = "HandleUnauthenticatedAccessAsync",
+                    Message = $"Failed to send 'Access Denied' prompt to user {telegramId}.",
+                    Details = ex.StackTrace,
+                    Exception = ex.ToString(),
+                    Status = "Failed",
+                    CreatedAt = DateTime.UtcNow
+                }, cancellationToken);
+                // --- END OF ENHANCEMENT ---
             }
         }
 
@@ -275,6 +307,21 @@ namespace TelegramPanel.Application.Pipeline
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send critical failure message to UserID {UserId}.", telegramId);
+
+                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                await repo.AddAsync(new Domain.Entities.ProMonitoringLog
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Level = "Critical", // Elevate level since it's a failure-on-failure
+                    Source = "AuthenticationMiddleware",
+                    EventType = "HandleCriticalFailureAsync",
+                    Message = $"CRITICAL: Failed to send final error message to user {telegramId}.",
+                    Details = ex.StackTrace,
+                    Exception = ex.ToString(),
+                    Status = "Failed",
+                    CreatedAt = DateTime.UtcNow
+                }, cancellationToken);
+                // --- END OF ENHANCEMENT ---
             }
         }
         #endregion
