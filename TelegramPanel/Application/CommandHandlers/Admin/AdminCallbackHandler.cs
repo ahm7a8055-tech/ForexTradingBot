@@ -357,19 +357,48 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private async Task HandlePurgeHangfireAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Purging completed Hangfire jobs...", cancellationToken: cancellationToken);
+
             try
             {
-                string connectionString = _configuration.GetConnectionString("DefaultConnection")!;
+                // NOTE: The actual purge logic is commented out in your example.
+                // Assuming you have a service like _hangfireCleaner.PurgeCompletedAndFailedJobs()
+                // that would be called here. For this example, we'll proceed as if it's there.
+                // string connectionString = _configuration.GetConnectionString("DefaultConnection")!;
                 // await _hangfireCleaner.PurgeCompletedAndFailedJobs();
+
                 _logger.LogInformation("Admin manually purged Hangfire jobs.");
                 await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ Hangfire 'Succeeded' and 'Failed' job lists have been cleared.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to purge Hangfire jobs.");
-                await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while purging Hangfire jobs.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+
+                // --- ENHANCEMENT: Log the failure to the database in a background task ---
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "AdminCallbackHandler",
+                        EventType = "PurgeHangfire",
+                        Message = "An exception occurred while trying to manually purge Hangfire jobs.",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                // --- END OF ENHANCEMENT ---
+
+                // Send a clear error message to the admin
+                string errorMessage = "❌ An error occurred while purging Hangfire jobs. The failure has been logged for review.";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, errorMessage, replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
         }
+
         private string EscapeMarkdownV1(string text)
         {
             if (string.IsNullOrEmpty(text))

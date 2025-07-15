@@ -1,6 +1,8 @@
 ﻿// File: TelegramPanel/Application/CommandHandlers/MenuCommandHandler.cs
 #region Usings
 using Application.Common.Interfaces;
+using Domain.Entities;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Text;
 using Telegram.Bot.Types;
@@ -23,7 +25,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         private readonly ITelegramMessageSender _messageSender;
 
         // Callback Data constants for menu buttons
-
+        private readonly IServiceProvider _serviceProvider;
         public const string SignalsCallbackData = "menu_view_signals";
         public const string ProfileCallbackData = "menu_my_profile";
         public const string SubscribeCallbackData = "menu_subscribe_plans";
@@ -40,12 +42,13 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         #endregion
 
         #region Constructor
-        public MenuCommandHandler(ILogger<MenuCommandHandler> logger, ITelegramMessageSender messageSender, IMemoryCacheService<UiCacheEntry> uiCache)
+        public MenuCommandHandler(ILogger<MenuCommandHandler> logger, ITelegramMessageSender messageSender, IMemoryCacheService<UiCacheEntry> uiCache , IServiceProvider serviceProvider)
         {
 
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _uiCache = uiCache ?? throw new ArgumentNullException(nameof(uiCache)); // <-- NEW
             _messageSender = messageSender ?? throw new ArgumentNullException(nameof(messageSender));
+            _serviceProvider = serviceProvider;
         }
 
         /// <summary>
@@ -135,83 +138,89 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         /// <returns>A Task representing the asynchronous operation.</returns>
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
         {
-
             // This logic correctly handles the /menu command by sending the menu.
-            Message? message = update.Message; // This is now guaranteed to be from a Message update based on CanHandle.
+            Message? message = update.Message;
 
-
-            // Basic null check, though CanHandle should prevent this.
             if (message == null)
             {
-                // Log a warning as this indicates a potential issue in CanHandle logic or update structure.
                 _logger.LogWarning("MenuCommand: Message is null in UpdateID {UpdateId}, despite CanHandle passing.", update.Id);
-                return; // Exit early if message is unexpectedly null.
+                return;
             }
-            // Check if the message is a command and if it matches /menu
-            if (!_uiCache.TryGetValue(MainMenuCacheKey, out _))
-            {
-                _logger.LogInformation("Main menu cache MISS. Generating and caching menu.");
-                (string text, InlineKeyboardMarkup keyboard) = GetMainMenuMarkup();
-                UiCacheEntry? cachedMenu = new UiCacheEntry(text, keyboard);
-                _uiCache.Set(MainMenuCacheKey, cachedMenu, TimeSpan.FromHours(5)); // Cache for 5 hours
-            }
-            else
-            {
-                _logger.LogInformation("Main menu cache HIT. Serving from cache.");
-            }
-
 
             long chatId = message.Chat.Id;
-            long? userId = message.From?.Id; // For logging purposes
+            long? userId = message.From?.Id;
 
             _logger.LogInformation("Handling /menu command for ChatID {ChatId}, UserID {UserId}", chatId, userId);
 
             try
             {
+                // --- Caching Logic ---
+                if (!_uiCache.TryGetValue(MainMenuCacheKey, out UiCacheEntry? cachedMenu) || cachedMenu == null)
+                {
+                    _logger.LogInformation("Main menu cache MISS. Generating and caching menu.");
+                    (string text, InlineKeyboardMarkup keyboard) = GetMainMenuMarkup();
+                    cachedMenu = new UiCacheEntry(text, keyboard);
+                    _uiCache.Set(MainMenuCacheKey, cachedMenu, TimeSpan.FromHours(5));
+                }
+                else
+                {
+                    _logger.LogInformation("Main menu cache HIT. Serving from cache.");
+                }
 
-
-                // Use the static GetMainMenuMarkup method to get the message content and keyboard.
-                // Ensure GetMainMenuMarkup is implemented to return both text and inline keyboard.
-                (string text, InlineKeyboardMarkup inlineKeyboard) = GetMainMenuMarkup();
-
-                // Send the main menu message to the user.
-                // This call is a potential point of failure (Telegram API communication).
+                // --- Send the Main Menu ---
                 await _messageSender.SendTextMessageAsync(
                     chatId: chatId,
-                    text: text, // Use the text from GetMainMenuMarkup
-                    parseMode: ParseMode.MarkdownV2, // Assuming text might have Markdown. Ensure text is properly escaped for MarkdownV2 if needed.
-                    replyMarkup: inlineKeyboard,
+                    text: cachedMenu.Text,
+                    parseMode: ParseMode.MarkdownV2,
+                    replyMarkup: cachedMenu.Keyboard,
                     cancellationToken: cancellationToken);
 
                 _logger.LogDebug("Main menu sent successfully to ChatID {ChatId} via /menu command.", chatId);
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                // Handle cancellation specifically.
-                // This might happen if the bot is shutting down.
+                // This is a controlled cancellation, not an error.
                 _logger.LogInformation(ex, "Sending main menu to ChatID {ChatId} was cancelled.", chatId);
-                // No need to send an error message here as the operation was cancelled externally.
             }
             catch (Exception ex)
             {
-                // Catch any other unexpected exceptions during the process (e.g., Telegram API errors).
-                // Log the error details.
+                // This is the upgraded block for unexpected errors.
                 _logger.LogError(ex, "An unexpected error occurred while sending the main menu to ChatID {ChatId}, UserID {UserId}", chatId, userId);
 
-                // Optionally, attempt to send a fallback error message to the user.
-                // This SendTextMessageAsync might also fail, so a nested try-catch or a robust SendMessage wrapper is advisable if this is critical.
-                // try
-                // {
-                //     await _messageSender.SendTextMessageAsync(
-                //         chatId: chatId,
-                //         text: "An unexpected error occurred while trying to show the menu. Please try again later.",
-                //         cancellationToken: cancellationToken);
-                // }
-                // catch (Exception sendErrorEx)
-                // {
-                //     // Log if sending the error message also fails.
-                //     _logger.LogError(sendErrorEx, "Failed to send fallback error message to ChatID {ChatId} after menu command failure.", chatId);
-                // }
+                // --- ENHANCEMENT: Log the failure to the database in a background task ---
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    // We resolve the repository here to avoid making it a direct dependency of this handler.
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "MenuCommandHandler",
+                        EventType = "MenuCommandSend",
+                        Message = $"Failed to send main menu for user {userId}.",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                // --- END OF ENHANCEMENT ---
+
+                // --- Send a safe fallback error message to the user ---
+                try
+                {
+                    await _messageSender.SendTextMessageAsync(
+                        chatId: chatId,
+                        text: "❌ An unexpected error occurred while trying to show the menu. Our team has been notified. Please try again in a moment.",
+                        cancellationToken: cancellationToken);
+                }
+                catch (Exception sendErrorEx)
+                {
+                    // Log if even the error message fails, but don't throw further.
+                    _logger.LogError(sendErrorEx, "CRITICAL: Failed to send fallback error message to ChatID {ChatId} after menu command failure.", chatId);
+                }
             }
         }
         #endregion
