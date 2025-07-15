@@ -62,6 +62,12 @@ namespace Infrastructure.Repositories
                 await _db.SaveChangesAsync(cancellationToken);
             }
         }
+
+        public async Task<int> DeleteAllAsync(CancellationToken cancellationToken = default)
+        {
+            // This is the most efficient way to delete all records in a table with EF Core 7+
+            return await _db.ProMonitoringLogs.ExecuteDeleteAsync(cancellationToken);
+        }
         #endregion
     }
 } 

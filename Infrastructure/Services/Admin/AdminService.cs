@@ -516,6 +516,13 @@ namespace Infrastructure.Services.Admin
             // We now call a new repository method that supports pagination
             return await _proMonitoringLogRepository.GetRecentPagedAsync(limit, offset, cancellationToken);
         }
+        public async Task<int> DeleteAllProMonitoringLogsAsync(CancellationToken cancellationToken = default)
+        {
+            _logger.LogWarning("ADMIN ACTION: Initiating deletion of ALL pro monitoring logs.");
+            int deletedCount = await _proMonitoringLogRepository.DeleteAllAsync(cancellationToken);
+            _logger.LogWarning("ADMIN ACTION: Successfully deleted {Count} pro monitoring logs.", deletedCount);
+            return deletedCount;
+        }
 
         #endregion
 

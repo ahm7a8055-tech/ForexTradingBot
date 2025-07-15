@@ -24,6 +24,7 @@ namespace Application.Common.Interfaces
 
         #region Delete
         Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+        Task<int> DeleteAllAsync(CancellationToken cancellationToken = default);
         #endregion
     }
 } 

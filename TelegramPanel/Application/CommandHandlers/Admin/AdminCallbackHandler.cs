@@ -43,7 +43,9 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private const string BackToAdminPanelCallback = "admin_panel_main";
         private const string DownloadLogsCallback = "admin_download_logs";
         public const string ProMonitoringCallbackPrefix = "admin_pro_monitoring_";
-
+        // 1. ADD NEW PUBLIC CONSTANTS FOR THE DELETE ACTIONS
+        public const string ProMonitoringDeletePromptPrefix = "admin_pro_mon_delete_prompt_";
+        public const string ProMonitoringDeleteConfirmCallback = "admin_pro_mon_delete_confirm";
         public AdminCallbackHandler( 
             ILogger<AdminCallbackHandler> logger,
             ITelegramMessageSender messageSender,
@@ -82,7 +84,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 data == AdminManualRssFetchCallback ||
                 data == PurgeHangfireCallback ||
                 data == DownloadLogsCallback ||
-                data == BackToAdminPanelCallback)
+                data == ProMonitoringDeleteConfirmCallback||
+            data == BackToAdminPanelCallback)
             {
                 return true;
             }
@@ -109,6 +112,14 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
                 Task handlerTask = callbackQuery.Data switch
                 {
+                    string data when data.StartsWith(ProMonitoringCallbackPrefix) =>
+          HandleProMonitoringAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, data, cancellationToken),
+                    string data when data.StartsWith(ProMonitoringDeletePromptPrefix) =>
+                     HandleDeleteLogsPromptAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, data, cancellationToken),
+
+                    ProMonitoringDeleteConfirmCallback =>
+                        HandleDeleteLogsConfirmAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+
                     AdminServerStatsCallback => HandleServerStatsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                     AdminManualRssFetchCallback => HandleManualRssFetchAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
                     PurgeHangfireCallback => HandlePurgeHangfireAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
@@ -162,6 +173,10 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 }
             }
         }
+
+
+
+
         private async Task HandleDownloadLogsAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             // Give immediate feedback to the admin
@@ -408,11 +423,13 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             var keyboardRows = new List<List<InlineKeyboardButton>>();
             var navigationRow = new List<InlineKeyboardButton>();
 
+            // "Previous" button
             if (offset > 0)
             {
                 navigationRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{ProMonitoringCallbackPrefix}{Math.Max(0, offset - PageSize)}"));
             }
 
+            // "Next" button
             if (logs.Count == PageSize)
             {
                 navigationRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{ProMonitoringCallbackPrefix}{offset + PageSize}"));
@@ -423,6 +440,15 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 keyboardRows.Add(navigationRow);
             }
 
+            // --- NEW: Add the "Delete All" button row ---
+            // We pass the current offset so we can return if the user cancels.
+            var destructiveActionsRow = new List<InlineKeyboardButton>
+    {
+        InlineKeyboardButton.WithCallbackData("🗑️ Delete All Logs", $"{ProMonitoringDeletePromptPrefix}{offset}")
+    };
+            keyboardRows.Add(destructiveActionsRow);
+
+            // "Back to Admin Panel" button
             keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Back to Admin Panel", BackToAdminPanelCallback) });
             var replyMarkup = new InlineKeyboardMarkup(keyboardRows);
 
@@ -450,6 +476,54 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 _ => "❓" // Default for unknown levels
             };
         }
+        /// <summary>
+        /// Displays a confirmation prompt before deleting all logs.
+        /// </summary>
+        private async Task HandleDeleteLogsPromptAsync(long chatId, int messageId, string callbackData, CancellationToken cancellationToken)
+        {
+            // Extract the offset so we can return to the same page on "Cancel"
+            int.TryParse(callbackData.Replace(ProMonitoringDeletePromptPrefix, ""), out int offset);
+
+            string text = "⚠️ *CONFIRM DELETION*\n\n" +
+                          "Are you absolutely sure you want to delete *ALL* pro monitoring logs?\n\n" +
+                          "This action is *irreversible*.";
+
+            var keyboard = MarkupBuilder.CreateInlineKeyboard(
+                new[]
+                {
+            InlineKeyboardButton.WithCallbackData("✅ Yes, I am sure. Delete everything.", ProMonitoringDeleteConfirmCallback),
+                },
+                new[]
+                {
+            // This button returns the user to the log page they were on.
+            InlineKeyboardButton.WithCallbackData("❌ No, cancel.", $"{ProMonitoringCallbackPrefix}{offset}")
+                }
+            );
+
+            await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, keyboard, cancellationToken);
+        }
+        /// <summary>
+        /// Executes the deletion of all logs after confirmation.
+        /// </summary>
+        private async Task HandleDeleteLogsConfirmAsync(long chatId, int messageId, CancellationToken cancellationToken)
+        {
+            await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Deleting all logs, please wait...", cancellationToken: cancellationToken);
+
+            try
+            {
+                int deletedCount = await _adminService.DeleteAllProMonitoringLogsAsync(cancellationToken);
+                string successMessage = $"✅ Success! Deleted *{deletedCount:N0}* log entries permanently.";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, successMessage, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to delete all pro monitoring logs.");
+                await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while deleting logs. Please check server logs for details.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+            }
+        }
+
+
+
         private Task ShowAdminPanelAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             string text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel") + "\n\nSelect an action:";

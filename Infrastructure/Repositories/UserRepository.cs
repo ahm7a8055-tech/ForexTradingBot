@@ -1527,7 +1527,7 @@ namespace Infrastructure.Repositories
             {
                 _logger.LogError(ex, "UserRepository: Error checking existence for email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
                     sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
-                // Background error log
+                // Background error log (external monitoring) - redact sensitive data
                 _ = Task.Run(async () =>
                 {
                     using var scope = _serviceProvider.CreateScope();
@@ -1538,7 +1538,8 @@ namespace Infrastructure.Repositories
                         Level = "Error",
                         Source = "UserRepository",
                         EventType = "CheckExistsByEmail.Error",
-                        Message = ex.Message,
+                        // Do NOT log sanitizedEmail or any sensitive data externally
+                        Message = "Sensitive data redacted", // Placeholder for compliance
                         Details = ex.StackTrace,
                         Exception = ex.ToString(),
                         Status = "Failed",
