@@ -313,18 +313,45 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private async Task HandleManualRssFetchAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Triggering RSS fetch job...", cancellationToken: cancellationToken);
-            string text = "✅ The `fetch-all-active-rss-feeds` job has been triggered. Check Hangfire dashboard for progress.";
+
             try
             {
+                // This is the success path
                 _recurringJobManager.Trigger("fetch-all-active-rss-feeds");
                 _logger.LogInformation("Admin manually triggered the RSS fetch job.");
+
+                string successMessage = "✅ The `fetch-all-active-rss-feeds` job has been triggered. Check Hangfire dashboard for progress.";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, successMessage, replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
             catch (Exception ex)
             {
+                // This is the enhanced failure path
                 _logger.LogError(ex, "Failed to manually trigger RSS Fetch job.");
-                text = "❌ Failed to trigger RSS Fetch job. See server logs for details.";
+
+                // --- ENHANCEMENT: Log the failure to the database in a background task ---
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "AdminCallbackHandler",
+                        EventType = "ManualRssFetchTrigger",
+                        Message = "An exception occurred while trying to manually trigger the RSS fetch job.",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+                // --- END OF ENHANCEMENT ---
+
+                // Send a clear error message to the admin
+                string errorMessage = "❌ Failed to trigger RSS Fetch job. The failure has been logged for review.";
+                await _messageSender.EditMessageTextAsync(chatId, messageId, errorMessage, replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
-            await _messageSender.EditMessageTextAsync(chatId, messageId, text, replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
         }
 
         private async Task HandlePurgeHangfireAsync(long chatId, int messageId, CancellationToken cancellationToken)
