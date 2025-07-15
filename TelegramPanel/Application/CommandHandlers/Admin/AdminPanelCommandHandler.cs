@@ -18,7 +18,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private readonly ILogger<AdminPanelCommandHandler> _logger;
         private readonly ITelegramMessageSender _messageSender;
         private readonly TelegramPanelSettings _settings;
-
+        private const string ProMonitoringCallbackPrefix = AdminCallbackHandler.ProMonitoringCallbackPrefix;
         public AdminPanelCommandHandler(
             ILogger<AdminPanelCommandHandler> logger,
             ITelegramMessageSender messageSender,
@@ -66,7 +66,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                     InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", "admin_purge_hangfire")
                 },
                 new[] { // Row 4: Pro Monitoring
-                    InlineKeyboardButton.WithCallbackData("🛡️ Pro Monitoring", "admin_pro_monitoring")
+                  InlineKeyboardButton.WithCallbackData("🛡️ Pro Monitoring", $"{ProMonitoringCallbackPrefix}0"),
                 },
                 new[] { // Row 5: Navigation
                     InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral)

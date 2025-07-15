@@ -29,14 +29,19 @@ namespace Infrastructure.Repositories
             return await _db.ProMonitoringLogs.AsNoTracking().ToListAsync(cancellationToken);
         }
 
-        public async Task<List<ProMonitoringLog>> GetRecentAsync(int count, CancellationToken cancellationToken = default)
-        {
-            return await _db.ProMonitoringLogs
-                .AsNoTracking()
-                .OrderByDescending(x => x.Timestamp)
-                .Take(count)
-                .ToListAsync(cancellationToken);
-        }
+         public async Task<List<ProMonitoringLog>> GetRecentPagedAsync(int limit, int offset, CancellationToken cancellationToken = default)
+    {
+        // Basic validation
+        if (limit <= 0) limit = 10;
+        if (offset < 0) offset = 0;
+
+        return await _db.ProMonitoringLogs
+            .AsNoTracking() // Performance boost for read-only queries
+            .OrderByDescending(log => log.Timestamp) // IMPORTANT: Order first!
+            .Skip(offset)                             // Then, skip the records from previous pages
+            .Take(limit)                              // Finally, take the records for the current page
+            .ToListAsync(cancellationToken);
+    }
         #endregion
 
         #region Update

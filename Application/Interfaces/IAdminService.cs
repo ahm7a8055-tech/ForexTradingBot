@@ -66,6 +66,6 @@ namespace Application.Interfaces
         /// <summary>
         /// Gets the most recent pro monitoring logs for admin/monitoring purposes.
         /// </summary>
-        Task<List<Domain.Entities.ProMonitoringLog>> GetRecentProMonitoringLogsAsync(int count = 20, CancellationToken cancellationToken = default);
+        Task<List<Domain.Entities.ProMonitoringLog>> GetRecentProMonitoringLogsAsync(int limit, int offset, CancellationToken cancellationToken = default);
     }
 }

@@ -1,8 +1,11 @@
 ﻿// --- START OF FILE: AdminCallbackHandler.cs ---
 
+using Application.Common.Interfaces;
 using Application.Interfaces; // For IAdminService
+using Domain.Entities;
 using Hangfire; // For IRecurringJobManager
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text;
@@ -31,6 +34,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private readonly IRecurringJobManager _recurringJobManager;
         private readonly IConfiguration _configuration;
         private readonly TelegramPanelSettings _settings;
+        private readonly IServiceProvider _serviceProvider;
 
         // Constants for the actions this specific handler is responsible for.
         private const string AdminServerStatsCallback = "admin_server_stats";
@@ -38,15 +42,16 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private const string PurgeHangfireCallback = "admin_purge_hangfire";
         private const string BackToAdminPanelCallback = "admin_panel_main";
         private const string DownloadLogsCallback = "admin_download_logs";
-        private const string ProMonitoringCallback = "admin_pro_monitoring";
+        public const string ProMonitoringCallbackPrefix = "admin_pro_monitoring_";
 
-        public AdminCallbackHandler(
+        public AdminCallbackHandler( 
             ILogger<AdminCallbackHandler> logger,
             ITelegramMessageSender messageSender,
             IAdminService adminService,
             IRecurringJobManager recurringJobManager,
             IConfiguration configuration,
-            IOptions<TelegramPanelSettings> settingsOptions)
+            IOptions<TelegramPanelSettings> settingsOptions,
+            IServiceProvider serviceProvider)
         {
             _logger = logger;
             _messageSender = messageSender;
@@ -54,6 +59,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             _recurringJobManager = recurringJobManager;
             _configuration = configuration;
             _settings = settingsOptions.Value;
+            _serviceProvider = serviceProvider;
         }
 
         public bool CanHandle(Update update)
@@ -69,14 +75,27 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             }
 
             string data = update.CallbackQuery.Data;
-            return data is AdminServerStatsCallback or // "admin_server_stats"
-                   AdminManualRssFetchCallback or    // "admin_manual_rss"
-                   PurgeHangfireCallback or          // "admin_purge_hangfire"
-                   DownloadLogsCallback or         // "admin_download_logs"
-                   BackToAdminPanelCallback or
-                   ProMonitoringCallback; // "admin_pro_monitoring"
-        }
 
+            // --- CORRECTED CanHandle Method ---
+            // Check for explicit callback strings first.
+            if (data == AdminServerStatsCallback ||
+                data == AdminManualRssFetchCallback ||
+                data == PurgeHangfireCallback ||
+                data == DownloadLogsCallback ||
+                data == BackToAdminPanelCallback)
+            {
+                return true;
+            }
+
+            // Then, check for the prefixed callback for Pro Monitoring logs.
+            if (data.StartsWith(ProMonitoringCallbackPrefix))
+            {
+                return true;
+            }
+
+            // If none of the above, it's not handled by this class.
+            return false;
+        }
 
 
         public async Task HandleAsync(Update update, CancellationToken cancellationToken = default)
@@ -84,20 +103,64 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             CallbackQuery callbackQuery = update.CallbackQuery!;
             await _messageSender.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
 
-            _logger.LogInformation("Admin {UserId} initiated action: {Action}", callbackQuery.From.Id, callbackQuery.Data);
-
-            // --- MODIFIED: Add new case to switch ---
-            Task handlerTask = callbackQuery.Data switch
+            try
             {
-                AdminServerStatsCallback => HandleServerStatsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
-                AdminManualRssFetchCallback => HandleManualRssFetchAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
-                PurgeHangfireCallback => HandlePurgeHangfireAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
-                DownloadLogsCallback => HandleDownloadLogsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken), // NEW
-                BackToAdminPanelCallback => ShowAdminPanelAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
-                ProMonitoringCallback => HandleProMonitoringAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
-                _ => Task.CompletedTask
-            };
-            await handlerTask;
+                _logger.LogInformation("Admin {UserId} initiated action: {Action}", callbackQuery.From.Id, callbackQuery.Data);
+
+                Task handlerTask = callbackQuery.Data switch
+                {
+                    AdminServerStatsCallback => HandleServerStatsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                    AdminManualRssFetchCallback => HandleManualRssFetchAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                    PurgeHangfireCallback => HandlePurgeHangfireAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                    DownloadLogsCallback => HandleDownloadLogsAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                    BackToAdminPanelCallback => ShowAdminPanelAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, cancellationToken),
+                    // CORRECTED: This 'when' clause properly routes paginated callbacks
+                    string data when data.StartsWith(ProMonitoringCallbackPrefix) =>
+                        HandleProMonitoringAsync(callbackQuery.Message!.Chat.Id, callbackQuery.Message.MessageId, data, cancellationToken),
+                    _ => Task.CompletedTask
+                };
+
+                await handlerTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled exception in AdminCallbackHandler for action {CallbackData}", callbackQuery.Data);
+
+                // Fire-and-forget logging to the database in a background task
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceProvider.CreateAsyncScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    await repo.AddAsync(new ProMonitoringLog
+                    {
+                        Timestamp = DateTime.UtcNow,
+                        Level = "Error",
+                        Source = "AdminCallbackHandler",
+                        EventType = "AdminActionFailure",
+                        Message = $"Failed to execute admin action: {callbackQuery.Data}",
+                        Details = ex.StackTrace,
+                        Exception = ex.ToString(),
+                        Status = "Failed",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                });
+
+                // Inform the admin about the failure
+                try
+                {
+                    await _messageSender.EditMessageTextAsync(
+                        chatId: callbackQuery.Message!.Chat.Id,
+                        messageId: callbackQuery.Message!.MessageId,
+                        text: "❌ An unexpected error occurred. The action could not be completed. The error has been logged for review.",
+                        replyMarkup: GetBackToAdminPanelKeyboard(),
+                        cancellationToken: cancellationToken);
+                }
+                catch (Exception telegramEx)
+                {
+                    // If even sending the error message fails, just log it.
+                    _logger.LogError(telegramEx, "Failed to send error notification to admin for action {CallbackData}", callbackQuery.Data);
+                }
+            }
         }
         private async Task HandleDownloadLogsAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
@@ -226,32 +289,167 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while purging Hangfire jobs.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
             }
         }
-
-        private async Task HandleProMonitoringAsync(long chatId, int messageId, CancellationToken cancellationToken)
+        private string EscapeMarkdownV1(string text)
         {
-            await _messageSender.EditMessageTextAsync(chatId, messageId, "🛡️ Fetching recent pro monitoring logs...", cancellationToken: cancellationToken);
-            var logs = await _adminService.GetRecentProMonitoringLogsAsync(20, cancellationToken);
-            if (logs == null || logs.Count == 0)
+            if (string.IsNullOrEmpty(text))
+                return "";
+
+            return text.Replace("_", "\\_")
+                       .Replace("*", "\\*")
+                       .Replace("`", "\\`")
+                       .Replace("[", "\\[");
+        }
+        private static TimeZoneInfo? _iranTimeZoneInfo;
+        private TimeZoneInfo? GetIranTimeZone()
+        {
+            // Return the cached version if we already found it.
+            if (_iranTimeZoneInfo != null)
+                return _iranTimeZoneInfo;
+
+            try
             {
-                await _messageSender.EditMessageTextAsync(chatId, messageId, "ℹ️ No pro monitoring logs found.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
-                return;
+                // Standard IANA time zone ID, works on Linux, macOS, and modern Windows.
+                _iranTimeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById("Asia/Tehran");
             }
-            var sb = new StringBuilder();
-            sb.AppendLine("🛡️ <b>Pro Monitoring Logs (Last 20)</b>");
-            foreach (var log in logs)
+            catch (TimeZoneNotFoundException)
             {
-                sb.AppendLine($"<b>{log.Timestamp:yyyy-MM-dd HH:mm:ss}</b> [{log.Level}] <i>{log.Source}</i>");
-                sb.AppendLine($"{log.Message}");
-                if (!string.IsNullOrWhiteSpace(log.Status)) sb.AppendLine($"Status: {log.Status}");
-                if (!string.IsNullOrWhiteSpace(log.EventType)) sb.AppendLine($"Event: {log.EventType}");
-                if (!string.IsNullOrWhiteSpace(log.Exception)) sb.AppendLine($"<code>{log.Exception}</code>");
-                sb.AppendLine("──────────────");
+                _logger.LogWarning("IANA time zone 'Asia/Tehran' not found. Falling back to Windows ID 'Iran Standard Time'.");
+                try
+                {
+                    // Windows-specific time zone ID.
+                    _iranTimeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById("Iran Standard Time");
+                }
+                catch (TimeZoneNotFoundException ex)
+                {
+                    _logger.LogError(ex, "Could not find any time zone for Iran. Timestamps will default to UTC.");
+                    // If neither is found, we can't do the conversion.
+                    return null;
+                }
             }
-            string text = sb.ToString();
-            if (text.Length > 4000) text = text.Substring(0, 3990) + "...\n(Truncated)";
-            await _messageSender.EditMessageTextAsync(chatId, messageId, text, Telegram.Bot.Types.Enums.ParseMode.Html, GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+            return _iranTimeZoneInfo;
         }
 
+        // --- ENHANCED METHOD: Handles log pagination with modern UI/UX using Markdown ---
+
+        private async Task HandleProMonitoringAsync(long chatId, int messageId, string callbackData, CancellationToken cancellationToken)
+        {
+            const int PageSize = 5; // Reduced page size for better readability on mobile
+            const int MaxMessageLength = 4096;
+            const int PreviewLength = 200;
+
+            int.TryParse(callbackData.Replace(ProMonitoringCallbackPrefix, ""), out int offset);
+
+            string loadingMessage = offset > 0 ? "🔄 Fetching next page of logs..." : "🔍 Retrieving Pro Monitoring Logs...";
+            await _messageSender.EditMessageTextAsync(chatId, messageId, loadingMessage, cancellationToken: cancellationToken);
+
+            var logs = await _adminService.GetRecentProMonitoringLogsAsync(PageSize, offset, cancellationToken);
+
+            if (logs == null || logs.Count == 0)
+            {
+                await _messageSender.EditMessageTextAsync(chatId, messageId, "✅ No further pro monitoring logs found.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+                return;
+            }
+
+            // --- Time Zone Conversion Setup ---
+            var iranTimeZone = GetIranTimeZone();
+            var sb = new StringBuilder();
+            int currentPage = (offset / PageSize) + 1;
+
+            sb.AppendLine($"📋 *Pro Monitoring Log* (Page {currentPage})");
+            sb.AppendLine("`" + new string('─', 32) + "`");
+
+            foreach (var log in logs)
+            {
+                // --- Timestamp Conversion ---
+                var utcTime = DateTime.SpecifyKind(log.Timestamp, DateTimeKind.Utc);
+                string iranTimeFormatted = "N/A";
+                if (iranTimeZone != null)
+                {
+                    var iranTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, iranTimeZone);
+                    iranTimeFormatted = iranTime.ToString("yyyy-MM-dd HH:mm:ss");
+                }
+                string utcTimeFormatted = utcTime.ToString("yyyy-MM-dd HH:mm:ss");
+
+                // --- Build Log Entry with Pro UI/UX ---
+                string levelEmoji = GetLevelEmoji(log.Level);
+                sb.AppendLine($"{levelEmoji} *{log.Level}* | `{EscapeMarkdownV1(log.Source)}`");
+                sb.AppendLine($"`Message:` {EscapeMarkdownV1(log.Message)}");
+                sb.AppendLine(); // Whitespace for readability
+
+                // Details Section (only if there are details)
+                if (!string.IsNullOrWhiteSpace(log.Status) || !string.IsNullOrWhiteSpace(log.EventType) || !string.IsNullOrWhiteSpace(log.Exception))
+                {
+                    sb.AppendLine("    *Details*");
+                    if (!string.IsNullOrWhiteSpace(log.Status))
+                        sb.AppendLine($"      `Status:` {EscapeMarkdownV1(log.Status)}");
+                    if (!string.IsNullOrWhiteSpace(log.EventType))
+                        sb.AppendLine($"      `Event:` {EscapeMarkdownV1(log.EventType)}");
+                    if (!string.IsNullOrWhiteSpace(log.Exception))
+                    {
+                        string exceptionContent = log.Exception;
+                        if (exceptionContent.Length > PreviewLength)
+                        {
+                            exceptionContent = exceptionContent.Substring(0, PreviewLength) + "...";
+                        }
+                        sb.AppendLine($"      `Exception:`\n```\n{exceptionContent}\n```");
+                    }
+                    sb.AppendLine();
+                }
+
+                // Timestamp Section
+                sb.AppendLine("    ⏰ *Time*");
+                sb.AppendLine($"      `🇮🇷 Tehran:` `{iranTimeFormatted}`");
+                sb.AppendLine($"      `🌍 UTC:`     `{utcTimeFormatted}`");
+
+                sb.AppendLine("`" + new string('─', 32) + "`");
+            }
+
+            // --- Navigation and Sending (no changes needed here) ---
+            var keyboardRows = new List<List<InlineKeyboardButton>>();
+            var navigationRow = new List<InlineKeyboardButton>();
+
+            if (offset > 0)
+            {
+                navigationRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{ProMonitoringCallbackPrefix}{Math.Max(0, offset - PageSize)}"));
+            }
+
+            if (logs.Count == PageSize)
+            {
+                navigationRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{ProMonitoringCallbackPrefix}{offset + PageSize}"));
+            }
+
+            if (navigationRow.Any())
+            {
+                keyboardRows.Add(navigationRow);
+            }
+
+            keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Back to Admin Panel", BackToAdminPanelCallback) });
+            var replyMarkup = new InlineKeyboardMarkup(keyboardRows);
+
+            string text = sb.ToString();
+
+            if (text.Length > MaxMessageLength)
+            {
+                text = text.Substring(0, MaxMessageLength - 50) + "...\n_(Message truncated)_";
+            }
+
+            await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, replyMarkup, cancellationToken);
+        }
+
+        // --- Helper method to get Emojis based on log level ---
+        private string GetLevelEmoji(string level)
+        {
+            return level.ToLowerInvariant() switch
+            {
+                "critical" => "🚨",
+                "error" => "❌",
+                "warning" => "⚠️",
+                "information" => "ℹ️",
+                "debug" => "🐛",
+                "trace" => "🔬",
+                _ => "❓" // Default for unknown levels
+            };
+        }
         private Task ShowAdminPanelAsync(long chatId, int messageId, CancellationToken cancellationToken)
         {
             string text = TelegramMessageFormatter.Bold("🛠️ Administrator Panel") + "\n\nSelect an action:";
@@ -262,16 +460,18 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private InlineKeyboardMarkup GetAdminPanelKeyboard()
         {
             // Use the constants defined in this class for consistency.
-            // Other handlers (like BroadcastInitiationHandler) will have their own constants.
             return MarkupBuilder.CreateInlineKeyboard(
                 new[] { InlineKeyboardButton.WithCallbackData("📊 Server Stats", AdminServerStatsCallback) },
                 new[] { InlineKeyboardButton.WithCallbackData("🔄 Fetch RSS Now", AdminManualRssFetchCallback),
                         InlineKeyboardButton.WithCallbackData("🧹 Purge Hangfire Jobs", PurgeHangfireCallback) },
+                new[] { InlineKeyboardButton.WithCallbackData("🛡️ Pro Monitoring", $"{ProMonitoringCallbackPrefix}0"),
+                        InlineKeyboardButton.WithCallbackData("📩 Download Logs", DownloadLogsCallback)},
                 new[] { InlineKeyboardButton.WithCallbackData("📣 Broadcast", "admin_broadcast"),
                         InlineKeyboardButton.WithCallbackData("🔍 User Lookup", "admin_user_lookup") },
                 new[] { InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral) }
             );
         }
+
 
         private static InlineKeyboardMarkup GetBackToAdminPanelKeyboard()
         {

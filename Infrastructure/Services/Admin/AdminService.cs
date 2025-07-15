@@ -511,10 +511,12 @@ namespace Infrastructure.Services.Admin
         }
 
         #region Pro Monitoring Logs
-        public async Task<List<ProMonitoringLog>> GetRecentProMonitoringLogsAsync(int count = 20, CancellationToken cancellationToken = default)
+        public async Task<List<ProMonitoringLog>> GetRecentProMonitoringLogsAsync(int limit, int offset, CancellationToken cancellationToken = default)
         {
-            return await _proMonitoringLogRepository.GetRecentAsync(count, cancellationToken);
+            // We now call a new repository method that supports pagination
+            return await _proMonitoringLogRepository.GetRecentPagedAsync(limit, offset, cancellationToken);
         }
+
         #endregion
 
         #region Log File Operations
