@@ -274,7 +274,6 @@ namespace TelegramPanel.Infrastructure
 
 
         #region IUpdateHandler Implementation (for Polling)
-        #region IUpdateHandler Implementation (for Polling)
         /// <summary>
         /// This method is invoked by the Telegram.Bot library's Polling mechanism for every new update.
         /// Its responsibility is to safely and efficiently send the update to the internal processing channel (<see cref="ITelegramUpdateChannel"/>).
