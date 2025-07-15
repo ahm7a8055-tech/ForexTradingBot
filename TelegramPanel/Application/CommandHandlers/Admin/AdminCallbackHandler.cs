@@ -84,6 +84,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 data == AdminManualRssFetchCallback ||
                 data == PurgeHangfireCallback ||
                 data == DownloadLogsCallback ||
+                data.StartsWith(ProMonitoringCallbackPrefix) ||
+           data.StartsWith(ProMonitoringDeletePromptPrefix) ||
                 data == ProMonitoringDeleteConfirmCallback||
             data == BackToAdminPanelCallback)
             {
@@ -503,24 +505,24 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
             await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, keyboard, cancellationToken);
         }
         /// <summary>
-        /// Executes the deletion of all logs after confirmation.
-        /// </summary>
-        private async Task HandleDeleteLogsConfirmAsync(long chatId, int messageId, CancellationToken cancellationToken)
-        {
-            await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Deleting all logs, please wait...", cancellationToken: cancellationToken);
-
-            try
-            {
-                int deletedCount = await _adminService.DeleteAllProMonitoringLogsAsync(cancellationToken);
-                string successMessage = $"✅ Success! Deleted *{deletedCount:N0}* log entries permanently.";
-                await _messageSender.EditMessageTextAsync(chatId, messageId, successMessage, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to delete all pro monitoring logs.");
-                await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while deleting logs. Please check server logs for details.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
-            }
-        }
+/// Executes the deletion of all logs after confirmation.
+/// </summary>
+private async Task HandleDeleteLogsConfirmAsync(long chatId, int messageId, CancellationToken cancellationToken)
+{
+    await _messageSender.EditMessageTextAsync(chatId, messageId, "⏳ Deleting all logs, please wait...", cancellationToken: cancellationToken);
+    
+    try
+    {
+        int deletedCount = await _adminService.DeleteAllProMonitoringLogsAsync(cancellationToken);
+        string successMessage = $"✅ Success! Deleted *{deletedCount:N0}* log entries permanently.";
+        await _messageSender.EditMessageTextAsync(chatId, messageId, successMessage, ParseMode.Markdown, GetBackToAdminPanelKeyboard(), cancellationToken);
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Failed to delete all pro monitoring logs.");
+        await _messageSender.EditMessageTextAsync(chatId, messageId, "❌ An error occurred while deleting logs. Please check server logs for details.", replyMarkup: GetBackToAdminPanelKeyboard(), cancellationToken: cancellationToken);
+    }
+}
 
 
 
