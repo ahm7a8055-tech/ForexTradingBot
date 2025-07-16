@@ -165,6 +165,13 @@ This is the new, streamlined setup process.
 
 **🎉 That's it! Your bot is now fully configured and running.** You can manage everything from the web panel.
 ![alt text](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/Dashboard-Dark.png.jpg)
+
+
+## Stargazers over time
+[![Stargazers over time](https://starchart.cc/Opselon/ForexTradingBot.svg?variant=light)](https://starchart.cc/Opselon/ForexTradingBot)
+
+
+
 ## 📖 Table of Contents 📚
 
 *   [🚀 Project Overview: Precision Trading with ForexSignalBot](#-project-overview-precision-trading-with-forexsignalbot)
