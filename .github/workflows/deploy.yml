@@ -306,6 +306,23 @@
         }
       ]
       
+    },
+    "verify_log_encryption": {
+      "name": "🔒 Verify All Deployment Logs Are Encrypted",
+      "needs": "deploy",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Check for Unencrypted Logs on Server",
+          "uses": "appleboy/ssh-action@v1.0.3",
+          "with": {
+            "host": "${{ secrets.PROD_SERVER_IP }}",
+            "username": "${{ secrets.PROD_SERVER_USERNAME }}",
+            "password": "${{ secrets.PROD_SERVER_PASSWORD }}",
+            "script": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"\n  $TempPath = '${{ env.REMOTE_TEMP_PATH }}';\n  $unencrypted = Get-ChildItem -Path $TempPath -Filter '*-Log-*.txt' | Where-Object { -not ($_.FullName -like '*.enc') };\n  if ($unencrypted) {\n    Write-Host '❌ Unencrypted log files found:';\n    $unencrypted | ForEach-Object { Write-Host $_.FullName };\n    exit 1;\n  } else {\n    Write-Host '✅ All deployment logs are encrypted or deleted.';\n  }\n\""
+          }
+        }
+      ]
     }
   }
 }
