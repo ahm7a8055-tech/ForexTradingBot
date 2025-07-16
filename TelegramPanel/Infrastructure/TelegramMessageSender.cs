@@ -467,7 +467,7 @@ namespace TelegramPanel.Infrastructure
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Hangfire Job (ActualSend): Error sending text message to ChatID {ChatId} after retries. Text (Sanitized): '{SanitizedLogText}'", chatId, sanitizedLogText);
+                _logger.LogError(ex, "Hangfire Job (ActualSend): Error sending text message to ChatID {ChatId} after retries.", chatId);
                 throw;
             }
         }

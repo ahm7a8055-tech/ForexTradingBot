@@ -814,7 +814,7 @@ namespace Infrastructure.Repositories
 
             // --- Log Operation Details ---
             // Log the sanitized email being searched at a trace level for detailed operational diagnostics.
-            _logger.LogTrace("UserRepository: Fetching user by email: {SanitizedEmail}.", sanitizedEmail);
+            _logger.LogTrace("UserRepository: Fetching user by email: [REDACTED_EMAIL].");
 
             #endregion
 
@@ -839,7 +839,7 @@ namespace Infrastructure.Repositories
 
                     if (!userId.HasValue)
                     {
-                        _logger.LogDebug("User with email {SanitizedEmail} not found.", sanitizedEmail);
+                        _logger.LogDebug("User not found.");
                         return null;
                     }
 
@@ -850,8 +850,8 @@ namespace Infrastructure.Repositories
             catch (Exception ex)
             {
                 // SECURITY: Log the error with sanitized email and exception message
-                _logger.LogError(ex, "UserRepository: Error fetching user by email {SanitizedEmail}. Exception (Sanitized): {SanitizedException}",
-                    sanitizedEmail, _logSanitizer.Sanitize(ex.Message));
+                _logger.LogError(ex, "UserRepository: Error fetching user by email [REDACTED_EMAIL]. Exception (Sanitized): {SanitizedException}",
+                    _logSanitizer.Sanitize(ex.Message));
                 // Background error log
                 _ = Task.Run(async () =>
                 {
@@ -870,7 +870,7 @@ namespace Infrastructure.Repositories
                         CreatedAt = DateTime.UtcNow
                     });
                 });
-                throw new RepositoryException($"Failed to fetch user by email '{sanitizedEmail}'.", ex);
+                throw new RepositoryException($"Failed to fetch user by email '[REDACTED_EMAIL]'.", ex);
             }
         }
 
@@ -1485,8 +1485,8 @@ namespace Infrastructure.Repositories
             var sanitizedEmail = _logSanitizer.Sanitize(email);
 
             // --- Log Operation Details ---
-            // Log the sanitized email being checked at a trace level for detailed operational diagnostics.
-            _logger.LogTrace("UserRepository: Checking existence by email: {SanitizedEmail}.", sanitizedEmail);
+            // Log a generic message indicating the operation without exposing sensitive data.
+            _logger.LogTrace("UserRepository: Checking existence by email.");
 
             #endregion
 
