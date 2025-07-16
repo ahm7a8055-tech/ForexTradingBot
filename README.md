@@ -167,7 +167,8 @@ This is the new, streamlined setup process.
 ![alt text](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/Dashboard-Dark.png.jpg)
 
 
-## Stargazers over time
+## 🌟 Stargazers over time
+If this project is helpful to you, you may wish to give it a 🌟
 [![Stargazers over time](https://starchart.cc/Opselon/ForexTradingBot.svg?variant=light)](https://starchart.cc/Opselon/ForexTradingBot)
 
 
