@@ -171,6 +171,30 @@ This is the new, streamlined setup process.
 If this project is helpful to you, you may wish to give it a 🌟
 [![Stargazers over time](https://starchart.cc/Opselon/ForexTradingBot.svg?variant=light)](https://starchart.cc/Opselon/ForexTradingBot)
 
+---
+
+## 🌍 Multilingual README Files 🌍
+
+We provide README files in multiple languages to make our project accessible to users worldwide. Choose your preferred language below:
+
+| Language | Language Code | README File | Status |
+|----------|---------------|-------------|---------|
+| English | 🇺🇸 EN | [README.md](README.md) | ✅ Complete |
+| Russian | 🇷🇺 RU | [README_RU.md](README_RU.md) | ✅ Complete |
+| Persian | 🇮🇷 FA | [README_FA.md](README_FA.md) | ✅ Complete |
+| Chinese | 🇨🇳 ZH | [README_ZH.md](README_ZH.md) | ✅ Complete |
+| Spanish | 🇪🇸 ES | [README_ES.md](README_ES.md) | ✅ Complete |
+| French | 🇫🇷 FR | [README_FR.md](README_FR.md) | ✅ Complete |
+| German | 🇩🇪 DE | [README_DE.md](README_DE.md) | ✅ Complete |
+| Turkish | 🇹🇷 TR | [README_TR.md](README_TR.md) | ✅ Complete |
+| Arabic | 🇸🇦 AR | [README_AR.md](README_AR.md) | ✅ Complete |
+| Hindi | 🇮🇳 HI | [README_HI.md](README_HI.md) | ✅ Complete |
+| Italian | 🇮🇹 IT | [README_IT.md](README_IT.md) | ✅ Complete |
+| Portuguese | 🇵🇹 PT | [README_PT.md](README_PT.md) | ✅ Complete |
+
+Each README file contains the complete project documentation, setup instructions, and features translated into the respective language. All files are kept up-to-date with the latest project information.
+
+---
 
 
 ## 📖 Table of Contents 📚
@@ -533,4 +557,7 @@ Please review our `CONTRIBUTING.md` file (which will be created soon! 🔜 Stay 
 ## 📄 License 📜
 
 This project is proudly licensed under the **MIT License**. This permissive open-source license allows you to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, subject to the inclusion of the original copyright and permission notice. For comprehensive details, please refer to the [LICENSE](https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE) file located in the root of this repository. ✅
+
+
+
 #Tags: `#ForexTrading` `#TelegramBot` `#AISignals` `#AutomatedTrading` `#ForexBot` `#TradingAutomation` `#NETCore` `#DotNet9` `#FinancialTechnology` `#FinTech` `#AlgorithmicTrading` `#SignalBot` `#OpenSource` `#CryptoTrading` `#MarketAnalysis` `#Bots` `#Software` `#TradingBot`
