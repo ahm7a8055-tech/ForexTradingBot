@@ -1413,6 +1413,16 @@ namespace Infrastructure.Services
        InputMedia? media = null)
         {
             // =========================================================================
+            // === STAGE 0: IDEMPOTENCY CHECK (NEW)
+            // =========================================================================
+            string messageCacheKey = GenerateMessageCacheKey(peer, message, media, entities, replyToMsgId, replyMarkup, noWebpage, background, clearDraft, schedule_date);
+            if (_memoryCache.TryGetValue(messageCacheKey, out _))
+            {
+                _logger.LogInformation("CACHE HIT: Message with key {MessageCacheKey} has already been sent recently. Skipping.", messageCacheKey);
+                await _notifToAdmin.SendNotificationAsync($"✅ **Duplicate Message Skipped**\nPeer: `{GetPeerIdForLog(peer)}`\nCache Key: `{messageCacheKey}`", CancellationToken.None);
+                return default!; // Or throw, or return a special UpdatesBase, as per your design
+            }
+            // =========================================================================
             // === STAGE 1: VALIDATION & PREPARATION
             // =========================================================================
             if (_client is null) throw new InvalidOperationException("Telegram API client is not initialized.");
@@ -1512,8 +1522,16 @@ namespace Infrastructure.Services
                 _logger.LogInformation("Message split into {PartCount} parts.", messageParts.Count);
             }
 
-            return await SendInPartsAsync(peer, messageParts, media, replyToMsgId, replyMarkup, entitiesArray,
+            var result = await SendInPartsAsync(peer, messageParts, media, replyToMsgId, replyMarkup, entitiesArray,
                 noWebpage, background, clearDraft, schedule_date, cancellationToken);
+
+            // =========================================================================
+            // === STAGE 3: MARK AS SENT ON SUCCESS (NEW)
+            // =========================================================================
+            _memoryCache.Set(messageCacheKey, true, TimeSpan.FromHours(1));
+            _logger.LogInformation("Successfully dispatched message to Peer {PeerId}. Idempotency key set.", peerIdForLog);
+            // =========================================================================
+            return result;
         }
 
         /// <summary>
@@ -2649,6 +2667,69 @@ namespace Infrastructure.Services
         // Add a delegate property to allow cache removal from outside (e.g., injected from ForwardingService)
         public Action<long>? RemoveForwardingRulesCacheForChannel { get; set; }
         #endregion
+
+        /// <summary>
+        /// Generates a unique, deterministic, and collision-resistant cache key for a single message.
+        /// This is the core of the idempotency logic to prevent duplicate message processing and sending.
+        /// </summary>
+        /// <param name="peer">The target peer.</param>
+        /// <param name="message">The message text.</param>
+        /// <param name="media">The media (if any).</param>
+        /// <param name="entities">The message entities (if any).</param>
+        /// <param name="replyToMsgId">The reply-to message ID (if any).</param>
+        /// <param name="replyMarkup">The reply markup (if any).</param>
+        /// <param name="noWebpage">No webpage preview flag.</param>
+        /// <param name="background">Background flag.</param>
+        /// <param name="clearDraft">Clear draft flag.</param>
+        /// <param name="schedule_date">Scheduled date (if any).</param>
+        /// <returns>A unique string key suitable for caching.</returns>
+        private static string GenerateMessageCacheKey(
+            InputPeer peer,
+            string? message,
+            InputMedia? media,
+            IEnumerable<MessageEntity>? entities,
+            int? replyToMsgId,
+            ReplyMarkup? replyMarkup,
+            bool noWebpage,
+            bool background,
+            bool clearDraft,
+            DateTime? schedule_date)
+        {
+            var keyBuilder = new StringBuilder(256);
+            keyBuilder.Append($"Peer:{peer?.GetType().Name}:{GetPeerIdForCache(peer)}|");
+            keyBuilder.Append($"Msg:{NormalizeCaption(message)}|");
+            if (media != null)
+            {
+                keyBuilder.Append($"Media:{media.GetType().Name}:{media.GetHashCode()}|");
+            }
+            if (entities != null)
+            {
+                foreach (var entity in entities)
+                {
+                    keyBuilder.Append($"Entity:{entity.GetType().Name}:{entity.GetHashCode()}|");
+                }
+            }
+            keyBuilder.Append($"ReplyTo:{replyToMsgId}|Markup:{replyMarkup?.GetType().Name}:{replyMarkup?.GetHashCode()}|");
+            keyBuilder.Append($"NoWebpage:{noWebpage}|Background:{background}|ClearDraft:{clearDraft}|Schedule:{schedule_date?.ToString("O")}");
+            // Use robust hash for collision resistance
+            var combinedString = keyBuilder.ToString();
+            var finalHash = GenerateRobustHash(combinedString);
+            return $"MsgSent-{finalHash}";
+        }
+
+        // Helper for peer ID extraction for cache key
+        private static long GetPeerIdForCache(InputPeer? peer)
+        {
+            if (peer is InputPeerUser ipu)
+                return ipu.user_id;
+            if (peer is InputPeerChat ipc)
+                return ipc.chat_id;
+            if (peer is InputPeerChannel ipch)
+                return ipch.channel_id;
+            if (peer is InputPeerSelf)
+                return -1;
+            return 0;
+        }
     }
     public static class TelegramMessageHelper
     {
@@ -2739,4 +2820,5 @@ namespace Infrastructure.Services
             };
         }
     }
+}
 }
