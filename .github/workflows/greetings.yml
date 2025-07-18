@@ -1,0 +1,47 @@
+# .github/workflows/greetings.yml
+
+# The name of the workflow, which will appear in the "Actions" tab of your repository.
+name: Greetings to New Contributors
+
+# This 'on' block defines the triggers for the workflow.
+on:
+  # 'pull_request_target' is used instead of 'pull_request' for security reasons.
+  # It allows the action to comment on PRs from forks without exposing secrets.
+  - pull_request_target
+  # 'issues' triggers the workflow when a new issue is created.
+  - issues
+
+jobs:
+  # The 'greeting' job contains all the steps to perform the action.
+  greeting:
+    runs-on: ubuntu-latest
+    
+    # These permissions are required for the action to post comments.
+    permissions:
+      issues: write
+      pull-requests: write
+      
+    steps:
+      # This is the main action that checks for first-time contributors.
+      - uses: actions/first-interaction@v1
+        with:
+          # The GitHub token is required to authenticate and post comments.
+          # You don't need to create it; GitHub provides it automatically.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+          # The message to post on a user's first issue.
+          # You can use markdown to add links, bold text, and more!
+          issue-message: |
+            👋 Hello @${{ github.actor }} and thank you for raising your first issue in this project!
+            
+            We appreciate you taking the time to help us improve. A maintainer will review your issue shortly.
+            
+            In the meantime, feel free to check out our [contribution guidelines](LINK_TO_YOUR_CONTRIBUTING.md).
+
+          # The message to post on a user's first pull request.
+          pr-message: |
+            🎉 Welcome @${{ github.actor }} and thank you for your first pull request! We're thrilled to have you contribute.
+            
+            Our automated checks will run shortly. A maintainer will then review your changes and provide feedback.
+            
+            If you haven't already, please take a look at our [contribution guidelines](LINK_TO_YOUR_CONTRIBUTING.md) to ensure your PR is ready for review.
