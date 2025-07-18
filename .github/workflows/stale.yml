@@ -1,0 +1,59 @@
+# .github/workflows/stale.yml
+
+name: Mark and Close Stale Issues
+
+on:
+  schedule:
+    # Runs at 3:20 AM UTC every day
+    - cron: '20 3 * * *'
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/stale@v5
+        with:
+          # This token is required to allow the action to modify your issues and PRs.
+          # You don't need to create it; GitHub provides it automatically.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+          # --- General Behavior ---
+
+          # How many days of inactivity before an issue or PR is marked as stale.
+          days-before-stale: 60
+
+          # How many days to wait after it's marked stale before it's closed.
+          # Set to -1 to never close stale items, only label them.
+          days-before-close: 7
+
+          # The label to apply when an issue or PR is marked as stale.
+          stale-issue-label: 'stale'
+          stale-pr-label: 'stale'
+
+          # --- Comments ---
+
+          # The comment to post when marking an issue as stale.
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not had
+            recent activity. It will be closed if no further activity occurs. Thank you
+            for your contributions.
+
+          # The comment to post when marking a pull request as stale.
+          stale-pr-message: >
+            This PR has been automatically marked as stale because it has not had
+            recent activity. It will be closed if no further activity occurs. Thank you
+            for your contributions.
+
+          # --- Exemptions (How to Prevent Closing) ---
+
+          # A comma-separated list of labels that prevent an item from ever being marked stale.
+          # This is perfect for "bug", "help wanted", or "good first issue".
+          exempt-labels: 'bug, enhancement, help wanted, good first issue, pinned'
+
+          # You can also exempt items assigned to a specific milestone or user.
+          # exempt-milestones: 'v2.0'
+          # exempt-assignees: 'octocat'
