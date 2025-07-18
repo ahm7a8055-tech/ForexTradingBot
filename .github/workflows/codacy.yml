@@ -1,10 +1,5 @@
 # .github/workflows/codacy.yml
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
 name: Codacy Security Scan
 
 on:
@@ -32,22 +27,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Execute Codacy Analysis CLI using the latest stable version
-      # This is more stable and includes recent bug fixes.
+      # Step 2: Execute Codacy Analysis CLI
       - name: Run Codacy Analysis CLI
-        uses: codacy/codacy-analysis-cli-action@v4 # ✅ UPDATED from a specific commit to v4
+        uses: codacy/codacy-analysis-cli-action@v4
         with:
-          # Your project token stored in GitHub secrets
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           verbose: true
           output: results.sarif
           format: sarif
-          # This helps integrate results with GitHub's code scanning UI
           gh-code-scanning-compat: true
-          # This ensures the workflow doesn't fail here, letting GitHub handle the results
-          max-allowed-issues: 2147483647
+          # ❌ The 'max-allowed-issues' line has been REMOVED.
+          # The workflow will now correctly fail if a tool crashes.
 
       # Step 3: Upload the SARIF file to GitHub's Code Scanning UI
+      # This step will only run if the analysis in Step 2 completes successfully.
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3
         with:
