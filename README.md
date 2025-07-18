@@ -1,4 +1,4 @@
-﻿# ForexSignalBot: AI-Driven Telegram Forex Signals / Telegrambot Auto Forwarder Smart Free OpenSource 📈🤖✨🚀
+﻿# ForexSignalBot: AI-Driven Telegram Forex Signals / Telegramb bot Auto Forwarder Smart Free OpenSource 📈🤖✨🚀
 
 [![License](https://img.shields.io/github/license/Opselon/ForexTradingBot?style=for-the-badge&color=blue)](https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE "Project License Badge: Indicates the MIT License, allowing open use and modification of the codebase. Click to view license details and usage terms.")
 [![GitHub Stars](https://img.shields.io/github/stars/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/stargazers "GitHub Stars Count: Shows how many users have starred this repository, reflecting popularity and interest in the project. Click to see stargazers.")
