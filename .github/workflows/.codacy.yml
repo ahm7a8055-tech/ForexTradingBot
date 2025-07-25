@@ -1,8 +1,0 @@
-engines:
-  trivy:
-    enabled: false
-  sqlfluff:
-    enabled: true
-    config:
-      core:
-        dialect: postgres
