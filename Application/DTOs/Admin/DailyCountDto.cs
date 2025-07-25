@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace Application.DTOs.Admin
 {
@@ -8,3 +8,4 @@ namespace Application.DTOs.Admin
         public int Count { get; set; }
     }
 }
+

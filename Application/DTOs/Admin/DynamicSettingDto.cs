@@ -1,4 +1,4 @@
-using Application.Common.Interfaces;
+﻿using Application.Common.Interfaces;
 
 namespace Application.DTOs.Admin
 {
@@ -36,3 +36,4 @@ namespace Application.DTOs.Admin
         }
     }
 }
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Application.DTOs.Admin
@@ -12,3 +12,4 @@ namespace Application.DTOs.Admin
         // public int MessagesToday { get; set; } // Deferred for now - as per plan
     }
 }
+

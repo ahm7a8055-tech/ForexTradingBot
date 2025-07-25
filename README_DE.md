@@ -1,259 +1,195 @@
-# ForexSignalBot: KI-gestützte Forex-Signale für Telegram / Telegram Bot Automatischer Weiterleiter Intelligenter Kostenloser Open Source 📈🤖✨🚀
+# ForexSignalBot: KI-gesteuerte Forex-Signale für Telegram / Intelligenter, kostenloser Open-Source Auto-Forwarder Bot 📈🤖✨🚀
 
-[![License](https://img.shields.io/github/license/Opselon/ForexTradingBot?style=for-the-badge&color=blue)](https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE "Project License Badge: Indicates the MIT License, allowing open use and modification of the codebase. Click to view license details and usage terms.")
-[![GitHub Stars](https://img.shields.io/github/stars/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/stargazers "GitHub Stars Count: Shows how many users have starred this repository, reflecting popularity and interest in the project. Click to see stargazers.")
-[![GitHub Forks](https://img.shields.io/github/forks/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/network/members "GitHub Forks Count: Displays the number of times this repository has been forked, indicating collaborative potential and community engagement. Click to view forks of the repository.")
-[![GitHub Issues](https://img.shields.io/github/issues/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/issues "GitHub Open Issues Count: Shows the number of currently open issues, indicating active development, bug tracking, and ongoing problem-solving efforts. Click to view open issues.")
-[![GitHub Closed Issues](https://img.shields.io/github/issues-closed/Opselon/ForexTradingBot?style=for-the-badge&color=informational)](https://github.com/Opselon/ForexTradingBot/issues?q=is%3Aissue+is%3Aclosed "GitHub Closed Issues Count: Highlights the project's responsiveness in addressing and resolving reported issues. Click to view closed issues.")
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/Opselon/ForexTradingBot?style=for-the-badge)](https://github.com/Opselon/ForexTradingBot/pulls "GitHub Open Pull Requests Count: Shows active contributions and features in review. Click to view open pull requests.")
-[![GitHub Closed Pull Requests](https://img.shields.io/github/issues-pr-closed/Opselon/ForexTradingBot?style=for-the-badge&color=informational)](https://github.com/Opselon/ForexTradingBot/pulls?q=is%3Apr+is%3Aclosed "GitHub Closed Pull Requests Count: Demonstrates successful integration of community contributions.")
-[![Test Coverage](https://img.shields.io/codecov/c/github/Opselon/ForexTradingBot/main?style=for-the-badge&logo=codecov)](https://codecov.io/gh/Opselon/ForexTradingBot "Code Coverage: Indicates the percentage of code covered by automated tests, reflecting code quality and reliability. (Note: Requires Codecov integration)")
-[![Top Language](https://img.shields.io/github/languages/top/Opselon/ForexTradingBot?style=for-the-badge&color=informational)](https://github.com/Opselon/ForexTradingBot "Top Programming Language: Clearly displays C# as the primary language used in the project, often indicating the core technology stack and development environment.")
-[![.NET Version](https://img.shields.io/badge/.NET-9.0-512BD4?style=for-the-badge&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/en-us/download/dotnet/9.0 "Target .NET Version: Specifies the .NET framework version the project is built upon, highlighting its modern technological foundation.")
-[![Last Commit](https://img.shields.io/github/last-commit/Opselon/ForexTradingBot?style=for-the-badge&color=success)](https://github.com/Opselon/ForexTradingBot/commits/main "Date of Last Commit: Shows how recently the codebase was updated, providing an indication of project activity and ongoing maintenance. Click to view commit history.")
-[![Commit Activity](https://img.shields.io/github/commit-activity/y/Opselon/ForexTradingBot?style=for-the-badge&label=Commits/Year)](https://github.com/Opselon/ForexTradingBot/graphs/contributors "Yearly Commit Activity: Displays the frequency of code commits over the last year, indicating continuous development and active maintenance.")
-[![Code Size](https://img.shields.io/github/languages/code-size/Opselon/ForexTradingBot?style=for-the-badge&color=important)](https://github.com/Opselon/ForexTradingBot "Total Code Size: Indicates the total lines of code in the repository, offering a rough estimate of the project's scale and complexity. Click for code size details.")
-[![Contributors](https://img.shields.io/github/contributors/Opselon/ForexTradingBot?style=for-the-badge)](https://github.com/Opselon/ForexTradingBot/graphs/contributors "Number of Contributors: Shows the total number of individuals who have contributed code to this project, highlighting community involvement and collaborative efforts.")
+[![License](https://img.shields.io/github/license/Opselon/ForexTradingBot?style=for-the-badge&color=blue)](https://github.com/Opselon/ForexTradingBot/blob/main/LICENSE "Projektlizenz-Badge: Zeigt die MIT-Lizenz an, die eine offene Nutzung und Änderung des Codes ermöglicht. Klicken Sie, um Lizenzdetails und Nutzungsbedingungen anzuzeigen.")
+[![GitHub Stars](https://img.shields.io/github/stars/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/stargazers "Anzahl der GitHub-Sterne: Zeigt, wie viele Benutzer dieses Repository favorisiert haben, was die Beliebtheit und das Interesse am Projekt widerspiegelt. Klicken Sie, um die Stargazers zu sehen.")
+[![GitHub Forks](https://img.shields.io/github/forks/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/network/members "Anzahl der GitHub-Forks: Zeigt an, wie oft dieses Repository geforkt wurde, was auf Kooperationspotenzial und Community-Engagement hinweist. Klicken Sie, um die Forks des Repositorys anzuzeigen.")
+[![GitHub Issues](https://img.shields.io/github/issues/Opselon/ForexTradingBot?style=for-the-badge&logo=github)](https://github.com/Opselon/ForexTradingBot/issues "Anzahl offener GitHub-Issues: Zeigt die Anzahl der derzeit offenen Issues an, was auf aktive Entwicklung, Bug-Tracking und laufende Problemlösungsbemühungen hinweist. Klicken Sie, um offene Issues anzuzeigen.")
+[![GitHub Closed Issues](https://img.shields.io/github/issues-closed/Opselon/ForexTradingBot?style=for-the-badge&color=informational)](https://github.com/Opselon/ForexTradingBot/issues?q=is%3Aissue+is%3Aclosed "Anzahl geschlossener GitHub-Issues: Hebt die Reaktionsfähigkeit des Projekts bei der Bearbeitung und Lösung gemeldeter Probleme hervor. Klicken Sie, um geschlossene Issues anzuzeigen.")
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/Opselon/ForexTradingBot?style=for-the-badge)](https://github.com/Opselon/ForexTradingBot/pulls "Anzahl offener GitHub-Pull-Requests: Zeigt aktive Beiträge und zu überprüfende Funktionen an. Klicken Sie, um offene Pull-Requests anzuzeigen.")
+[![GitHub Closed Pull Requests](https://img.shields.io/github/issues-pr-closed/Opselon/ForexTradingBot?style=for-the-badge&color=informational)](https://github.com/Opselon/ForexTradingBot/pulls?q=is%3Apr+is%3Aclosed "Anzahl geschlossener GitHub-Pull-Requests: Demonstriert die erfolgreiche Integration von Community-Beiträgen.")
+[![Test Coverage](https://img.shields.io/codecov/c/github/Opselon/ForexTradingBot/main?style=for-the-badge&logo=codecov)](https://codecov.io/gh/Opselon/ForexTradingBot "Testabdeckung: Gibt den Prozentsatz des Codes an, der durch automatisierte Tests abgedeckt ist, was die Codequalität und Zuverlässigkeit widerspiegelt. (Hinweis: Erfordert Codecov-Integration)")
+[![Top Language](https://img.shields.io/github/languages/top/Opselon/ForexTradingBot?style=for-the-badge&color=informational)](https://github.com/Opselon/ForexTradingBot "Top-Programmiersprache: Zeigt deutlich C# als die im Projekt verwendete Hauptsprache an, was oft auf den Kerntechnologie-Stack und die Entwicklungsumgebung hinweist.")
+[![.NET Version](https://img.shields.io/badge/.NET-9.0-512BD4?style=for-the-badge&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/en-us/download/dotnet/9.0 "Ziel-.NET-Version: Gibt die .NET-Framework-Version an, auf der das Projekt aufbaut, und unterstreicht damit seine moderne technologische Grundlage.")
+[![Last Commit](https://img.shields.io/github/last-commit/Opselon/ForexTradingBot?style=for-the-badge&color=success)](https://github.com/Opselon/ForexTradingBot/commits/main "Datum des letzten Commits: Zeigt an, wie kürzlich der Code aktualisiert wurde, und gibt einen Hinweis auf die Projektaktivität und die laufende Wartung. Klicken Sie, um den Commit-Verlauf anzuzeigen.")
+[![Commit Activity](https://img.shields.io/github/commit-activity/y/Opselon/ForexTradingBot?style=for-the-badge&label=Commits/Year)](https://github.com/Opselon/ForexTradingBot/graphs/contributors "Jährliche Commit-Aktivität: Zeigt die Häufigkeit der Code-Commits im letzten Jahr an, was auf kontinuierliche Entwicklung und aktive Wartung hinweist.")
+[![Code Size](https://img.shields.io/github/languages/code-size/Opselon/ForexTradingBot?style=for-the-badge&color=important)](https://github.com/Opselon/ForexTradingBot "Gesamtgröße des Codes: Gibt die Gesamtzahl der Codezeilen im Repository an und bietet eine grobe Schätzung des Projektumfangs und der Komplexität. Klicken Sie für Details zur Codegröße.")
+[![Contributors](https://img.shields.io/github/contributors/Opselon/ForexTradingBot?style=for-the-badge)](https://github.com/Opselon/ForexTradingBot/graphs/contributors "Anzahl der Mitwirkenden: Zeigt die Gesamtzahl der Personen an, die Code zu diesem Projekt beigetragen haben, und hebt die Beteiligung der Community und die gemeinschaftlichen Bemühungen hervor.")
+[![GitHub Repo stars](https://img.shields.io/github/stars/Opselon/ForexTradingBot?style=social)](https://github.com/Opselon/ForexTradingBot/stargazers)
+### 🚀 Jetzt loslegen!
 
-
-### 🚀 Jetzt starten!
-
-*   <span style=font-size:305Live-Bot:** [https://t.me/trade_ai_helper_bot](https://t.me/trade_ai_helper_bot) ✨</span>
-*   *Klicken Sie einfach auf den Link, um den Bot in Telegram zu öffnen und mit dem Trading zu beginnen!*
+*   <span style="font-size: 3.5em;">**Live-Bot:** [https://t.me/trade_ai_helper_bot](https://t.me/trade_ai_helper_bot) ✨</span>
+*   *Klicke einfach auf den Link, um den Bot in Telegram zu öffnen und mit dem Trading zu beginnen!*
 
 ![ForexSignalBot Demo](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/lcak2Rr.gif)
-
 ---
 
-## 📋 Projektübersicht
+## 🚀 Erste Schritte
 
-**ForexSignalBot** ist ein fortschrittliches KI-basiertes System für Telegram, das entwickelt wurde, um präzise Trading-Signale in Echtzeit für den Forex-Markt zu liefern. Erbaut auf **.NET 9** unter Verwendung von Clean Architecture und Domain-Driven Design Prinzipien.
-
-### 🌟 Hauptfunktionen
-
-- **🤖 KI-Signalgenerierung:** Fortschrittliche Marktanalyse-Algorithmen
-- **📰 Nachrichtenaggregation:** 100Feeds mit intelligenter Kategorisierung
-- **💬 Vollständige Telegram-UI:** Reichhaltige und interaktive Benutzererfahrung
-- **🔗 Automatische Weiterleitung:** Integration mit Trading-Plattformen
-- **🐳 Docker-Containerisierung:** Einfache und konsistente Bereitstellung
-- **🛡️ Sicherheit:** Robuste Fehlerbehandlung und Datenschutz
-
-### 🏗️ Systemarchitektur
-
-Das Projekt basiert auf **Clean Architecture** und **Domain-Driven Design** Prinzipien:
-
-- **Domain-Layer:** Kern-Geschäftslogik und Entitäten
-- **Application-Layer:** Anwendungsservices und Use-Case-Orchestrierung
-- **Infrastructure-Layer:** Datenbank- und externe API-Implementierung
-- **WebAPI:** REST API-Controller
-- **TelegramPanel:** Telegram-Bot-Interaktionsverwaltung
-- **BackgroundTasks:** Hintergrundaufgaben-Verarbeitung mit Hangfire
-
-### 🛠️ Technologie-Stack
-
-- **.NET9 - Hauptentwicklungsplattform
-- **PostgreSQL** - Relationale Datenbank
-- **Redis** - Caching und Hintergrundverarbeitung
-- **Hangfire** - Hintergrundaufgaben-Verwaltung
-- **Docker** - Containerisierung und Bereitstellung
-- **Entity Framework Core** - ORM
-- **Polly** - Fehlerbehandlung und Resilienz
-
----
-
-## 🚀 Schnellstart
-
-Sie können dieses Projekt auf zwei Arten ausführen: mit Docker (empfohlen für schnelle Einrichtung) oder durch manuelle Einrichtung einer lokalen Umgebung.
+Du kannst dieses Projekt auf zwei Arten ausführen: mit Docker (empfohlen für eine schnelle Einrichtung) oder durch manuelles Einrichten einer lokalen Umgebung.
 
 ### Option 1: Schnellstart mit Docker (Empfohlen)
 
-Erhalten Sie den gesamten Anwendungsstack — API, PostgreSQL-Datenbank und Redis-Cache — in Minuten mit Docker zum Laufen. **Dies ist der schnellste und einfachste Weg zu beginnen.**
+Bringe den gesamten Anwendungs-Stack – API, PostgreSQL-Datenbank und Redis-Cache – mit Docker in wenigen Minuten zum Laufen. **Das ist der schnellste und einfachste Weg, um anzufangen.**
 
 #### Voraussetzungen
 
-*   **Docker Desktop**: Stellen Sie sicher, dass es installiert und auf Ihrem System läuft. [Laden Sie es hier herunter](https://www.docker.com/products/docker-desktop/).
+*   **Docker Desktop**: Stelle sicher, dass es auf deinem System installiert ist und läuft. [Hier herunterladen](https://www.docker.com/products/docker-desktop/).
 
-#### Schritt 1: Repository klonen
+#### Schritt 1: Das Repository klonen
 
-Öffnen Sie Ihr Terminal und klonen Sie den Projektquellcode.
+Öffne dein Terminal und klone den Quellcode des Projekts.
 ```bash
 git clone https://github.com/Opselon/ForexTradingBot.git
 cd ForexTradingBot
 ```
 
-#### Schritt 2: Ihre Geheimnisse konfigurieren
+#### Schritt 2: Deine Secrets konfigurieren
 
-Die Anwendung benötigt API-Schlüssel und Passwörter. Wir verwenden eine `.env`-Datei dafür, die privat gehalten wird.
+Die Anwendung benötigt API-Schlüssel und Passwörter. Wir verwenden dafür eine `.env`-Datei, die privat gehalten wird.
 
-1.  **Umgebungsdatei erstellen:**
+1.  **Erstelle die Umgebungsdatei:**
     ```bash
     cp .env.example .env
     ```
-2*`.env`-Datei bearbeiten:** Öffnen Sie die neue `.env`-Datei und füllen Sie Ihre tatsächlichen Geheimwerte aus.
-    *   `TELEGRAM_BOT_TOKEN`: Holen Sie sich dies von `@BotFather` auf Telegram.
-    *   `POSTGRES_PASSWORD`: Erstellen Sie ein sicheres, starkes Passwort für Ihre Datenbank.
 
-#### Schritt3nwendung ausführen! 🔥
+2.  **Bearbeite die `.env`-Datei:** Öffne die neue `.env`-Datei und trage deine tatsächlichen geheimen Werte ein.
+    *   `TELEGRAM_BOT_TOKEN`: Erhältst du von `@BotFather` auf Telegram.
+    *   `POSTGRES_PASSWORD`: Erstelle ein starkes, sicheres Passwort für deine Datenbank.
 
-Mit Docker laufend, führen Sie einen einzelnen Befehl aus dem Projektstammverzeichnis aus:
+#### Schritt 3: Starte die Anwendung! 🔥
+
+Führe bei laufendem Docker einen einzigen Befehl aus dem Stammverzeichnis des Projekts aus:
 ```bash
 docker-compose up --build -d
 ```
-Dieser Befehl erstellt und startet die API-, PostgreSQL- und Redis-Container. Die API ist so konfiguriert, dass sie **automatisch Datenbankmigrationen beim Start anwendet**.
+Dieser Befehl erstellt und startet die API-, PostgreSQL- und Redis-Container. Die API ist so konfiguriert, dass sie **beim Start automatisch Datenbank-Migrationen anwendet**.
 
-#### Schritt4Datenbank befüllen
-Der Bot benötigt eine anfängliche Liste von RSS-Feeds. Verbinden Sie sich mit der Datenbank über einen Client wie DBeaver oder DataGrip und führen Sie das `Populate_RssSources_Categories.sql`-Skript aus.
+#### Schritt 4: Die Datenbank mit initialen Daten füllen
+Der Bot benötigt eine initiale Liste von RSS-Feeds. Verbinde dich mit einem Client wie DBeaver oder DataGrip mit der Datenbank und führe das Skript `Populate_RssSources_Categories.sql` aus.
 *   **Host:** `localhost`
-*   **Port:** `5432  **Datenbank:** `forexsignalbot_db`
+*   **Port:** `5432`
+*   **Datenbank:** `forexsignalbot_db`
 *   **Benutzer:** `postgres`
-*   **Passwort:** Das `POSTGRES_PASSWORD`, das Sie in `.env` gesetzt haben.
+*   **Passwort:** Das `POSTGRES_PASSWORD`, das du in der `.env`-Datei festgelegt hast.
 
-**🎉 Das ist es! Ihr Bot läuft jetzt in Docker.**
+**🎉 Das war's! Dein Bot läuft jetzt in Docker.**
 
 ---
 
-### Option 2: Lokale Entwicklungseinrichtung (Ohne Docker)
+### Option 2: Lokale Entwicklungsumgebung (ohne Docker)
 
-Folgen Sie diesen Schritten, wenn Sie die Anwendung lieber direkt auf Ihrem Computer ausführen möchten.
+Befolge diese Schritte, wenn du die Anwendung lieber direkt auf deiner Maschine ausführen möchtest.
 
 #### Voraussetzungen
-1**.NET9 SDK:**
-    *   Installieren Sie das **.NET9 SDK (v917oder höher)**.
-    *   **Download-Seite:** [https://dotnet.microsoft.com/en-us/download/dotnet/90//dotnet.microsoft.com/en-us/download/dotnet/9*   Überprüfen Sie Ihre Installation durch Ausführen von `dotnet --version`.
-2**PostgreSQL-Datenbank:**
-    *   Installieren und führen Sie einen lokalen PostgreSQL-Server aus.
-    *   Erstellen Sie eine Datenbank und einen Benutzer.
-    *   Aktualisieren Sie Ihre Verbindungszeichenfolge in der `appsettings.Development.json`-Datei.
+
+1.  **.NET 9 SDK:**
+    *   Installiere das **.NET 9 SDK (v9.0.107 oder neuer)**.
+    *   **Download-Seite:** [https://dotnet.microsoft.com/en-us/download/dotnet/9.0](https://dotnet.microsoft.com/en-us/download/dotnet/9.0)
+    *   Überprüfe deine Installation mit dem Befehl `dotnet --version`.
+
+2.  **PostgreSQL-Datenbank:**
+    *   Installiere und starte einen lokalen PostgreSQL-Server.
+    *   Erstelle eine Datenbank und einen Benutzer.
+    *   Aktualisiere deinen Connection String in der `appsettings.Development.json`-Datei.
+
 3.  **Redis-Server:**
-    *   Redis wird für Caching und Hintergrundjob-Verarbeitung verwendet.
-    *   **Für Windows:** Installieren Sie einen Redis-kompatiblen Server wie **Memurai**.
+    *   Redis wird für Caching und die Verarbeitung von Hintergrundjobs verwendet.
+    *   **Für Windows:** Installiere einen Redis-kompatiblen Server wie **Memurai**.
         *   **Installationsanleitung:** [https://docs.memurai.com/en/installation.html](https://docs.memurai.com/en/installation.html)
-    *   **Für macOS/Linux:** Installieren Sie über einen Paketmanager (z.B. `brew install redis` oder `sudo apt-get install redis-server`).
+    *   **Für macOS/Linux:** Installiere über einen Paketmanager (z. B. `brew install redis` oder `sudo apt-get install redis-server`).
 
-#### Anwendung lokal ausführen
+#### Die Anwendung lokal ausführen
 
-Für Entwickler, die die Anwendung lieber direkt auf ihrem Computer ausführen, folgen Sie diesen Schritten:1.  **Repository klonen** (falls noch nicht geschehen).
-2.  **`appsettings.Development.json` konfigurieren** mit Ihrer lokalen Datenbankverbindungszeichenfolge und anderen Einstellungen.
-3.  **Datenbankmigrationen anwenden:**
+Für Entwickler, die die Anwendung lieber direkt auf ihrer Maschine ausführen, sind hier die Schritte:
+
+1.  **Klone das Repository** (falls noch nicht geschehen).
+2.  **Konfiguriere `appsettings.Development.json`** mit deinem lokalen Datenbank-Connection-String und anderen Einstellungen.
+3.  **Wende Datenbank-Migrationen an:**
     ```bash
     dotnet ef database update --startup-project WebApi --project Infrastructure
     ```
-4  **Datenbank befüllen** durch Ausführen des `Populate_RssSources_Categories.sql`-Skripts gegen Ihre lokale Datenbank.
-5.  **API ausführen:**
+4.  **Fülle die Datenbank**, indem du das Skript `Populate_RssSources_Categories.sql` gegen deine lokale Datenbank ausführst.
+5.  **Starte die API:**
     ```bash
     dotnet run --project WebApi
     ```
 
-Für umfassendere Details und Produktionsbereitstellungsanweisungen konsultieren Sie bitte den [dedizierten INSTALL.md-Leitfaden](https://github.com/Opselon/ForexTradingBot/blob/master/WebAPI/INSTALL.md).
+Für umfassendere Details und Anweisungen zur Bereitstellung in der Produktion lies bitte die dedizierte [INSTALL.md-Anleitung](https://github.com/Opselon/ForexTradingBot/blob/master/WebAPI/INSTALL.md).
 
 ---
 
-## 🛠️ Entwicklerhandbuch
+## 🛠️ Entwickler-Leitfaden
 
-Dieser Abschnitt enthält häufige Befehle für die Entwicklung.
+Dieser Abschnitt enthält gängige Befehle für die Entwicklung.
 
-### Datenbankmigrationen verwalten
+### Verwaltung von Datenbank-Migrationen
 
-Stellen Sie vor dem Ausführen dieser Befehle sicher, dass die EF Core-Tools installiert sind: `dotnet tool install --global dotnet-ef`
+Bevor du diese Befehle ausführst, stelle sicher, dass du die EF Core-Tools installiert hast: `dotnet tool install --global dotnet-ef`
 
-*   **Neue Migration hinzufügen:** Wenn Sie ein Domänenmodell ändern, erstellen Sie eine neue Migration.
+*   **Eine neue Migration hinzufügen:** Wenn du ein Domänenmodell änderst, erstelle eine neue Migration.
     ```bash
-    dotnet ef migrations add YourMigrationName --startup-project WebApi --project Infrastructure
+    dotnet ef migrations add DeinMigrationsname --startup-project WebApi --project Infrastructure
     ```
-    *(Ersetzen Sie `YourMigrationName` durch einen beschreibenden Namen, z.B. `AddSignalStatus`)*
+    *(Ersetze `DeinMigrationsname` durch einen aussagekräftigen Namen, z. B. `AddSignalStatus`)*
 
 *   **Migrationen anwenden:** Um das Datenbankschema manuell zu aktualisieren.
     ```bash
     dotnet ef database update --startup-project WebApi --project Infrastructure
     ```
 
-### Produktionsbuild erstellen
+### Einen Production-Build erstellen
 
 Um die Anwendung in eine eigenständige ausführbare Datei für die Bereitstellung zu kompilieren:
 
 ```bash
-# Beispiel für einen eigenständigen Windows x64-Build
-dotnet publish --configuration Release --runtime win-x64elf-contained true --project WebApi
+# Beispiel für einen eigenständigen Windows x64 Build
+dotnet publish --configuration Release --runtime win-x64 --self-contained true --project WebApi
 ```
-*   Die Ausgabe wird im Ordner `WebApi/bin/Release/net94ublish` sein.
+*   Die Ausgabe befindet sich im Ordner `WebApi/bin/Release/net9.0/win-x64/publish`.
 
 ---
 
-### Schritt 4: Web-Setup-Assistent ✨
-Dies ist der neue, vereinfachte Setup-Prozess.
-1.  **Web-Panel öffnen:** Navigieren Sie zu **[http://localhost:50ogin.html](http://localhost:50* in Ihrem Browser.2**Anmelden:** Verwenden Sie die Standard-Anmeldedaten:
+### Schritt 4: Der Web-Setup-Assistent ✨
+Dies ist der neue, optimierte Einrichtungsprozess.
+
+1.  **Öffne das Web-Panel:** Navigiere in deinem Browser zu **[http://localhost:5000/login.html](http://localhost:5000/login.html)**.
+2.  **Anmeldung:** Verwende die Standard-Anmeldeinformationen:
     *   **Benutzername:** `admin`
     *   **Passwort:** `admin`
-    *(Sie werden während des ersten Setup-Prozesses in der Web-UI aufgefordert, diese sensiblen Details für bessere Sicherheit zu ändern.)*
-3führte Einrichtung:** Nach der ersten Anmeldung werden Sie automatisch zu einer sicheren Setup-Seite (`/indexapp.html`) weitergeleitet.
-    *   Auf dieser Seite werden Sie aufgefordert, Ihren **Telegram-Bot-Token** und andere Kerneinstellungen einzugeben.
-    *   Das System wird Ihre Anmeldedaten **live testen**, um sicherzustellen, dass sie vor dem Speichern gültig sind.
-    *   Nach dem Speichern werden diese Einstellungen sicher in der Datenbank gespeichert, nicht in Textdateien.
-4  **Datenbank befüllen:** Nach der ersten Einrichtung werden Sie aufgefordert, die Datenbank zu befüllen. Klicken Sie auf dieSeed Database"-Schaltfläche in der Web-UI. Dies wird die anfängliche Liste der RSS-Feeds und andere erforderliche Daten befüllen.
+    *(Du wirst aufgefordert, diese sensiblen Daten während des ersten Einrichtungsprozesses in der Web-UI zu ändern, um die Sicherheit zu erhöhen.)*
+3.  **Geführte Einrichtung:** Nach der ersten Anmeldung wirst du automatisch zu einer sicheren Einrichtungsseite (`/indexapp.html`) weitergeleitet.
+    *   Auf dieser Seite wirst du aufgefordert, dein **Telegram Bot Token** und andere Kerneinstellungen einzugeben.
+    *   Das System wird deine Anmeldeinformationen **live testen**, um sicherzustellen, dass sie gültig sind, bevor sie gespeichert werden.
+    *   Nach dem Speichern werden diese Einstellungen sicher in der Datenbank gespeichert, nicht in Klartextdateien.
+4.  **Datenbank befüllen:** Nach der Ersteinrichtung wirst du aufgefordert, die Datenbank zu befüllen. Klicke auf die Schaltfläche "Seed Database" in der Web-UI. Dadurch wird die anfängliche Liste der RSS-Feeds und anderer erforderlicher Daten eingespielt.
 
-**🎉 Das ist es! Ihr Bot ist jetzt vollständig konfiguriert und läuft.** Sie können alles über das Web-Panel verwalten.
+**🎉 Das war's! Dein Bot ist jetzt vollständig konfiguriert und läuft.** Du kannst alles über das Web-Panel verwalten.
 ![alt text](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/Dashboard-Dark.png.jpg)
 
----
 
-## 📊 Hauptfunktionen
-
-### 📈 Trading-Signale
-- Präzise Kauf-/Verkaufssignale für alle Hauptwährungspaare
-- Fortschrittliche Marktanalyse mit KI-Algorithmen
-- Unterstützung für USD, EUR, JPY, GBP, AUD, CAD, CHF, NZD Paare
-
-### 📰 Nachrichten und Analysen
-- Nachrichtenaggregation von 10vertrauenswürdigen Quellen
-- Intelligente Kategorisierung (Forex, Aktien, Rohstoffe, Kryptowährungen)
-- Automatische Duplikatsentfernung
-- Benutzerdefinierte Einstellungen pro Benutzer
-
-### 💳 Mitgliedschaftssystem
-- Mehrere Mitgliedschaftsebenen (kostenlos und Premium)
-- Token-basiertes Wallet-System
-- Transaktions- und Abonnementverwaltung
-
-### 🔗 Automatische Signalweiterleitung
-- Direkte Integration mit Trading-Plattformen
-- Reduzierung manueller Fehler und Latenz
-- Vollständige Benutzerkontrolle über Risikoeinstellungen
-
----
-
-## 🎨 Benutzeroberfläche
-
-### Telegram-Bot
-- Vollständige und interaktive Benutzeroberfläche
-- Inline-Tastaturen für einfache Navigation
-- MarkdownV2ormatierung für ansprechende Nachrichten
-- Interaktive Buttons für Trade-Bestätigung
-
-### Web-Panel (In Entwicklung)
-- Administratives Dashboard
-- Erweiterter Benutzer-Panel
-- Analytische Diagramme und Berichte
-
----
-
-## 🤝 Beitragen
-
-Wir akzeptieren Beiträge von der Entwicklergemeinschaft:1 Repository forken
-2 für neue Funktion erstellen3derungen vornehmen
-4. Pull Request senden
-
----
-
-## 📄 Lizenz
-
-Dieses Projekt steht unter **MIT-Lizenz**, die freie Nutzung, Kopie, Modifikation und Verteilung erlaubt.
-
----
-
-## 🌟 Sterne im Laufe der Zeit
-Wenn dieses Projekt für Sie nützlich ist, können Sie ihm einen 🌟 geben
+## 🌟 Stargazers im Zeitverlauf
+Wenn dir dieses Projekt gefällt, gib ihm doch einen Stern 🌟
 [![Stargazers over time](https://starchart.cc/Opselon/ForexTradingBot.svg?variant=light)](https://starchart.cc/Opselon/ForexTradingBot)
 
 ---
 
-#Tags: `#ForexTrading` `#TelegramBot` `#AISignals` `#NET9` `#OpenSource` 
+## 🌍 Mehrsprachige README-Dateien 🌍
+
+Wir stellen README-Dateien in mehreren Sprachen zur Verfügung, um unser Projekt für Benutzer weltweit zugänglich zu machen. Wähle unten deine bevorzugte Sprache:
+
+| Sprache | Sprachcode | README-Datei | Status |
+|----------|---------------|-------------|---------|
+| Englisch | 🇺🇸 EN | [README.md](README.md) | ✅ Vollständig |
+| Russisch | 🇷🇺 RU | [README_RU.md](README_RU.md) | ✅ Vollständig |
+| Persisch | 🇮🇷 FA | [README_FA.md](README_FA.md) | ✅ Vollständig |
+| Chinesisch | 🇨🇳 ZH | [README_ZH.md](README_ZH.md) | ✅ Vollständig |
+| Spanisch | 🇪🇸 ES | [README_ES.md](README_ES.md) | ✅ Vollständig |
+| Französisch | 🇫🇷 FR | [README_FR.md](README_FR.md) | ✅ Vollständig |
+| Deutsch | 🇩🇪 DE | [README_DE.md](README_DE.md) | ✅ Vollständig |
+| Türkisch | 🇹🇷 TR | [README_TR.md](README_TR.md) | ✅ Vollständig |
+| Arabisch | 🇸🇦 AR | [README_AR.md](README_AR.md) | ✅ Vollständig |
+| Hindi | 🇮🇳 HI | [README_HI.md](README_HI.md) | ✅ Vollständig |
+| Italienisch | 🇮🇹 IT | [README_IT.md](README_IT.md) | ✅ Vollständig |
+| Portugiesisch | 🇵🇹 PT | [README_PT.md](README_PT.md) | ✅ Vollständig |
+
+Jede README-Datei enthält die vollständige Projektdokumentation, Einrichtungsanweisungen und Funktionen, die in die jeweilige Sprache übersetzt sind. Alle Dateien werden mit den neuesten Projektinformationen auf dem neuesten Stand gehalten.

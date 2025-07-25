@@ -11,8 +11,8 @@ namespace TelegramPanel.Formatters
             StringBuilder sb = new();
 
             //  از ایموجی‌ها و فرمت‌بندی حرفه‌ای استفاده کنید
-            string typeEmoji = signal.Type.Equals("Buy", StringComparison.OrdinalIgnoreCase) ? "🟢" : "🔴";
-            _ = sb.AppendLine($"{typeEmoji} *{signal.Symbol}* - {signal.Type.ToUpper()} Signal"); // استفاده از MarkdownV2
+          //  string typeEmoji = signal.Type.Equals("Buy", StringComparison.OrdinalIgnoreCase) ? "🟢" : "🔴";
+//_ = sb.AppendLine($"{typeEmoji} *{signal.Symbol}* - {signal.Type.ToUpper()} Signal"); // استفاده از MarkdownV2
 
             if (signal.Category != null)
             {
