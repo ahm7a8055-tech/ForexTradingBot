@@ -24,6 +24,7 @@ Com muito cuidado
 ![Demonstração do ForexSignalBot](https://raw.githubusercontent.com/Opselon/ForexTradingBot/master/assets/lcak2Rr.gif)
 ---
 
+
 ## 🚀 Primeiros Passos
 
 Pode executar este projeto de duas formas: com Docker (recomendado para uma configuração rápida) ou configurando um ambiente local manualmente.
