@@ -76,6 +76,7 @@ O bot precisa de uma lista inicial de feeds RSS. Conecte-se à base de dados usa
 
 **🎉 É isso! O seu bot está agora a correr dentro do Docker.**
 
+
 ---
 
 ### Opção 2: Configuração de Desenvolvimento Local (Sem Docker)
