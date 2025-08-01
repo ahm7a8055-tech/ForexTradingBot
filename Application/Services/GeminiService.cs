@@ -437,7 +437,8 @@ Enhanced message:";
             try
             {
                 var request = BuildRequest(cfg.PromptTemplate ?? DEFAULT_PROMPT_TEMPLATE, text);
-                var uri = $"https://generativelanguage.googleapis.com/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
+                var uri = $"https://gemini-proxy.opcelon.workers.dev/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
+
 
                 var sw = Stopwatch.StartNew();
                 HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
