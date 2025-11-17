@@ -1,5 +1,5 @@
 {
-  "name": "Multi-Layer Build, Test, and Release",
+  "name": "Multi-Layer Build, Test, and Release (Corrected)",
   "on": {
     "workflow_dispatch": {},
     "push": {
@@ -14,8 +14,8 @@
     }
   },
   "jobs": {
-    "job_01_checkout_code": {
-      "name": "01 Checkout Code",
+    "job_01_checkout_and_setup": {
+      "name": "01 Checkout Code & Setup .NET",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
@@ -28,17 +28,7 @@
           "with": {
             "global-json-file": "global.json"
           }
-        }
-      ],
-      "outputs": {
-        "short_sha": "${{ github.sha }}"
-      }
-    },
-    "job_02_setup_cache_restore": {
-      "name": "02 Setup Cache & Restore",
-      "needs": "job_01_checkout_code",
-      "runs-on": "ubuntu-latest",
-      "steps": [
+        },
         {
           "name": "Cache NuGet packages",
           "uses": "actions/cache@v4",
@@ -47,6 +37,17 @@
             "key": "${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}",
             "restore-keys": "${{ runner.os }}-nuget-"
           }
+        }
+      ]
+    },
+    "job_02_restore_dependencies": {
+      "name": "02 Restore Dependencies",
+      "needs": "job_01_checkout_and_setup",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Checkout repository (Restore needs files)",
+          "uses": "actions/checkout@v4"
         },
         {
           "name": "Restore dependencies",
@@ -56,16 +57,12 @@
     },
     "job_03_build_linux": {
       "name": "03 Build Linux",
-      "needs": "job_02_setup_cache_restore",
+      "needs": "job_02_restore_dependencies",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Download Code Artifact",
-          "uses": "actions/download-artifact@v4",
-          "with": {
-            "name": "source-code",
-            "path": "."
-          }
+          "name": "Checkout repository (Build needs files)",
+          "uses": "actions/checkout@v4"
         },
         {
           "name": "Build Project",
@@ -78,6 +75,10 @@
       "needs": "job_03_build_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
+        {
+          "name": "Checkout repository (Test needs files)",
+          "uses": "actions/checkout@v4"
+        },
         {
           "name": "Run Unit Tests (Lightweight DB)",
           "run": "dotnet test --no-build --filter Category=Unit"
@@ -104,6 +105,10 @@
       },
       "steps": [
         {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
           "name": "Run Integration Tests",
           "run": "dotnet test --no-build",
           "env": {
@@ -128,6 +133,10 @@
       },
       "steps": [
         {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
           "name": "Run Redis Integration Tests",
           "run": "dotnet test --no-build --filter Category=Redis",
           "env": {
@@ -143,6 +152,10 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
           "name": "Run Smoke Test",
           "run": "echo \"Starting application in the background for smoke test...\"\ndotnet run --project WebAPI/WebAPI.csproj &\necho \"Waiting for application to start (polling /healthz)...\"\nfor i in {1..15}; do\n  if curl -s -L --fail http://localhost:5000/healthz; then\n    echo \"✅ Health check passed!\"\n    kill $(lsof -t -i:5000) || true\n    exit 0\n  fi\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  sleep 2\ndone\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
           "env": {
@@ -156,12 +169,13 @@
     },
     "job_08_publish_linux_artifact": {
       "name": "08 Publish Linux Artifact",
-      "needs": [
-        "job_07_test_smoke_linux",
-        "job_01_checkout_code"
-      ],
+      "needs": "job_07_test_smoke_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
         {
           "name": "Publish application",
           "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
@@ -191,6 +205,10 @@
       "needs": "job_07_test_smoke_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
         {
           "name": "Set up Docker Buildx",
           "uses": "docker/setup-buildx-action@v3"
@@ -266,6 +284,10 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
           "name": "Build and Push Docker image (Final Push)",
           "uses": "docker/build-push-action@v5",
           "with": {
@@ -282,9 +304,13 @@
     },
     "job_13_build_win": {
       "name": "13 Build/Test (Windows)",
-      "needs": "job_02_setup_cache_restore",
+      "needs": "job_02_restore_dependencies",
       "runs-on": "windows-latest",
       "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
         {
           "name": "Run Unit & Integration Tests (Lightweight)",
           "run": "dotnet test --verbosity normal",
@@ -314,10 +340,7 @@
     },
     "job_14_package_win_artifact": {
       "name": "14 Package Windows Artifact",
-      "needs": [
-        "job_13_build_win",
-        "job_01_checkout_code"
-      ],
+      "needs": "job_13_build_win",
       "runs-on": "windows-latest",
       "steps": [
         {
@@ -342,9 +365,13 @@
     },
     "job_15_build_macos": {
       "name": "15 Build/Test (macOS)",
-      "needs": "job_02_setup_cache_restore",
+      "needs": "job_02_restore_dependencies",
       "runs-on": "macos-latest",
       "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
         {
           "name": "Run Unit & Integration Tests (Lightweight)",
           "run": "dotnet test --verbosity normal",
@@ -373,17 +400,14 @@
     },
     "job_16_package_macos_artifact": {
       "name": "16 Package macOS Artifact",
-      "needs": [
-        "job_15_build_macos",
-        "job_01_checkout_code"
-      ],
+      "needs": "job_15_build_macos",
       "runs-on": "macos-latest",
       "steps": [
         {
           "name": "Determine Artifact Name",
           "id": "artifact_name",
           "shell": "bash",
-          "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-osx-x64.tar.gz\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-osx-x64.tar.gz\"\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
+          "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-osx-x64.tar.gz\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-osx-x64.tar.gz\"\n\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
         },
         {
           "name": "Package Artifact (macOS)",
