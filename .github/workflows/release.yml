@@ -1,51 +1,81 @@
-{
-  "name": "Build and Release",
-  "on": {
-    "push": {
-      "tags": [
-        "v*.*.*"
-      ]
-    }
-  },
-  "jobs": {
-    "build-and-release": {
-      "runs-on": "windows-latest",
-      "steps": [
-        {
-          "name": "Checkout repository",
-          "uses": "actions/checkout@v4"
-        },
-        {
-          "name": "Setup .NET SDK",
-          "uses": "actions/setup-dotnet@v4",
-          "with": {
-            "global-json-file": "global.json"
-          }
-        },
-        {
-          "name": "Restore, Build, and Publish",
-          "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish"
-        },
-        {
-          "name": "Package release artifacts",
-          "run": "Compress-Archive -Path ./publish/* -DestinationPath \"ForexTradingBot-${{ github.ref_name }}-win-x64.zip\"",
-          "shell": "powershell"
-        },
-        {
-          "name": "Create GitHub Release",
-          "uses": "softprops/action-gh-release@v2",
-          "with": {
-            "files": "ForexTradingBot-${{ github.ref_name }}-win-x64.zip",
-            "name": "Release ${{ github.ref_name }}",
-            "body": "Automatic release of version ${{ github.ref_name }}.",
-            "draft": false,
-            "prerelease": false
-          },
-          "env": {
-            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
-          }
-        }
-      ]
-    }
-  }
-}
+# .github/workflows/release.yml
+
+name: Build and Release
+
+# =========================================================================
+# ✅ UPDATED TRIGGER SECTION
+# =========================================================================
+on:
+  # 1. Manual Trigger: Adds a "Run workflow" button on the Actions tab
+  workflow_dispatch:
+
+  # 2. Automatic Trigger for testing: Runs on every push to the 'master' branch.
+  #    You can change 'master' to a different branch like 'dev' or 'test-workflow'.
+  push:
+    branches:
+      - master
+
+  # 3. Original Trigger for production: Runs when a new version tag is pushed.
+  #    We keep this so it still works for official releases.
+  push:
+    tags:
+      - 'v*.*.*'
+# =========================================================================
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    
+    # Add a condition to prevent creating a "real" release on every push
+    # The release step will ONLY run if the trigger was a tag push.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        # We need to fetch all tags to get the latest version number correctly
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore, Build, and Publish
+        run: >
+          dotnet publish WebAPI/WebAPI.csproj 
+          -c Release 
+          -r win-x64 
+          --self-contained true 
+          -p:PublishSingleFile=true 
+          -p:PublishTrimmed=true 
+          -o ./publish
+          
+      # This step determines the name for the artifact. If it's a tag, it uses the tag name.
+      # Otherwise, it uses the short commit hash to create a unique name for test builds.
+      - name: Determine Artifact Name
+        id: artifact_name
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "ARTIFACT_NAME=ForexTradingBot-${{ github.ref_name }}-win-x64.zip" >> $GITHUB_ENV
+          else
+            echo "ARTIFACT_NAME=ForexTradingBot-${{ github.sha_short }}-win-x64.zip" >> $GITHUB_ENV
+          fi
+
+      - name: Package release artifacts
+        run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_NAME }}"
+        shell: powershell
+
+      # This is the "Create Release" step. We add a condition here.
+      # 'startsWith(github.ref, 'refs/tags/')' is true ONLY when a tag is pushed.
+      - name: Create GitHub Release (On Tag Push Only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "${{ env.ARTIFACT_NAME }}"
+          name: "Release ${{ github.ref_name }}"
+          body: "Automatic release of version ${{ github.ref_name }}."
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
