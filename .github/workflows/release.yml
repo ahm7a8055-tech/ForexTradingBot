@@ -1,64 +1,100 @@
+# -----------------------------------------------------------------------------
+# Workflow Name: A clear and descriptive name for the Actions tab.
+# -----------------------------------------------------------------------------
 name: Build, Test, and Release
 
+# -----------------------------------------------------------------------------
+# Triggers: Defines when this workflow will automatically run.
+# -----------------------------------------------------------------------------
 on:
+  # 1. Manual Trigger: Allows you to run this workflow from the Actions tab in GitHub.
   workflow_dispatch:
+
+  # 2. Push Trigger: Runs on pushes to the 'master' branch.
   push:
     branches:
       - master
+
+  # 3. Tag Trigger: Runs when a new version tag (e.g., v1.0.0, v1.2.3) is pushed.
+  #    This is the trigger that will create the final GitHub Release.
+  create:
     tags:
       - 'v*.*.*'
 
+# -----------------------------------------------------------------------------
+# Jobs: The main tasks the workflow will execute.
+# -----------------------------------------------------------------------------
 jobs:
+  # ===========================================================================
+  # JOB 1: Build & Test (Runs on multiple operating systems in parallel)
+  # ===========================================================================
   build-and-test:
+    # --- Strategy Matrix ---
+    # Defines the different configurations this job will run for.
+    # We use a hybrid testing strategy to handle platform limitations.
     strategy:
-      fail-fast: false
+      fail-fast: false # Ensures all jobs run, even if one fails.
       matrix:
         include:
-          - os: windows-latest
-            rid: win-x64
-            artifact_ext: .zip
+          # Configuration 1: Full Test on Linux
+          # The "gold standard" run with real database and cache services.
           - os: ubuntu-latest
             rid: linux-x64
             artifact_ext: .tar.gz
+            test_strategy: Full
+
+          # Configuration 2 & 3: Lightweight Tests on Windows & macOS
+          # These runs verify platform compatibility using faster, in-memory dependencies.
+          - os: windows-latest
+            rid: win-x64
+            artifact_ext: .zip
+            test_strategy: Lightweight
           - os: macos-latest
             rid: osx-x64
             artifact_ext: .tar.gz
+            test_strategy: Lightweight
 
+    # --- Runner Configuration ---
+    # Specifies the virtual machine environment for the job.
     runs-on: ${{ matrix.os }}
-    
+
+    # --- Service Containers ---
+    # These Docker containers provide live services for testing.
+    # IMPORTANT: This block is conditionally run ONLY on the Linux job.
     services:
       postgres:
+        if: matrix.test_strategy == 'Full'
         image: postgres:15
         env:
-          POSTGRES_USER: user
-          POSTGRES_PASSWORD: password
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
           POSTGRES_DB: integration_tests
         ports:
           - 5432:5432
         options: >-
           --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
+        if: matrix.test_strategy == 'Full'
         image: redis:7
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
           
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: true
-      ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=integration_tests;Username=user;Password=password"
-      ConnectionStrings__Redis: "localhost:6379"
-      ASPNETCORE_ENVIRONMENT: "Development"
-
+    # --- Steps ---
+    # The sequence of commands and actions to be executed.
     steps:
+      # Step 1: Check out the repository code.
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Step 2: Set up the specified .NET SDK version.
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
+      # Step 3: Configure NuGet package caching to speed up future runs.
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
@@ -67,22 +103,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      # Step 4: Restore all project dependencies.
       - name: Restore dependencies
         run: dotnet restore
-        
+
+      # Step 5: Run all automated tests in the solution.
+      # This step uses different environment variables based on the testing strategy.
       - name: Run Unit & Integration Tests
         run: dotnet test --verbosity normal
+        env:
+          # For the "Full" run, provide connection strings to the live service containers.
+          ConnectionStrings__DefaultConnection: ${{ matrix.test_strategy == 'Full' && 'Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword' || '' }}
+          ConnectionStrings__Redis: ${{ matrix.test_strategy == 'Full' && 'localhost:6379' || '' }}
+          # For "Lightweight" runs, this flag tells your test code (e.g., WebApplicationFactory) to use an in-memory/SQLite database.
+          TEST_ENVIRONMENT: ${{ matrix.test_strategy }}
+          ASPNETCORE_ENVIRONMENT: "Development" # Prevents interactive prompts.
 
-      # =========================================================================
-      # ✅ FIX 1: Split Smoke Test into OS-specific steps
-      # =========================================================================
+      # Step 6: Perform a Smoke Test to ensure the application can start.
+      # This uses a simple file-based SQLite database on all platforms for speed and reliability.
       - name: Run Smoke Test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           echo "Starting application in the background for smoke test..."
           Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow
-          
           echo "Waiting for application to start (polling /healthz)..."
           foreach ($i in 1..15) {
             $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }
@@ -97,8 +141,8 @@ jobs:
           echo "❌ Health check failed after 30 seconds."
           exit 1
         env:
-          ConnectionStrings__DefaultConnection: "Data Source=smoketest.db"
           IsSmokeTest: "true"
+          ASPNETCORE_ENVIRONMENT: "Development"
 
       - name: Run Smoke Test (Linux/macOS)
         if: runner.os != 'Windows'
@@ -106,7 +150,6 @@ jobs:
         run: |
           echo "Starting application in the background for smoke test..."
           dotnet run --project WebAPI/WebAPI.csproj &
-          
           echo "Waiting for application to start (polling /healthz)..."
           for i in {1..15}; do
             if curl -s -L --fail http://localhost:5000/healthz; then
@@ -117,13 +160,13 @@ jobs:
             echo "Health check failed. Retrying in 2 seconds..."
             sleep 2
           done
-
           echo "❌ Health check failed after 30 seconds."
           exit 1
         env:
-          ConnectionStrings__DefaultConnection: "Data Source=smoketest.db"
           IsSmokeTest: "true"
+          ASPNETCORE_ENVIRONMENT: "Development"
 
+      # Step 7: Publish the application for the target platform.
       - name: Publish application
         run: >
           dotnet publish WebAPI/WebAPI.csproj 
@@ -133,9 +176,7 @@ jobs:
           -p:PublishSingleFile=true 
           -o ./publish
 
-      # =========================================================================
-      # ✅ FIX 2: Split Packaging into OS-specific steps and combine with naming
-      # =========================================================================
+      # Step 8: Determine the name for the final artifact.
       - name: Determine Artifact Name
         id: artifact_name
         shell: bash
@@ -148,42 +189,46 @@ jobs:
           fi
           echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
 
+      # Step 9: Package the published files into an archive.
       - name: Package Artifact (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
         run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_FILENAME }}"
         
       - name: Package Artifact (Linux/macOS)
         if: runner.os != 'Windows'
-        shell: bash
         run: tar -czvf "${{ env.ARTIFACT_FILENAME }}" -C ./publish .
       
+      # Step 10: Upload the packaged artifact so the release job can access it.
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-asset-${{ matrix.rid }}
+          name: release-asset-${{ matrix.rid }} # Unique name for each artifact
           path: ${{ env.ARTIFACT_FILENAME }}
 
-  # =========================================================================
-  # JOB 2: Create Release (No changes needed here)
-  # =========================================================================
+  # ===========================================================================
+  # JOB 2: Create Release (Runs ONLY when a new version tag is pushed)
+  # ===========================================================================
   create-release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build-and-test
+    # --- Job Conditions ---
+    if: startsWith(github.ref, 'refs/tags/') # Only runs for tag pushes.
+    needs: build-and-test # Waits for all matrix jobs in 'build-and-test' to succeed.
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Grants permission to create a GitHub Release.
 
+    # --- Steps ---
     steps:
+      # Step 1: Download all the artifacts that were uploaded by the build jobs.
       - name: Download all release assets
         uses: actions/download-artifact@v4
         with:
-          path: ./release-assets
+          path: ./release-assets # All artifacts will be placed in this directory.
 
+      # Step 2: Create the final GitHub Release and upload all the assets.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ./release-assets/**/*
+          files: ./release-assets/**/* # Glob pattern to find all files in all subdirectories.
           name: "Release ${{ github.ref_name }}"
           body: "Automatic release of version ${{ github.ref_name }}."
           draft: false
