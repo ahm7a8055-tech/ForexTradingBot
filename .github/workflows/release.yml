@@ -71,33 +71,34 @@ jobs:
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets
+          # ✅ FIX 1: Make artifact name unique for each matrix job
+          name: release-asset-${{ matrix.rid }}
           path: "${{ env.ARTIFACT_FILENAME }}"
 
   # =========================================================================
   # JOB 2: Create a single release after all builds are done
   # =========================================================================
   create-release:
-    # This job only runs when a tag is pushed
     if: startsWith(github.ref, 'refs/tags/')
-    # It needs to wait for all the matrix build jobs to complete successfully
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Permission to create the release
+      contents: write
 
     steps:
       - name: Download all release assets
         uses: actions/download-artifact@v4
         with:
-          name: release-assets
+          # ✅ FIX 2: No 'name' provided, so it downloads ALL artifacts
+          # from this workflow run into the specified directory.
           path: ./release-assets
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Use a wildcard to upload all files from the downloaded artifacts
-          files: ./release-assets/*
+          # ✅ FIX 3: Update the glob pattern to find files in the subdirectories
+          # created by the download action (e.g., ./release-assets/release-asset-win-x64/file.zip)
+          files: ./release-assets/**/*
           name: "Release ${{ github.ref_name }}"
           body: "Automatic release of version ${{ github.ref_name }}."
           draft: false
