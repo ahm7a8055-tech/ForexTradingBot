@@ -612,8 +612,9 @@ try
         #region Restrict Interactive Prompts to Development Only
         if (Environment.UserInteractive)
         {
-            // The API Key prompts should ONLY ever run in a Development environment.
-            if (builder.Environment.IsDevelopment())
+            // The API Key prompts should ONLY ever run in a Development environment,
+            // AND NEVER during an automated smoke test.
+            if (builder.Environment.IsDevelopment() && !isSmokeTest) // <--- THE CORRECTED LINE
             {
                 Log.Information("Development mode: Prompting for missing secrets for local debug session.");
                 ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
