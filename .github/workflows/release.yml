@@ -65,12 +65,12 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
-          "name": "🔨 Build Project",
-          "run": "dotnet build --configuration Release WebAPI/WebAPI.csproj"
+          "name": "🔨 Build Solution",
+          "run": "dotnet build --configuration Release"
         }
       ]
     },
@@ -89,7 +89,7 @@
         },
         {
           "name": "🚀 Run Unit Tests",
-          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --filter Category=Unit"
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --filter Category=Unit"
         }
       ]
     },
@@ -122,7 +122,7 @@
         },
         {
           "name": "🚀 Run Integration Tests",
-          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj",
           "env": {
             "ConnectionStrings__DefaultConnection": "Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword",
             "TEST_ENVIRONMENT": "Full"
@@ -154,7 +154,7 @@
         },
         {
           "name": "🚀 Run Redis Integration Tests",
-          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --filter Category=Redis",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --filter Category=Redis",
           "env": {
             "ConnectionStrings__Redis": "localhost:6379",
             "TEST_ENVIRONMENT": "Full"
@@ -337,7 +337,7 @@
         },
         {
           "name": "🧪 Run Unit & Integration Tests (Lightweight)",
-          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --verbosity normal",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --verbosity normal",
           "env": {
             "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
             "TelegramPanel__BotToken": "123456:ABC-DEF1234567890",
@@ -406,7 +406,7 @@
         },
         {
           "name": "🧪 Run Unit & Integration Tests (Lightweight)",
-          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --verbosity normal",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --verbosity normal",
           "env": {
             "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
             "TelegramPanel__BotToken": "123456:ABC-DEF1234567890",
