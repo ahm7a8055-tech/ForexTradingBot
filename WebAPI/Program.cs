@@ -600,7 +600,12 @@ try
     // We check for the actual secrets required for this feature to run.
     string? apiId = builder.Configuration["TelegramUserApi:ApiId"];
     string? apiHash = builder.Configuration["TelegramUserApi:ApiHash"];
-    bool isAutoForwardingEnabled = !string.IsNullOrEmpty(apiId) && !string.IsNullOrEmpty(apiHash);
+
+    // More robust check: ensure ApiId is a valid number and neither value is a placeholder.
+    bool isApiIdValid = int.TryParse(apiId, out _);
+    bool isApiHashValid = !string.IsNullOrEmpty(apiHash) && !apiHash.Contains("REPLACE") && !apiHash.Contains("YOUR_");
+
+    bool isAutoForwardingEnabled = isApiIdValid && isApiHashValid;
     try
     {
         #region Restrict Interactive Prompts to Development Only
