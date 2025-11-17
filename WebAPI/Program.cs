@@ -1260,31 +1260,6 @@ try
     // Get the application URL from configuration or use default
     string urls = builder.Configuration["Urls"] ?? "https://localhost:5001;http://localhost:5000";
     string firstUrl = urls.Split(';')[0].Trim();
-
-    if (isAutoForwardingEnabled)
-    {
-        Log.Information("✅ Auto-Forwarding feature ENABLED. Registering dependent services...");
-
-        // Existing registrations for the core forwarding infrastructure
-        _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
-        _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
-        _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
-        _ = builder.Services.AddForwardingInfrastructure();
-        _ = builder.Services.AddForwardingServices();
-        _ = builder.Services.AddForwardingOrchestratorServices();
-
-        // =========================================================================
-        // ✅ CALL YOUR NEW METHOD HERE
-        // This links the feature flag to the specific services from the TelegramPanel project.
-        // =========================================================================
-        _ = builder.Services.AddTelegramPanelForwardingServices();
-
-        Log.Information("All Auto-Forwarding services have been successfully registered.");
-    }
-    else
-    {
-        Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
-    }
     // ... after app.UseSerilogRequestLogging() and other middleware ...
 
     app.MapGet("/testerror", () =>
