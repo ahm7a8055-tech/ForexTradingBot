@@ -1,4 +1,4 @@
-name: Build and Release
+name: Build, Test, and Release
 
 on:
   workflow_dispatch:
@@ -9,11 +9,9 @@ on:
       - 'v*.*.*'
 
 jobs:
-  # =========================================================================
-  # JOB 1: Build for multiple platforms in parallel
-  # =========================================================================
-  build:
+  build-and-test:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -27,60 +25,156 @@ jobs:
             artifact_ext: .tar.gz
 
     runs-on: ${{ matrix.os }}
+    
+    # =========================================================================
+    # ✅ SERVICE CONTAINERS: Temporary Postgres & Redis for this job
+    # These provide a realistic environment for tests.
+    # =========================================================================
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: integration_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          
+    # Environment variables available to all steps in this job
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      # This connection string will be used by 'dotnet test' for integration tests
+      ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=integration_tests;Username=user;Password=password"
+      # Provide the Redis connection string for all steps
+      ConnectionStrings__Redis: "localhost:6379"
+      # Set ASPNETCORE_ENVIRONMENT to prevent interactive prompts
+      ASPNETCORE_ENVIRONMENT: "Development"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
-      - name: Restore, Build, and Publish
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+        
+      - name: Run Unit & Integration Tests
+        run: dotnet test --verbosity normal
+        # This step will use the Postgres & Redis services defined above
+
+      # =========================================================================
+      # ✅ NEW SMOKE TEST: Aligned with your Program.cs logic
+      # It uses the IsSmokeTest flag and a simple SQLite DB for speed.
+      # =========================================================================
+      - name: Run Smoke Test (Start Server & Check Health)
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+        run: |
+          echo "Starting application in the background for smoke test..."
+          # Start the app. On Windows, use Start-Process; on others, use '&'
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow
+          else
+            dotnet run --project WebAPI/WebAPI.csproj &
+          fi
+
+          echo "Waiting for application to start (polling /healthz)..."
+          for i in {1..15}; do
+            # Use Invoke-WebRequest for PowerShell, curl for others
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }
+              if ($response.StatusCode -eq 200) {
+                echo "✅ Health check passed!"
+                Get-Process -Name "dotnet" | Stop-Process -Force
+                exit 0
+              }
+            else
+              # Use -L to follow redirects (HTTP to HTTPS)
+              if curl -s -L --fail http://localhost:5000/healthz; then
+                echo "✅ Health check passed!"
+                # Find and stop the background dotnet process on Linux/macOS
+                kill $(lsof -t -i:5000) || true # Use '|| true' to prevent error if already stopped
+                exit 0
+              fi
+            fi
+            echo "Health check failed. Retrying in 2 seconds..."
+            sleep 2
+          done
+
+          echo "❌ Health check failed after 30 seconds."
+          exit 1
+        env:
+          # Override the connection string specifically for the smoke test
+          # This leverages your app's logic to use a fast, file-based DB.
+          ConnectionStrings__DefaultConnection: "Data Source=smoketest.db"
+          # Set the magic flag from your Program.cs
+          IsSmokeTest: "true"
+
+      - name: Publish application
         run: >
           dotnet publish WebAPI/WebAPI.csproj 
           -c Release 
           -r ${{ matrix.rid }} 
           --self-contained true 
           -p:PublishSingleFile=true 
-          -p:PublishTrimmed=true 
           -o ./publish
 
-      - name: Determine Artifact Name
-        id: artifact_name
-        shell: bash
+      - name: Determine Artifact Name and Package
+        id: package
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "ARTIFACT_FILENAME=ForexTradingBot-${GITHUB_REF_NAME}-${{ matrix.rid }}${{ matrix.artifact_ext }}" >> $GITHUB_ENV
+            ARTIFACT_FILENAME="ForexTradingBot-${GITHUB_REF_NAME}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
           else
             SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
-            echo "ARTIFACT_FILENAME=ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}" >> $GITHUB_ENV
+            ARTIFACT_FILENAME="ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
           fi
+          echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
           
-      - name: Package for Windows
-        if: runner.os == 'Windows'
-        run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_FILENAME }}"
-        shell: powershell
-
-      - name: Package for Linux/macOS
-        if: runner.os != 'Windows'
-        run: tar -czvf "${{ env.ARTIFACT_FILENAME }}" -C ./publish .
+          echo "Packaging artifacts..."
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            Compress-Archive -Path ./publish/* -DestinationPath "${ARTIFACT_FILENAME}"
+          else
+            tar -czvf "${ARTIFACT_FILENAME}" -C ./publish .
+          fi
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          # ✅ FIX 1: Make artifact name unique for each matrix job
           name: release-asset-${{ matrix.rid }}
-          path: "${{ env.ARTIFACT_FILENAME }}"
+          path: ${{ env.ARTIFACT_FILENAME }}
 
   # =========================================================================
-  # JOB 2: Create a single release after all builds are done
+  # JOB 2: Create Release (No changes needed here)
   # =========================================================================
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,15 +183,11 @@ jobs:
       - name: Download all release assets
         uses: actions/download-artifact@v4
         with:
-          # ✅ FIX 2: No 'name' provided, so it downloads ALL artifacts
-          # from this workflow run into the specified directory.
           path: ./release-assets
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # ✅ FIX 3: Update the glob pattern to find files in the subdirectories
-          # created by the download action (e.g., ./release-assets/release-asset-win-x64/file.zip)
           files: ./release-assets/**/*
           name: "Release ${{ github.ref_name }}"
           body: "Automatic release of version ${{ github.ref_name }}."
