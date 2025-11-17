@@ -612,19 +612,25 @@ try
         #region Restrict Interactive Prompts to Development Only
         if (Environment.UserInteractive)
         {
-            // The API Key prompts should ONLY ever run in a Development environment,
-            // AND NEVER during an automated smoke test.
-            if (builder.Environment.IsDevelopment() && !isSmokeTest) // <--- THE CORRECTED LINE
+            // --- Case 1: We are in a Development environment ---
+            if (builder.Environment.IsDevelopment())
             {
-                Log.Information("Development mode: Prompting for missing secrets for local debug session.");
-                ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
+                // Only prompt for API keys if it's a local developer run (NOT a smoke test).
+                if (!isSmokeTest)
+                {
+                    Log.Information("Development mode: Prompting for missing secrets for local debug session.");
+                    ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
+                }
             }
-            // MODIFIED: This is the critical change.
-            // We only abort if it's interactive, in production, AND it's NOT the initial setup run.
-            else if (!isFirstRun)
+            // --- Case 2: We are in a Production environment ---
+            else
             {
-                Log.Fatal("FATAL: Application is trying to run interactively in a production environment after initial setup. This is a security risk. Aborting.");
-                Environment.Exit(1);
+                // In Production, abort if it's interactive UNLESS it's the very first setup run.
+                if (!isFirstRun)
+                {
+                    Log.Fatal("FATAL: Application is trying to run interactively in a production environment after initial setup. This is a security risk. Aborting.");
+                    Environment.Exit(1);
+                }
             }
         }
         #endregion
