@@ -1,26 +1,32 @@
 name: Build and Release
 
-# =========================================================================
-# ✅ UPDATED TRIGGER SECTION
-# =========================================================================
 on:
-  # 1. Manual Trigger: Adds a "Run workflow" button on the Actions tab
   workflow_dispatch:
-
-  # 2. Automatic Trigger:
-  #    - Runs on every push to 'master' branch.
-  #    - Runs when a new version tag (v*.*.*) is pushed.
   push:
     branches:
       - master
     tags:
       - 'v*.*.*'
-# =========================================================================
 
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  # =========================================================================
+  # JOB 1: Build for multiple platforms in parallel
+  # =========================================================================
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            artifact_ext: .zip
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact_ext: .tar.gz
+          - os: macos-latest
+            rid: osx-x64
+            artifact_ext: .tar.gz
 
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,7 +42,7 @@ jobs:
         run: >
           dotnet publish WebAPI/WebAPI.csproj 
           -c Release 
-          -r win-x64 
+          -r ${{ matrix.rid }} 
           --self-contained true 
           -p:PublishSingleFile=true 
           -p:PublishTrimmed=true 
@@ -47,21 +53,51 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "ARTIFACT_NAME=ForexTradingBot-${GITHUB_REF_NAME}-win-x64.zip" >> $GITHUB_ENV
+            echo "ARTIFACT_FILENAME=ForexTradingBot-${GITHUB_REF_NAME}-${{ matrix.rid }}${{ matrix.artifact_ext }}" >> $GITHUB_ENV
           else
             SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
-            echo "ARTIFACT_NAME=ForexTradingBot-${SHORT_SHA}-win-x64.zip" >> $GITHUB_ENV
+            echo "ARTIFACT_FILENAME=ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}" >> $GITHUB_ENV
           fi
-
-      - name: Package release artifacts
-        run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_NAME }}"
+          
+      - name: Package for Windows
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_FILENAME }}"
         shell: powershell
 
-      - name: Create GitHub Release (On Tag Push Only)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Package for Linux/macOS
+        if: runner.os != 'Windows'
+        run: tar -czvf "${{ env.ARTIFACT_FILENAME }}" -C ./publish .
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: "${{ env.ARTIFACT_FILENAME }}"
+
+  # =========================================================================
+  # JOB 2: Create a single release after all builds are done
+  # =========================================================================
+  create-release:
+    # This job only runs when a tag is pushed
+    if: startsWith(github.ref, 'refs/tags/')
+    # It needs to wait for all the matrix build jobs to complete successfully
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Permission to create the release
+
+    steps:
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: ./release-assets
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: "${{ env.ARTIFACT_NAME }}"
+          # Use a wildcard to upload all files from the downloaded artifacts
+          files: ./release-assets/*
           name: "Release ${{ github.ref_name }}"
           body: "Automatic release of version ${{ github.ref_name }}."
           draft: false
