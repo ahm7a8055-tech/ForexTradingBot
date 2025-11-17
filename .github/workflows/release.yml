@@ -1,5 +1,5 @@
 {
-  "name": "✨ Multi-Layer Build & Release (Fixed)",
+  "name": "✨ Multi-Layer Build & Release (Final Fix)",
   "on": {
     "workflow_dispatch": {},
     "push": {
@@ -84,16 +84,12 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
           "name": "🚀 Run Unit Tests",
-          "run": "dotnet test --verbosity normal",
-          "env": {
-            "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
-            "TEST_ENVIRONMENT": "Lightweight"
-          }
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --filter Category=Unit"
         }
       ]
     },
@@ -121,12 +117,12 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
           "name": "🚀 Run Integration Tests",
-          "run": "dotnet test --no-build",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build",
           "env": {
             "ConnectionStrings__DefaultConnection": "Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword",
             "TEST_ENVIRONMENT": "Full"
@@ -153,12 +149,12 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
           "name": "🚀 Run Redis Integration Tests",
-          "run": "dotnet test --no-build --filter Category=Redis",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --filter Category=Redis",
           "env": {
             "ConnectionStrings__Redis": "localhost:6379",
             "TEST_ENVIRONMENT": "Full"
@@ -197,7 +193,7 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
@@ -326,8 +322,8 @@
         }
       ]
     },
-    "job_13_build_win": {
-      "name": "🪟 13 Build/Test (Windows)",
+    "job_13_build_win_package": {
+      "name": "🪟 13 Windows Build, Test, & Package",
       "needs": "job_02_restore_dependencies",
       "runs-on": "windows-latest",
       "steps": [
@@ -336,12 +332,12 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
           "name": "🧪 Run Unit & Integration Tests (Lightweight)",
-          "run": "dotnet test --verbosity normal",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --verbosity normal",
           "env": {
             "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
             "TelegramPanel__BotToken": "123456:ABC-DEF1234567890",
@@ -363,14 +359,7 @@
         {
           "name": "📦 Publish application",
           "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
-        }
-      ]
-    },
-    "job_14_package_win_artifact": {
-      "name": "⬆️ 14 Package Windows Artifact",
-      "needs": "job_13_build_win",
-      "runs-on": "windows-latest",
-      "steps": [
+        },
         {
           "name": "🏷️ Determine Artifact Name",
           "id": "artifact_name",
@@ -382,7 +371,7 @@
           "run": "Compress-Archive -Path ./publish/* -DestinationPath \"${{ env.ARTIFACT_FILENAME }}\""
         },
         {
-          "name": "Upload Build Artifact",
+          "name": "⬆️ Upload Build Artifact",
           "uses": "actions/upload-artifact@v4",
           "with": {
             "name": "release-asset-win-x64",
@@ -391,8 +380,19 @@
         }
       ]
     },
-    "job_15_build_macos": {
-      "name": "🍎 15 Build/Test (macOS)",
+    "job_14_package_win_artifact": {
+      "name": "⬆️ 14 Skip (Merged with 13)",
+      "needs": "job_13_build_win_package",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Placeholder for Merged Step",
+          "run": "echo \"Step 14 Merged into Step 13 for functional correctness. Proceeding to next step.\""
+        }
+      ]
+    },
+    "job_15_build_macos_package": {
+      "name": "🍎 15 macOS Build, Test, & Package",
       "needs": "job_02_restore_dependencies",
       "runs-on": "macos-latest",
       "steps": [
@@ -401,12 +401,12 @@
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "name": "✅ Run Restore",
           "run": "dotnet restore"
         },
         {
           "name": "🧪 Run Unit & Integration Tests (Lightweight)",
-          "run": "dotnet test --verbosity normal",
+          "run": "dotnet test Application.Tests/Application.Tests.csproj --no-build --verbosity normal",
           "env": {
             "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
             "TelegramPanel__BotToken": "123456:ABC-DEF1234567890",
@@ -427,14 +427,7 @@
         {
           "name": "📦 Publish application",
           "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r osx-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
-        }
-      ]
-    },
-    "job_16_package_macos_artifact": {
-      "name": "⬆️ 16 Package macOS Artifact",
-      "needs": "job_15_build_macos",
-      "runs-on": "macos-latest",
-      "steps": [
+        },
         {
           "name": "🏷️ Determine Artifact Name",
           "id": "artifact_name",
@@ -446,12 +439,23 @@
           "run": "tar -czvf \"${{ env.ARTIFACT_FILENAME }}\" -C ./publish ."
         },
         {
-          "name": "Upload Build Artifact",
+          "name": "⬆️ Upload Build Artifact",
           "uses": "actions/upload-artifact@v4",
           "with": {
             "name": "release-asset-osx-x64",
             "path": "${{ env.ARTIFACT_FILENAME }}"
           }
+        }
+      ]
+    },
+    "job_16_package_macos_artifact": {
+      "name": "⬆️ 16 Skip (Merged with 15)",
+      "needs": "job_15_build_macos_package",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Placeholder for Merged Step",
+          "run": "echo \"Step 16 Merged into Step 15 for functional correctness. Proceeding to next step.\""
         }
       ]
     },
