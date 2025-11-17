@@ -182,32 +182,27 @@ namespace Infrastructure.Services
             {
                 _client = new WTelegram.Client(ConfigProvider, startSessionLoader(), saveSessionAction);
             }
-            catch
+            catch (Exception ex) // Catch the specific exception for better logging.
             {
-                _logger.LogError("Failed to create WTelegramClient. Check your API_ID and API_HASH in appsettings.json.");
+                _logger.LogError(ex, "Failed to create WTelegram.Client. This is expected if the feature is disabled via configuration. Check ApiId/ApiHash if this is unintentional.");
+
+                // THE FIX: Throw a new exception to HALT the constructor immediately.
+                // This prevents any further code in the constructor from running with a null _client.
+                // We include the original exception ('ex') as an "inner exception" to preserve all details.
+                throw new InvalidOperationException("WTelegram.Client could not be initialized. The service cannot be constructed.", ex);
             }
 
+            // The code will ONLY reach this point if the 'try' block succeeded and _client is NOT null.
 
             // Subscribe to WTelegramClient's OnUpdates event to process incoming updates.
-            try
+            // This is now safe to do without a separate try-catch block because we know _client is valid.
+            _client.OnUpdates += async updates =>
             {
-                _client.OnUpdates += async updates =>
+                if (updates is TL.UpdatesBase updatesBase)
                 {
-                    //      _logger.LogCritical("[USER_API_ON_UPDATES_TRIGGERED] Raw updates object of type: {UpdateType} from WTelegram.Client", updates.GetType().FullName);
-                    if (updates is TL.UpdatesBase updatesBase) // Use TL.UpdatesBase
-                    {
-                        await HandleUpdatesBaseAsync(updatesBase);
-                    }
-                    else
-                    {
-                        //   _logger.LogWarning("[USER_API_ON_UPDATES_TRIGGERED] Received 'updates' that is NOT UpdatesBase. Type: {UpdateType}", updates.GetType().FullName);
-                    }
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to subscribe to WTelegramClient's OnUpdates event.");
-            }
+                    await HandleUpdatesBaseAsync(updatesBase);
+                }
+            };
             try
             {
                 // Start a periodic timer for cache cleanup.
