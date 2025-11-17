@@ -1,0 +1,65 @@
+# .github/workflows/release.yml
+
+name: Build and Release
+
+# This workflow is triggered whenever a new tag matching the 'v*.*.*' pattern is pushed.
+# For example: v1.0.0, v1.2.3, v2024.1.0-beta
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-and-release:
+    # We use a Windows runner because your publish command specifies 'win-x64'.
+    runs-on: windows-latest
+
+    steps:
+      # Step 1: Check out the repository's code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the .NET SDK
+      # This step automatically reads your global.json file to use the correct SDK version.
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # Step 3: Restore dependencies, build, and publish the application
+      # We target the WebAPI project and create a self-contained release for Windows.
+      # Adding PublishSingleFile and PublishTrimmed are best practices for releases.
+      - name: Restore, Build, and Publish
+        run: >
+          dotnet publish WebAPI/WebAPI.csproj 
+          -c Release 
+          -r win-x64 
+          --self-contained true 
+          -p:PublishSingleFile=true 
+          -p:PublishTrimmed=true 
+          -o ./publish
+
+      # Step 4: Package the published output into a .zip file
+      # The file name will include the version from the tag (e.g., ForexTradingBot-v1.0.0-win-x64.zip)
+      - name: Package release artifacts
+        run: Compress-Archive -Path ./publish/* -DestinationPath "ForexTradingBot-${{ github.ref_name }}-win-x64.zip"
+        shell: powershell
+
+      # Step 5: Create a new GitHub Release and upload the .zip file
+      # This uses a popular and trusted community action.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The files to upload to the release.
+          files: "ForexTradingBot-${{ github.ref_name }}-win-x64.zip"
+          # The name of the release will be based on the tag.
+          name: "Release ${{ github.ref_name }}"
+          # A simple body for the release notes.
+          body: "Automatic release of version ${{ github.ref_name }}."
+          # Set this to 'true' if you want to create a draft release first.
+          draft: false
+          # Set this to 'true' if this is a pre-release version (e.g., v1.0.0-beta).
+          prerelease: false
+        # The GITHUB_TOKEN is automatically provided by GitHub Actions for authentication.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
