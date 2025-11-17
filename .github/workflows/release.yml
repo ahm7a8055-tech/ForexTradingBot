@@ -75,7 +75,7 @@
       ]
     },
     "job_04_test_unit": {
-      "name": "🧪 04 Run Unit Tests",
+      "name": "🧪 04 Run Unit Tests (Lightweight)",
       "needs": "job_03_build_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
@@ -89,7 +89,11 @@
         },
         {
           "name": "🚀 Run Unit Tests",
-          "run": "dotnet test --no-build --filter Category=Unit"
+          "run": "dotnet test --verbosity normal",
+          "env": {
+            "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
+            "TEST_ENVIRONMENT": "Lightweight"
+          }
         }
       ]
     },
