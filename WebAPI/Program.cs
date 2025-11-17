@@ -486,7 +486,7 @@ try
     builder.Services.AddScoped<ISettingsService, SettingsService>();
     builder.Services.AddScoped<IDiagnosticsService, DiagnosticsService>();
     Log.Information("Data Protection, Dynamic Configuration, Settings, and Diagnostics services registered.");
-
+    bool isFirstRun = string.IsNullOrEmpty(builder.Configuration.GetConnectionString("DefaultConnection"));
     // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
     if (!isSmokeTest)
     {
@@ -612,14 +612,17 @@ try
         #region Restrict Interactive Prompts to Development Only
         if (Environment.UserInteractive)
         {
+            // The API Key prompts should ONLY ever run in a Development environment.
             if (builder.Environment.IsDevelopment())
             {
                 Log.Information("Development mode: Prompting for missing secrets for local debug session.");
                 ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
             }
-            else
+            // MODIFIED: This is the critical change.
+            // We only abort if it's interactive, in production, AND it's NOT the initial setup run.
+            else if (!isFirstRun)
             {
-                Log.Fatal("FATAL: Application started in interactive mode in a non-Development environment. This is a security risk and is forbidden. Aborting.");
+                Log.Fatal("FATAL: Application is trying to run interactively in a production environment after initial setup. This is a security risk. Aborting.");
                 Environment.Exit(1);
             }
         }
