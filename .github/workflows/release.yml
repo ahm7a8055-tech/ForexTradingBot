@@ -1,5 +1,5 @@
 {
-  "name": "Multi-Layer Build, Test, and Release (Corrected)",
+  "name": "✨ Multi-Layer Build & Release (Fixed)",
   "on": {
     "workflow_dispatch": {},
     "push": {
@@ -15,22 +15,22 @@
   },
   "jobs": {
     "job_01_checkout_and_setup": {
-      "name": "01 Checkout Code & Setup .NET",
+      "name": "📦 01 Checkout & Setup",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout Source Code",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Setup .NET SDK",
+          "name": "⚙️ Setup .NET SDK",
           "uses": "actions/setup-dotnet@v4",
           "with": {
             "global-json-file": "global.json"
           }
         },
         {
-          "name": "Cache NuGet packages",
+          "name": "💨 Cache NuGet Packages",
           "uses": "actions/cache@v4",
           "with": {
             "path": "~/.nuget/packages",
@@ -41,52 +41,60 @@
       ]
     },
     "job_02_restore_dependencies": {
-      "name": "02 Restore Dependencies",
+      "name": "⬇️ 02 Restore Dependencies",
       "needs": "job_01_checkout_and_setup",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository (Restore needs files)",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Restore dependencies",
+          "name": "✅ Restore Project Dependencies",
           "run": "dotnet restore"
         }
       ]
     },
     "job_03_build_linux": {
-      "name": "03 Build Linux",
+      "name": "🏗️ 03 Build Linux",
       "needs": "job_02_restore_dependencies",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository (Build needs files)",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Build Project",
-          "run": "dotnet build --no-restore --configuration Release WebAPI/WebAPI.csproj"
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "🔨 Build Project",
+          "run": "dotnet build --configuration Release WebAPI/WebAPI.csproj"
         }
       ]
     },
     "job_04_test_unit": {
-      "name": "04 Run Unit Tests",
+      "name": "🧪 04 Run Unit Tests",
       "needs": "job_03_build_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository (Test needs files)",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Run Unit Tests (Lightweight DB)",
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "🚀 Run Unit Tests",
           "run": "dotnet test --no-build --filter Category=Unit"
         }
       ]
     },
     "job_05_test_integration_db": {
-      "name": "05 Run Integration Tests (Postgres)",
+      "name": "🐘 05 Run Integration Tests (Postgres)",
       "needs": "job_04_test_unit",
       "runs-on": "ubuntu-latest",
       "services": {
@@ -105,11 +113,15 @@
       },
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Run Integration Tests",
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "🚀 Run Integration Tests",
           "run": "dotnet test --no-build",
           "env": {
             "ConnectionStrings__DefaultConnection": "Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword",
@@ -119,7 +131,7 @@
       ]
     },
     "job_06_test_integration_redis": {
-      "name": "06 Run Integration Tests (Redis/Hangfire)",
+      "name": "🔴 06 Run Integration Tests (Redis/Hangfire)",
       "needs": "job_05_test_integration_db",
       "runs-on": "ubuntu-latest",
       "services": {
@@ -133,11 +145,15 @@
       },
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Run Redis Integration Tests",
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "🚀 Run Redis Integration Tests",
           "run": "dotnet test --no-build --filter Category=Redis",
           "env": {
             "ConnectionStrings__Redis": "localhost:6379",
@@ -147,16 +163,16 @@
       ]
     },
     "job_07_test_smoke_linux": {
-      "name": "07 Run Linux Smoke Test",
+      "name": "💨 07 Run Linux Smoke Test",
       "needs": "job_06_test_integration_redis",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Run Smoke Test",
+          "name": "✅ Run Smoke Test",
           "run": "echo \"Starting application in the background for smoke test...\"\ndotnet run --project WebAPI/WebAPI.csproj &\necho \"Waiting for application to start (polling /healthz)...\"\nfor i in {1..15}; do\n  if curl -s -L --fail http://localhost:5000/healthz; then\n    echo \"✅ Health check passed!\"\n    kill $(lsof -t -i:5000) || true\n    exit 0\n  fi\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  sleep 2\ndone\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
           "env": {
             "IsSmokeTest": "true",
@@ -168,30 +184,34 @@
       ]
     },
     "job_08_publish_linux_artifact": {
-      "name": "08 Publish Linux Artifact",
+      "name": "🐧 08 Publish Linux Artifact",
       "needs": "job_07_test_smoke_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Publish application",
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "📦 Publish application",
           "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
         },
         {
-          "name": "Determine Artifact Name",
+          "name": "🏷️ Determine Artifact Name",
           "id": "artifact_name",
           "shell": "bash",
           "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-linux-x64.tar.gz\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-linux-x64.tar.gz\"\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
         },
         {
-          "name": "Package Artifact",
+          "name": "Compress Artifact",
           "run": "tar -czvf \"${{ env.ARTIFACT_FILENAME }}\" -C ./publish ."
         },
         {
-          "name": "Upload Build Artifact",
+          "name": "⬆️ Upload Build Artifact",
           "uses": "actions/upload-artifact@v4",
           "with": {
             "name": "release-asset-linux-x64",
@@ -201,20 +221,20 @@
       ]
     },
     "job_09_docker_setup": {
-      "name": "09 Docker Setup",
+      "name": "🐳 09 Docker Setup & Login",
       "needs": "job_07_test_smoke_linux",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Set up Docker Buildx",
+          "name": "⚙️ Set up Docker Buildx",
           "uses": "docker/setup-buildx-action@v3"
         },
         {
-          "name": "Log in to GitHub Container Registry",
+          "name": "🔑 Log in to GitHub Container Registry",
           "if": "github.event_name == 'push' || github.event_name == 'create'",
           "uses": "docker/login-action@v3",
           "with": {
@@ -224,7 +244,7 @@
           }
         },
         {
-          "name": "Determine Docker Image Tag",
+          "name": "🏷️ Determine Docker Image Tag",
           "id": "docker_meta",
           "uses": "docker/metadata-action@v5",
           "with": {
@@ -240,16 +260,16 @@
       }
     },
     "job_10_docker_build": {
-      "name": "10 Docker Build Image",
+      "name": "🏗️ 10 Docker Build Image",
       "needs": "job_09_docker_setup",
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Build Docker image",
+          "name": "Build Docker image (Local)",
           "uses": "docker/build-push-action@v5",
           "with": {
             "context": ".",
@@ -264,7 +284,7 @@
       ]
     },
     "job_11_docker_test_container": {
-      "name": "11 Docker Test Container",
+      "name": "🩺 11 Docker Test Container",
       "needs": "job_10_docker_build",
       "runs-on": "ubuntu-latest",
       "steps": [
@@ -276,7 +296,7 @@
       ]
     },
     "job_12_docker_push": {
-      "name": "12 Docker Push Image",
+      "name": "⬆️ 12 Docker Push Image",
       "needs": [
         "job_11_docker_test_container",
         "job_09_docker_setup"
@@ -284,11 +304,11 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Build and Push Docker image (Final Push)",
+          "name": "🚀 Build and Push Docker image (Final Push)",
           "uses": "docker/build-push-action@v5",
           "with": {
             "context": ".",
@@ -303,16 +323,20 @@
       ]
     },
     "job_13_build_win": {
-      "name": "13 Build/Test (Windows)",
+      "name": "🪟 13 Build/Test (Windows)",
       "needs": "job_02_restore_dependencies",
       "runs-on": "windows-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Run Unit & Integration Tests (Lightweight)",
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "🧪 Run Unit & Integration Tests (Lightweight)",
           "run": "dotnet test --verbosity normal",
           "env": {
             "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
@@ -322,7 +346,7 @@
           }
         },
         {
-          "name": "Run Smoke Test (Windows)",
+          "name": "💨 Run Smoke Test",
           "shell": "pwsh",
           "run": "echo \"Starting application in the background for smoke test...\"\nStart-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow\necho \"Waiting for application to start (polling /healthz)...\"\nforeach ($i in 1..15) {\n  $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }\n  if ($response.StatusCode -eq 200) {\n    echo \"✅ Health check passed!\"\n    Get-Process -Name \"dotnet\" | Stop-Process -Force\n    exit 0\n  }\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  Start-Sleep -Seconds 2\n}\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
           "env": {
@@ -333,24 +357,24 @@
           }
         },
         {
-          "name": "Publish application",
+          "name": "📦 Publish application",
           "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
         }
       ]
     },
     "job_14_package_win_artifact": {
-      "name": "14 Package Windows Artifact",
+      "name": "⬆️ 14 Package Windows Artifact",
       "needs": "job_13_build_win",
       "runs-on": "windows-latest",
       "steps": [
         {
-          "name": "Determine Artifact Name",
+          "name": "🏷️ Determine Artifact Name",
           "id": "artifact_name",
           "shell": "bash",
           "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-win-x64.zip\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-win-x64.zip\"\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
         },
         {
-          "name": "Package Artifact (Windows)",
+          "name": "Compress Artifact",
           "run": "Compress-Archive -Path ./publish/* -DestinationPath \"${{ env.ARTIFACT_FILENAME }}\""
         },
         {
@@ -364,16 +388,20 @@
       ]
     },
     "job_15_build_macos": {
-      "name": "15 Build/Test (macOS)",
+      "name": "🍎 15 Build/Test (macOS)",
       "needs": "job_02_restore_dependencies",
       "runs-on": "macos-latest",
       "steps": [
         {
-          "name": "Checkout repository",
+          "name": "💾 Checkout repository",
           "uses": "actions/checkout@v4"
         },
         {
-          "name": "Run Unit & Integration Tests (Lightweight)",
+          "name": "✅ Run Restore (Fix NETSDK1004)",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "🧪 Run Unit & Integration Tests (Lightweight)",
           "run": "dotnet test --verbosity normal",
           "env": {
             "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
@@ -383,7 +411,7 @@
           }
         },
         {
-          "name": "Run Smoke Test (macOS)",
+          "name": "💨 Run Smoke Test",
           "run": "echo \"Starting application in the background for smoke test...\"\ndotnet run --project WebAPI/WebAPI.csproj &\necho \"Waiting for application to start (polling /healthz)...\"\nfor i in {1..15}; do\n  if curl -s -L --fail http://localhost:5000/healthz; then\n    echo \"✅ Health check passed!\"\n    kill $(lsof -t -i:5000) || true\n    exit 0\n  fi\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  sleep 2\ndone\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
           "env": {
             "IsSmokeTest": "true",
@@ -393,24 +421,24 @@
           }
         },
         {
-          "name": "Publish application",
+          "name": "📦 Publish application",
           "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r osx-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
         }
       ]
     },
     "job_16_package_macos_artifact": {
-      "name": "16 Package macOS Artifact",
+      "name": "⬆️ 16 Package macOS Artifact",
       "needs": "job_15_build_macos",
       "runs-on": "macos-latest",
       "steps": [
         {
-          "name": "Determine Artifact Name",
+          "name": "🏷️ Determine Artifact Name",
           "id": "artifact_name",
           "shell": "bash",
           "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-osx-x64.tar.gz\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-osx-x64.tar.gz\"\n\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
         },
         {
-          "name": "Package Artifact (macOS)",
+          "name": "Compress Artifact",
           "run": "tar -czvf \"${{ env.ARTIFACT_FILENAME }}\" -C ./publish ."
         },
         {
@@ -424,7 +452,7 @@
       ]
     },
     "job_17_final_cleanup_artifacts": {
-      "name": "17 Final Artifact Collection",
+      "name": "⬇️ 17 Final Artifact Collection",
       "needs": [
         "job_08_publish_linux_artifact",
         "job_12_docker_push",
@@ -443,7 +471,7 @@
       ]
     },
     "job_18_create_release": {
-      "name": "18 Create GitHub Release",
+      "name": "🚀 18 Create GitHub Release",
       "if": "startsWith(github.ref, 'refs/tags/')",
       "needs": "job_17_final_cleanup_artifacts",
       "runs-on": "ubuntu-latest",
