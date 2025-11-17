@@ -1,265 +1,307 @@
-# -----------------------------------------------------------------------------
-# Workflow Name
-# -----------------------------------------------------------------------------
-name: Build, Test, and Release
-
-# -----------------------------------------------------------------------------
-# Triggers
-# -----------------------------------------------------------------------------
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - master
-  create:
-    tags:
-      - 'v*.*.*'
-
-# -----------------------------------------------------------------------------
-# Jobs
-# -----------------------------------------------------------------------------
-jobs:
-  # ===========================================================================
-  # JOB 1: Full Integration Test & Build on Linux
-  # ===========================================================================
-  build-and-test-full:
-    name: Build & Test (Linux, Full Integration)
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15
-        env: { POSTGRES_USER: testuser, POSTGRES_PASSWORD: testpassword, POSTGRES_DB: integration_tests }
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-      redis:
-        image: redis:7
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Run Unit & Integration Tests (Full)
-        run: dotnet test --verbosity normal
-        env:
-          ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword"
-          ConnectionStrings__Redis: "localhost:6379"
-          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token
-          TEST_ENVIRONMENT: "Full"
-          ASPNETCORE_ENVIRONMENT: "Development"
-
-      - name: Run Smoke Test
-        run: |
-          echo "Starting application in the background for smoke test..."
-          dotnet run --project WebAPI/WebAPI.csproj &
-          echo "Waiting for application to start (polling /healthz)..."
-          for i in {1..15}; do
-            if curl -s -L --fail http://localhost:5000/healthz; then
-              echo "✅ Health check passed!"
-              kill $(lsof -t -i:5000) || true
-              exit 0
-            fi
-            echo "Health check failed. Retrying in 2 seconds..."
-            sleep 2
-          done
-          echo "❌ Health check failed after 30 seconds."
-          exit 1
-        env:
-          IsSmokeTest: "true"
-          ASPNETCORE_ENVIRONMENT: "Development"
-          ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
-          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token
-
-      - name: Publish application
-        run: dotnet publish WebAPI/WebAPI.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
-
-      - name: Determine Artifact Name
-        id: artifact_name
-        shell: bash
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            ARTIFACT_FILENAME="ForexTradingBot-${{ github.ref_name }}-linux-x64.tar.gz"
-          else
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            ARTIFACT_FILENAME="ForexTradingBot-${SHORT_SHA}-linux-x64.tar.gz"
-          fi
-          echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
-
-      - name: Package Artifact
-        run: tar -czvf "${{ env.ARTIFACT_FILENAME }}" -C ./publish .
-      
-      - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-asset-linux-x64
-          path: ${{ env.ARTIFACT_FILENAME }}
-
-  # ===========================================================================
-  # JOB 2: Lightweight Build & Test on Windows and macOS
-  # ===========================================================================
-  build-and-test-lightweight:
-    name: Build & Test (${{ matrix.os }}, Lightweight)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            rid: win-x64
-            artifact_ext: .zip
-          - os: macos-latest
-            rid: osx-x64
-            artifact_ext: .tar.gz
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Run Unit & Integration Tests (Lightweight)
-        run: dotnet test --verbosity normal
-        env:
-          ConnectionStrings__DefaultConnection: "Data Source=lightweight_test.db"
-          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token
-          TEST_ENVIRONMENT: "Lightweight" # This now controls the Redis registration
-          ASPNETCORE_ENVIRONMENT: "Development"
-
-      - name: Run Smoke Test (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          echo "Starting application in the background for smoke test..."
-          Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow
-          echo "Waiting for application to start (polling /healthz)..."
-          foreach ($i in 1..15) {
-            $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }
-            if ($response.StatusCode -eq 200) {
-              echo "✅ Health check passed!"
-              Get-Process -Name "dotnet" | Stop-Process -Force
-              exit 0
-            }
-            echo "Health check failed. Retrying in 2 seconds..."
-            Start-Sleep -Seconds 2
+{
+  "name": "Build, Test, and Release",
+  "on": {
+    "workflow_dispatch": {},
+    "push": {
+      "branches": [
+        "master"
+      ]
+    },
+    "create": {
+      "tags": [
+        "v*.*.*"
+      ]
+    }
+  },
+  "jobs": {
+    "build-and-test-full": {
+      "name": "Build & Test (Linux, Full Integration)",
+      "runs-on": "ubuntu-latest",
+      "services": {
+        "postgres": {
+          "image": "postgres:15",
+          "env": {
+            "POSTGRES_USER": "testuser",
+            "POSTGRES_PASSWORD": "testpassword",
+            "POSTGRES_DB": "integration_tests"
+          },
+          "ports": [
+            "5432:5432"
+          ],
+          "options": "--health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5"
+        },
+        "redis": {
+          "image": "redis:7",
+          "ports": [
+            "6379:6379"
+          ],
+          "options": "--health-cmd \"redis-cli ping\" --health-interval 10s --health-timeout 5s --health-retries 5"
+        }
+      },
+      "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Setup .NET SDK",
+          "uses": "actions/setup-dotnet@v4",
+          "with": {
+            "global-json-file": "global.json"
           }
-          echo "❌ Health check failed after 30 seconds."
-          exit 1
-        env:
-          IsSmokeTest: "true"
-          ASPNETCORE_ENVIRONMENT: "Development"
-          ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
-          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token
-
-      - name: Run Smoke Test (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          echo "Starting application in the background for smoke test..."
-          dotnet run --project WebAPI/WebAPI.csproj &
-          echo "Waiting for application to start (polling /healthz)..."
-          for i in {1..15}; do
-            if curl -s -L --fail http://localhost:5000/healthz; then
-              echo "✅ Health check passed!"
-              kill $(lsof -t -i:5000) || true
-              exit 0
-            fi
-            echo "Health check failed. Retrying in 2 seconds..."
-            sleep 2
-          done
-          echo "❌ Health check failed after 30 seconds."
-          exit 1
-        env:
-          IsSmokeTest: "true"
-          ASPNETCORE_ENVIRONMENT: "Development"
-          ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
-          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token
-
-      - name: Publish application
-        run: dotnet publish WebAPI/WebAPI.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o ./publish
-
-      - name: Determine Artifact Name
-        id: artifact_name
-        shell: bash
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            ARTIFACT_FILENAME="ForexTradingBot-${{ github.ref_name }}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
-          else
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            ARTIFACT_FILENAME="ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
-          fi
-          echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
-
-      - name: Package Artifact (Windows)
-        if: runner.os == 'Windows'
-        run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_FILENAME }}"
-        
-      - name: Package Artifact (macOS)
-        if: runner.os == 'macOS'
-        run: tar -czvf "${{ env.ARTIFACT_FILENAME }}" -C ./publish .
-      
-      - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-asset-${{ matrix.rid }}
-          path: ${{ env.ARTIFACT_FILENAME }}
-
-  # ===========================================================================
-  # JOB 3: Create Release (Depends on all build jobs)
-  # ===========================================================================
-  create-release:
-    name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-and-test-full, build-and-test-lightweight]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all release assets
-        uses: actions/download-artifact@v4
-        with:
-          path: ./release-assets
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ./release-assets/**/*
-          name: "Release ${{ github.ref_name }}"
-          body: "Automatic release of version ${{ github.ref_name }}."
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        },
+        {
+          "name": "Cache NuGet packages",
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": "~/.nuget/packages",
+            "key": "${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}",
+            "restore-keys": "${{ runner.os }}-nuget-"
+          }
+        },
+        {
+          "name": "Restore dependencies",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "Run Unit & Integration Tests (Full)",
+          "run": "dotnet test --verbosity normal",
+          "env": {
+            "ConnectionStrings__DefaultConnection": "Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword",
+            "ConnectionStrings__Redis": "localhost:6379",
+            "TelegramPanel__BotToken": "123456:ABC-DEF1234567890",
+            "TEST_ENVIRONMENT": "Full",
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          }
+        },
+        {
+          "name": "Run Smoke Test",
+          "run": "echo \"Starting application in the background for smoke test...\"\ndotnet run --project WebAPI/WebAPI.csproj &\necho \"Waiting for application to start (polling /healthz)...\"\nfor i in {1..15}; do\n  if curl -s -L --fail http://localhost:5000/healthz; then\n    echo \"✅ Health check passed!\"\n    kill $(lsof -t -i:5000) || true\n    exit 0\n  fi\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  sleep 2\ndone\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
+          "env": {
+            "IsSmokeTest": "true",
+            "ASPNETCORE_ENVIRONMENT": "Development",
+            "ConnectionStrings__DefaultConnection": "Data Source=smoke_test.db",
+            "TelegramPanel__BotToken": "123456:ABC-DEF1234567890"
+          }
+        },
+        {
+          "name": "Publish application",
+          "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
+        },
+        {
+          "name": "Determine Artifact Name",
+          "id": "artifact_name",
+          "shell": "bash",
+          "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-linux-x64.tar.gz\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-linux-x64.tar.gz\"\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
+        },
+        {
+          "name": "Package Artifact",
+          "run": "tar -czvf \"${{ env.ARTIFACT_FILENAME }}\" -C ./publish ."
+        },
+        {
+          "name": "Upload Build Artifact",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "release-asset-linux-x64",
+            "path": "${{ env.ARTIFACT_FILENAME }}"
+          }
+        }
+      ]
+    },
+    "build-and-test-lightweight": {
+      "name": "Build & Test (${{ matrix.os }}, Lightweight)",
+      "runs-on": "${{ matrix.os }}",
+      "strategy": {
+        "fail-fast": false,
+        "matrix": {
+          "include": [
+            {
+              "os": "windows-latest",
+              "rid": "win-x64",
+              "artifact_ext": ".zip"
+            },
+            {
+              "os": "macos-latest",
+              "rid": "osx-x64",
+              "artifact_ext": ".tar.gz"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Setup .NET SDK",
+          "uses": "actions/setup-dotnet@v4",
+          "with": {
+            "global-json-file": "global.json"
+          }
+        },
+        {
+          "name": "Cache NuGet packages",
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": "~/.nuget/packages",
+            "key": "${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}",
+            "restore-keys": "${{ runner.os }}-nuget-"
+          }
+        },
+        {
+          "name": "Restore dependencies",
+          "run": "dotnet restore"
+        },
+        {
+          "name": "Run Unit & Integration Tests (Lightweight)",
+          "run": "dotnet test --verbosity normal",
+          "env": {
+            "ConnectionStrings__DefaultConnection": "Data Source=lightweight_test.db",
+            "TelegramPanel__BotToken": "123456:ABC-DEF1234567890",
+            "TEST_ENVIRONMENT": "Lightweight",
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          }
+        },
+        {
+          "name": "Run Smoke Test (Windows)",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "run": "echo \"Starting application in the background for smoke test...\"\nStart-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow\necho \"Waiting for application to start (polling /healthz)...\"\nforeach ($i in 1..15) {\n  $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }\n  if ($response.StatusCode -eq 200) {\n    echo \"✅ Health check passed!\"\n    Get-Process -Name \"dotnet\" | Stop-Process -Force\n    exit 0\n  }\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  Start-Sleep -Seconds 2\n}\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
+          "env": {
+            "IsSmokeTest": "true",
+            "ASPNETCORE_ENVIRONMENT": "Development",
+            "ConnectionStrings__DefaultConnection": "Data Source=smoke_test.db",
+            "TelegramPanel__BotToken": "123456:ABC-DEF1234567890"
+          }
+        },
+        {
+          "name": "Run Smoke Test (macOS)",
+          "if": "runner.os == 'macOS'",
+          "run": "echo \"Starting application in the background for smoke test...\"\ndotnet run --project WebAPI/WebAPI.csproj &\necho \"Waiting for application to start (polling /healthz)...\"\nfor i in {1..15}; do\n  if curl -s -L --fail http://localhost:5000/healthz; then\n    echo \"✅ Health check passed!\"\n    kill $(lsof -t -i:5000) || true\n    exit 0\n  fi\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  sleep 2\ndone\necho \"❌ Health check failed after 30 seconds.\"\nexit 1",
+          "env": {
+            "IsSmokeTest": "true",
+            "ASPNETCORE_ENVIRONMENT": "Development",
+            "ConnectionStrings__DefaultConnection": "Data Source=smoke_test.db",
+            "TelegramPanel__BotToken": "123456:ABC-DEF1234567890"
+          }
+        },
+        {
+          "name": "Publish application",
+          "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o ./publish"
+        },
+        {
+          "name": "Determine Artifact Name",
+          "id": "artifact_name",
+          "shell": "bash",
+          "run": "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  ARTIFACT_FILENAME=\"ForexTradingBot-${{ github.ref_name }}-${{ matrix.rid }}${{ matrix.artifact_ext }}\"\nelse\n  SHORT_SHA=$(echo \"${{ github.sha }}\" | cut -c1-7)\n  ARTIFACT_FILENAME=\"ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}\"\nfi\necho \"ARTIFACT_FILENAME=${ARTIFACT_FILENAME}\" >> $GITHUB_ENV"
+        },
+        {
+          "name": "Package Artifact (Windows)",
+          "if": "runner.os == 'Windows'",
+          "run": "Compress-Archive -Path ./publish/* -DestinationPath \"${{ env.ARTIFACT_FILENAME }}\""
+        },
+        {
+          "name": "Package Artifact (macOS)",
+          "if": "runner.os == 'macOS'",
+          "run": "tar -czvf \"${{ env.ARTIFACT_FILENAME }}\" -C ./publish ."
+        },
+        {
+          "name": "Upload Build Artifact",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "release-asset-${{ matrix.rid }}",
+            "path": "${{ env.ARTIFACT_FILENAME }}"
+          }
+        }
+      ]
+    },
+    "docker-build-and-test": {
+      "name": "Docker Image Build & Test",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Checkout repository",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Set up Docker Buildx",
+          "uses": "docker/setup-buildx-action@v3"
+        },
+        {
+          "name": "Log in to GitHub Container Registry",
+          "if": "github.event_name == 'push' || github.event_name == 'create'",
+          "uses": "docker/login-action@v3",
+          "with": {
+            "registry": "ghcr.io",
+            "username": "${{ github.actor }}",
+            "password": "${{ secrets.GITHUB_TOKEN }}"
+          }
+        },
+        {
+          "name": "Determine Docker Image Tag",
+          "id": "docker_meta",
+          "uses": "docker/metadata-action@v5",
+          "with": {
+            "images": "ghcr.io/${{ github.repository }}",
+            "tags": "type=sha,format=short,prefix=,event=push\ntype=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'master') }}\ntype=ref,event=tag"
+          }
+        },
+        {
+          "name": "Build and Push Docker image",
+          "uses": "docker/build-push-action@v5",
+          "with": {
+            "context": ".",
+            "file": "./Dockerfile",
+            "push": "true",
+            "tags": "${{ steps.docker_meta.outputs.tags }}",
+            "labels": "${{ steps.docker_meta.outputs.labels }}",
+            "cache-from": "type=gha",
+            "cache-to": "type=gha,mode=max"
+          }
+        },
+        {
+          "name": "Run Smoke Test on Docker Image",
+          "timeout-minutes": 5,
+          "run": "IMAGE_NAME=ghcr.io/${{ github.repository }}:${{ steps.docker_meta.outputs.version }}\necho \"Testing image: $IMAGE_NAME\"\n\n# Start dummy service containers\ndocker run --rm -d --name test_postgres -e POSTGRES_USER=testuser -e POSTGRES_PASSWORD=testpassword -e POSTGRES_DB=smoke_tests postgres:15\ndocker run --rm -d --name test_redis redis:7\n\n# Wait for services to start\nsleep 5\n\n# Run the application image\n# Using 'host.docker.internal' for cross-container communication for simplicity on Linux/macOS runners. Could use a custom network.\ndocker run --rm -d --name test_app -p 5000:5000 \\\n  -e ASPNETCORE_URLS=http://+:5000 \\\n  -e ConnectionStrings__DefaultConnection=\"Host=$(docker inspect -f '{{.NetworkSettings.IPAddress}}' test_postgres);Port=5432;Database=smoke_tests;Username=testuser;Password=testpassword\" \\\n  -e ConnectionStrings__Redis=\"$(docker inspect -f '{{.NetworkSettings.IPAddress}}' test_redis):6379\" \\\n  -e TelegramPanel__BotToken=\"123456:ABC-DEF1234567890\" \\\n  $IMAGE_NAME\n\n# Wait for application to start (polling /healthz)\nfor i in {1..15}; do\n  if curl -s -L --fail http://localhost:5000/healthz; then\n    echo \"✅ Health check passed on Docker image!\"\n    docker stop test_app test_postgres test_redis\n    exit 0\n  fi\n  echo \"Health check failed. Retrying in 2 seconds...\"\n  sleep 2\ndone\n\necho \"❌ Docker image smoke test failed after 30 seconds.\"\ndocker logs test_app\ndocker stop test_app test_postgres test_redis || true\nexit 1\n"
+        }
+      ]
+    },
+    "create-release": {
+      "name": "Create GitHub Release",
+      "if": "startsWith(github.ref, 'refs/tags/')",
+      "needs": [
+        "build-and-test-full",
+        "build-and-test-lightweight",
+        "docker-build-and-test"
+      ],
+      "runs-on": "ubuntu-latest",
+      "permissions": {
+        "contents": "write"
+      },
+      "steps": [
+        {
+          "name": "Download all release assets",
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "path": "./release-assets"
+          }
+        },
+        {
+          "name": "Create GitHub Release",
+          "uses": "softprops/action-gh-release@v2",
+          "with": {
+            "files": "./release-assets/**/*",
+            "name": "Release ${{ github.ref_name }}",
+            "body": "Automatic release of version ${{ github.ref_name }}.",
+            "draft": false,
+            "prerelease": false
+          },
+          "env": {
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          }
+        }
+      ]
+    }
+  }
+}
