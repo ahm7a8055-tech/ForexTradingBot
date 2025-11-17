@@ -26,22 +26,16 @@ jobs:
     name: Build & Test (Linux, Full Integration)
     runs-on: ubuntu-latest
 
-    # Service Containers for real database and cache testing
     services:
       postgres:
         image: postgres:15
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpassword
-          POSTGRES_DB: integration_tests
-        ports:
-          - 5432:5432
+        env: { POSTGRES_USER: testuser, POSTGRES_PASSWORD: testpassword, POSTGRES_DB: integration_tests }
+        ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
-        ports:
-          - 6379:6379
+        ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
 
@@ -70,7 +64,7 @@ jobs:
         env:
           ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=integration_tests;Username=testuser;Password=testpassword"
           ConnectionStrings__Redis: "localhost:6379"
-          TEST_ENVIRONMENT: "Full"
+          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token to prevent crash
           ASPNETCORE_ENVIRONMENT: "Development"
 
       - name: Run Smoke Test
@@ -92,17 +86,21 @@ jobs:
         env:
           IsSmokeTest: "true"
           ASPNETCORE_ENVIRONMENT: "Development"
+          ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
+          ConnectionStrings__Redis: "disabled"
+          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token to prevent crash
 
       - name: Publish application
         run: dotnet publish WebAPI/WebAPI.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
 
       - name: Determine Artifact Name
         id: artifact_name
+        shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            ARTIFACT_FILENAME="ForexTradingBot-${GITHUB_REF_NAME}-linux-x64.tar.gz"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            ARTIFACT_FILENAME="ForexTradingBot-${{ github.ref_name }}-linux-x64.tar.gz"
           else
-            SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             ARTIFACT_FILENAME="ForexTradingBot-${SHORT_SHA}-linux-x64.tar.gz"
           fi
           echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
@@ -156,7 +154,9 @@ jobs:
       - name: Run Unit & Integration Tests (Lightweight)
         run: dotnet test --verbosity normal
         env:
-          TEST_ENVIRONMENT: "Lightweight"
+          ConnectionStrings__DefaultConnection: "Data Source=lightweight_test.db"
+          ConnectionStrings__Redis: "disabled"
+          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token to prevent crash
           ASPNETCORE_ENVIRONMENT: "Development"
 
       - name: Run Smoke Test (Windows)
@@ -181,6 +181,9 @@ jobs:
         env:
           IsSmokeTest: "true"
           ASPNETCORE_ENVIRONMENT: "Development"
+          ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
+          ConnectionStrings__Redis: "disabled"
+          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token to prevent crash
 
       - name: Run Smoke Test (macOS)
         if: runner.os == 'macOS'
@@ -202,6 +205,9 @@ jobs:
         env:
           IsSmokeTest: "true"
           ASPNETCORE_ENVIRONMENT: "Development"
+          ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
+          ConnectionStrings__Redis: "disabled"
+          TelegramPanel__BotToken: "123456:ABC-DEF1234567890" # Dummy token to prevent crash
 
       - name: Publish application
         run: dotnet publish WebAPI/WebAPI.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -o ./publish
@@ -210,10 +216,10 @@ jobs:
         id: artifact_name
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            ARTIFACT_FILENAME="ForexTradingBot-${GITHUB_REF_NAME}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            ARTIFACT_FILENAME="ForexTradingBot-${{ github.ref_name }}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
           else
-            SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             ARTIFACT_FILENAME="ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
           fi
           echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
@@ -238,7 +244,6 @@ jobs:
   create-release:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    # ✅ This job now waits for BOTH build jobs to complete successfully.
     needs: [build-and-test-full, build-and-test-lightweight]
     runs-on: ubuntu-latest
     permissions:
