@@ -26,10 +26,6 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     
-    # =========================================================================
-    # ✅ SERVICE CONTAINERS: Temporary Postgres & Redis for this job
-    # These provide a realistic environment for tests.
-    # =========================================================================
     services:
       postgres:
         image: postgres:15
@@ -40,28 +36,18 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
           
-    # Environment variables available to all steps in this job
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: true
-      # This connection string will be used by 'dotnet test' for integration tests
       ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=integration_tests;Username=user;Password=password"
-      # Provide the Redis connection string for all steps
       ConnectionStrings__Redis: "localhost:6379"
-      # Set ASPNETCORE_ENVIRONMENT to prevent interactive prompts
       ASPNETCORE_ENVIRONMENT: "Development"
 
     steps:
@@ -86,41 +72,47 @@ jobs:
         
       - name: Run Unit & Integration Tests
         run: dotnet test --verbosity normal
-        # This step will use the Postgres & Redis services defined above
 
       # =========================================================================
-      # ✅ NEW SMOKE TEST: Aligned with your Program.cs logic
-      # It uses the IsSmokeTest flag and a simple SQLite DB for speed.
+      # ✅ FIX 1: Split Smoke Test into OS-specific steps
       # =========================================================================
-      - name: Run Smoke Test (Start Server & Check Health)
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      - name: Run Smoke Test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           echo "Starting application in the background for smoke test..."
-          # Start the app. On Windows, use Start-Process; on others, use '&'
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow
-          else
-            dotnet run --project WebAPI/WebAPI.csproj &
-          fi
+          Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -NoNewWindow
+          
+          echo "Waiting for application to start (polling /healthz)..."
+          foreach ($i in 1..15) {
+            $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }
+            if ($response.StatusCode -eq 200) {
+              echo "✅ Health check passed!"
+              Get-Process -Name "dotnet" | Stop-Process -Force
+              exit 0
+            }
+            echo "Health check failed. Retrying in 2 seconds..."
+            Start-Sleep -Seconds 2
+          }
+          echo "❌ Health check failed after 30 seconds."
+          exit 1
+        env:
+          ConnectionStrings__DefaultConnection: "Data Source=smoketest.db"
+          IsSmokeTest: "true"
 
+      - name: Run Smoke Test (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "Starting application in the background for smoke test..."
+          dotnet run --project WebAPI/WebAPI.csproj &
+          
           echo "Waiting for application to start (polling /healthz)..."
           for i in {1..15}; do
-            # Use Invoke-WebRequest for PowerShell, curl for others
-            if [[ "${{ runner.os }}" == "Windows" ]]; then
-              $response = try { Invoke-WebRequest -Uri http://localhost:5000/healthz -UseBasicParsing } catch { $null }
-              if ($response.StatusCode -eq 200) {
-                echo "✅ Health check passed!"
-                Get-Process -Name "dotnet" | Stop-Process -Force
-                exit 0
-              }
-            else
-              # Use -L to follow redirects (HTTP to HTTPS)
-              if curl -s -L --fail http://localhost:5000/healthz; then
-                echo "✅ Health check passed!"
-                # Find and stop the background dotnet process on Linux/macOS
-                kill $(lsof -t -i:5000) || true # Use '|| true' to prevent error if already stopped
-                exit 0
-              fi
+            if curl -s -L --fail http://localhost:5000/healthz; then
+              echo "✅ Health check passed!"
+              kill $(lsof -t -i:5000) || true
+              exit 0
             fi
             echo "Health check failed. Retrying in 2 seconds..."
             sleep 2
@@ -129,10 +121,7 @@ jobs:
           echo "❌ Health check failed after 30 seconds."
           exit 1
         env:
-          # Override the connection string specifically for the smoke test
-          # This leverages your app's logic to use a fast, file-based DB.
           ConnectionStrings__DefaultConnection: "Data Source=smoketest.db"
-          # Set the magic flag from your Program.cs
           IsSmokeTest: "true"
 
       - name: Publish application
@@ -144,9 +133,12 @@ jobs:
           -p:PublishSingleFile=true 
           -o ./publish
 
-      - name: Determine Artifact Name and Package
-        id: package
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      # =========================================================================
+      # ✅ FIX 2: Split Packaging into OS-specific steps and combine with naming
+      # =========================================================================
+      - name: Determine Artifact Name
+        id: artifact_name
+        shell: bash
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             ARTIFACT_FILENAME="ForexTradingBot-${GITHUB_REF_NAME}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
@@ -155,14 +147,17 @@ jobs:
             ARTIFACT_FILENAME="ForexTradingBot-${SHORT_SHA}-${{ matrix.rid }}${{ matrix.artifact_ext }}"
           fi
           echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> $GITHUB_ENV
-          
-          echo "Packaging artifacts..."
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            Compress-Archive -Path ./publish/* -DestinationPath "${ARTIFACT_FILENAME}"
-          else
-            tar -czvf "${ARTIFACT_FILENAME}" -C ./publish .
-          fi
 
+      - name: Package Artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path ./publish/* -DestinationPath "${{ env.ARTIFACT_FILENAME }}"
+        
+      - name: Package Artifact (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -czvf "${{ env.ARTIFACT_FILENAME }}" -C ./publish .
+      
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
