@@ -38,7 +38,6 @@ using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Logging;
 using TelegramPanel.Infrastructure.Services;
 using WebAPI.Middleware; // Added for AuthRedirectMiddleware
-
 #endregion
 
 #region Main Program logger
@@ -270,35 +269,59 @@ try
     {
         Log.Information("✅ External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
     }
-
     try
     {
-        // This registration is now guaranteed to work because redisConnectionString will always have a value.
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            // We re-read from the configuration to ensure we use the potentially updated value.
-            string? finalConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("Redis");
-            ConfigurationOptions options = ConfigurationOptions.Parse(finalConnectionString!);
+            var configuration = sp.GetRequiredService<IConfiguration>();
+            string? connectionString = configuration.GetConnectionString("Redis");
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                // This should ideally not happen because of your earlier logic, but it's a good safeguard.
+                Log.Fatal("Redis connection string is null or empty at the moment of creating the multiplexer.");
+                throw new InvalidOperationException("Redis connection string is not configured.");
+            }
+
+            var options = ConfigurationOptions.Parse(connectionString);
+
+            // --- THE CRITICAL FIX ---
+            // This tells the multiplexer to NOT throw an exception on startup if it can't connect.
+            // It will continue trying to connect in the background, giving our
+            // EmbeddedRedisService time to start the server.
             options.AbortOnConnectFail = false;
-            options.ConnectTimeout = 5000;
-            options.SyncTimeout = 5000;
-            return ConnectionMultiplexer.Connect(options);
+            // ------------------------
+
+            options.ConnectTimeout = 10000; // Increase timeout for more resilience on startup
+            options.SyncTimeout = 10000;
+
+            Log.Information("Attempting to create a resilient Redis connection to {Endpoint}...", options.EndPoints.FirstOrDefault());
+
+            // We wrap the connection in a try-catch for better logging, but AbortOnConnectFail=false
+            // should prevent it from throwing here unless the connection string is fundamentally invalid.
+            try
+            {
+                return ConnectionMultiplexer.Connect(options);
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal(ex, "Failed to initiate Redis ConnectionMultiplexer. The connection string may be invalid.");
+                throw; // Re-throw to halt the application if the config is malformed.
+            }
         });
 
-        Log.Information("✅ Redis services configured to connect to {RedisEndpoint}", redisConnectionString);
+        Log.Information("✅ Redis services configured. The multiplexer will connect resiliently.");
     }
     catch (Exception ex)
     {
+        // Your existing fallback logic for in-memory Redis is fine.
         Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
-
-        // Register the fallback in-memory Redis service
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            ILogger<FallbackRedisService> logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+            var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
     }
-
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
     // Note: We'll test Redis connectivity after the application starts, not during configuration
     // This allows the EmbeddedRedisService to start the Redis server first if needed.
@@ -316,7 +339,7 @@ try
     {
         options.ServiceName = "ForexTradingBotAPI";
     });
-
+    AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported", true);
     // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
     // فعال کردن پشتیبانی از کنترلرهای API
     _ = builder.Services.AddControllers();
@@ -599,34 +622,30 @@ try
 
         if (isAutoForwardingEnabled)
         {
-            string? sessionPath = builder.Configuration["TelegramUserApi:SessionPath"];
-            if (string.IsNullOrEmpty(sessionPath))
-            {
-                sessionPath = Path.Combine(AppContext.BaseDirectory, "telegram_user.session");
-                Log.Warning("TelegramUserApi:SessionPath not configured. Defaulting to {SessionPath}", sessionPath);
-            }
+            Log.Information("✅ Auto-Forwarding feature ENABLED. Registering REAL services...");
 
+            // Register the REAL implementation and all its dependencies
+            builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(
+                builder.Configuration.GetSection("TelegramUserApi"));
 
-            // 1. Configure the settings object
-            _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
+            builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
+            builder.Services.AddHostedService<TelegramUserApiInitializationService>();
 
-            // 2. Register the API client itself
-            _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
-
-            // 3. Register the background service that initializes the client
-            _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
-
-            // 4. Register all the other forwarding services from the other projects
-            _ = builder.Services.AddForwardingInfrastructure();
-            _ = builder.Services.AddForwardingServices();
-            _ = builder.Services.AddForwardingOrchestratorServices();
+            builder.Services.AddForwardingInfrastructure();
+            builder.Services.AddForwardingServices();
+            builder.Services.AddForwardingOrchestratorServices();
+            builder.Services.AddTelegramPanelForwardingServices();
 
             Log.Information("All Auto-Forwarding services have been successfully registered.");
         }
         else
         {
-            // If the secrets are missing, we skip ALL related services.
-            Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
+            // --- THIS IS THE FIX ---
+            Log.Information("ℹ️ Auto-Forwarding feature DISABLED. Registering FAKE (do-nothing) service.");
+
+            // Register the DISABLED implementation. This satisfies the DI container
+            // for any service that requires ITelegramUserApiClient, preventing a crash.
+            builder.Services.AddSingleton<ITelegramUserApiClient, DisabledTelegramUserApiClient>();
         }
 
 
@@ -1244,11 +1263,27 @@ try
 
     if (isAutoForwardingEnabled)
     {
-        using IServiceScope scope = app.Services.CreateScope();
-        Log.Information("Auto-Forwarding is enabled, resolving the orchestrator service for startup tasks.");
-        // This code is now safe because we know the service was registered.
-        UserApiForwardingOrchestrator orchestrator = scope.ServiceProvider.GetRequiredService<UserApiForwardingOrchestrator>();
-        // You can now safely use the 'orchestrator' object here if needed for any startup logic.
+        Log.Information("✅ Auto-Forwarding feature ENABLED. Registering dependent services...");
+
+        // Existing registrations for the core forwarding infrastructure
+        _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(builder.Configuration.GetSection("TelegramUserApi"));
+        _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
+        _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
+        _ = builder.Services.AddForwardingInfrastructure();
+        _ = builder.Services.AddForwardingServices();
+        _ = builder.Services.AddForwardingOrchestratorServices();
+
+        // =========================================================================
+        // ✅ CALL YOUR NEW METHOD HERE
+        // This links the feature flag to the specific services from the TelegramPanel project.
+        // =========================================================================
+        _ = builder.Services.AddTelegramPanelForwardingServices();
+
+        Log.Information("All Auto-Forwarding services have been successfully registered.");
+    }
+    else
+    {
+        Log.Information("ℹ️ Auto-Forwarding feature DISABLED (ApiId or ApiHash not found in configuration).");
     }
     // ... after app.UseSerilogRequestLogging() and other middleware ...
 

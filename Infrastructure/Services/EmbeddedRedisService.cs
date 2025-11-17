@@ -55,53 +55,91 @@ namespace Infrastructure.Services
             _logger.LogInformation("Redis server executable path resolved to: {Path}", _redisServerFullPath);
         }
 
+        // --- REFACTORED StartAsync METHOD ---
         public async Task StartAsync(CancellationToken cancellationToken)
         {
-            // --- STEP 2: Use Console Helpers for beautiful, clear UI output ---
             ConsoleUI.WriteHeader("Embedded Redis Service");
 
+            // Step 1: Validate the executable path. If not found, log and exit.
             if (!File.Exists(_redisServerFullPath))
             {
-                ConsoleUI.WriteError($"Embedded Redis server not found at '{_redisServerFullPath}'.");
-                _logger.LogError("Embedded Redis server executable not found. The server will not be started.");
-
-                // List all possible paths for debugging
-                string[] possiblePaths = new[]
-                {
-                    Path.Combine(AppContext.BaseDirectory, "..", "WebAPI", _settings.ServerExecutablePath),
-                    Path.Combine(AppContext.BaseDirectory, _settings.ServerExecutablePath),
-                    Path.Combine(Directory.GetCurrentDirectory(), "WebAPI", _settings.ServerExecutablePath),
-                    _settings.ServerExecutablePath
-                };
-
-                _logger.LogError("Tried these paths:");
-                foreach (string? path in possiblePaths)
-                {
-                    _logger.LogError("  - {Path} (Exists: {Exists})", path, File.Exists(path));
-                }
+                HandleExecutableNotFound();
                 return;
             }
 
-            // Check if port 6379 is already in use
+            // Step 2: Check if another process is on the port. If yes, handle it and exit.
             if (IsPortInUse(6379))
             {
-                ConsoleUI.WriteWarning("Port 6379 is already in use. Redis server might already be running.");
-                _logger.LogWarning("Port 6379 is already in use. Attempting to connect to existing Redis server.");
-
-                // Try to connect to existing Redis server
-                if (await IsRedisResponsiveAsync())
+                if (await HandleExistingProcess())
                 {
-                    ConsoleUI.WriteSuccess("Connected to existing Redis server on port 6379.");
+                    // HandleExistingProcess returns 'true' if we successfully connected
+                    // to an existing server, so we can exit.
                     return;
                 }
-                else
-                {
-                    ConsoleUI.WriteError("Port 6379 is in use but Redis is not responding. Please check what's using the port.");
-                    _logger.LogError("Port 6379 is in use but Redis is not responding. This might be a port conflict.");
-                    return;
-                }
+                // If it returns 'false', it's a port conflict, so we also exit.
+                return;
             }
 
+            // Step 3: If the path is valid and the port is free, launch the process.
+            await LaunchAndVerifyRedisProcess(cancellationToken);
+        }
+
+        // =========================================================================
+        // ✅ ADD THESE THREE NEW PRIVATE HELPER METHODS TO YOUR CLASS
+        //    (They contain your original, unchanged logic)
+        // =========================================================================
+
+        /// <summary>
+        /// Contains the original logic for logging an error when the Redis executable is not found.
+        /// </summary>
+        private void HandleExecutableNotFound()
+        {
+            ConsoleUI.WriteError($"Embedded Redis server not found at '{_redisServerFullPath}'.");
+            _logger.LogError("Embedded Redis server executable not found. The server will not be started.");
+
+            // List all possible paths for debugging
+            string[] possiblePaths = new[]
+            {
+        Path.Combine(AppContext.BaseDirectory, "..", "WebAPI", _settings.ServerExecutablePath),
+        Path.Combine(AppContext.BaseDirectory, _settings.ServerExecutablePath),
+        Path.Combine(Directory.GetCurrentDirectory(), "WebAPI", _settings.ServerExecutablePath),
+        _settings.ServerExecutablePath
+    };
+
+            _logger.LogError("Tried these paths:");
+            foreach (string? path in possiblePaths)
+            {
+                _logger.LogError("  - {Path} (Exists: {Exists})", path, File.Exists(path));
+            }
+        }
+
+        /// <summary>
+        /// Contains the original logic for handling the case where port 6379 is already in use.
+        /// </summary>
+        /// <returns>True if connected to an existing responsive server, false otherwise.</returns>
+        private async Task<bool> HandleExistingProcess()
+        {
+            ConsoleUI.WriteWarning("Port 6379 is already in use. Redis server might already be running.");
+            _logger.LogWarning("Port 6379 is already in use. Attempting to connect to existing Redis server.");
+
+            if (await IsRedisResponsiveAsync())
+            {
+                ConsoleUI.WriteSuccess("Connected to existing Redis server on port 6379.");
+                return true; // Success, we are done.
+            }
+            else
+            {
+                ConsoleUI.WriteError("Port 6379 is in use but Redis is not responding. Please check what's using the port.");
+                _logger.LogError("Port 6379 is in use but Redis is not responding. This might be a port conflict.");
+                return false; // Failure, but we are also done.
+            }
+        }
+
+        /// <summary>
+        /// Contains the original logic for starting the Redis process and verifying it is responsive.
+        /// </summary>
+        private async Task LaunchAndVerifyRedisProcess(CancellationToken cancellationToken)
+        {
             ConsoleUI.WriteInfo($"Attempting to start embedded Redis server from: {_redisServerFullPath}");
             _logger.LogInformation("Starting embedded Redis server from: {Path}", _redisServerFullPath);
 
@@ -124,9 +162,8 @@ namespace Infrastructure.Services
                     EnableRaisingEvents = true
                 };
 
-                // Capture output to know when the server is ready
-                TaskCompletionSource<bool> serverReadyTcs = new();
-                List<string> outputLines = new();
+                var serverReadyTcs = new TaskCompletionSource<bool>();
+                var outputLines = new List<string>();
 
                 _redisProcess.OutputDataReceived += (sender, args) =>
                 {
@@ -134,10 +171,9 @@ namespace Infrastructure.Services
                     {
                         outputLines.Add(args.Data);
                         _logger.LogDebug("Redis output: {Output}", args.Data);
-
                         if (args.Data.Contains("Ready to accept connections"))
                         {
-                            _ = serverReadyTcs.TrySetResult(true);
+                            serverReadyTcs.TrySetResult(true);
                         }
                     }
                 };
@@ -151,13 +187,12 @@ namespace Infrastructure.Services
                     }
                 };
 
-                _ = _redisProcess.Start();
+                _redisProcess.Start();
                 _redisProcess.BeginOutputReadLine();
                 _redisProcess.BeginErrorReadLine();
 
                 ConsoleUI.WriteInfo($"Redis process started with ID {_redisProcess.Id}. Waiting for it to become responsive...");
 
-                // Wait for the "Ready" message from the output OR a timeout
                 Task completedTask = await Task.WhenAny(serverReadyTcs.Task, Task.Delay(TimeSpan.FromSeconds(_settings.StartupPingTimeoutSeconds), cancellationToken));
 
                 if (completedTask == serverReadyTcs.Task && serverReadyTcs.Task.Result)
@@ -167,7 +202,6 @@ namespace Infrastructure.Services
                 }
                 else
                 {
-                    // If it timed out, try one final ping as a backup check.
                     if (await IsRedisResponsiveAsync())
                     {
                         ConsoleUI.WriteSuccess("Redis server is responding to pings.");
@@ -185,7 +219,7 @@ namespace Infrastructure.Services
                         }
                         else
                         {
-                            _redisProcess.Kill(); // Kill the unresponsive process
+                            _redisProcess.Kill();
                         }
                     }
                 }
@@ -196,7 +230,6 @@ namespace Infrastructure.Services
                 _logger.LogCritical(ex, "Embedded Redis startup failed. Please ensure it's not blocked by antivirus.");
             }
         }
-
         private bool IsPortInUse(int port)
         {
             try
