@@ -86,7 +86,9 @@ namespace Infrastructure.Services
 
         public ValueTask DisposeAsync()
         {
-            throw new NotImplementedException();
+            // This is a disabled client, so there are no resources to dispose.
+            // We simply return a completed task to fulfill the interface contract.
+            return ValueTask.CompletedTask;
         }
 
         // Add all other methods from your ITelegramUserApiClient interface here...
