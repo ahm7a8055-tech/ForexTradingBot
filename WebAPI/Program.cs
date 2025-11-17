@@ -596,13 +596,14 @@ try
 
 
 
-    // --- Universal Conditional Feature: Auto-Forwarding ---
-    // We check for the actual secrets required for this feature to run.
     string? apiId = builder.Configuration["TelegramUserApi:ApiId"];
     string? apiHash = builder.Configuration["TelegramUserApi:ApiHash"];
 
-    // More robust check: ensure ApiId is a valid number and neither value is a placeholder.
-    bool isApiIdValid = int.TryParse(apiId, out _);
+    // More robust check: ensure ApiId is a valid number greater than 0.
+    // This correctly handles missing values, "0", or non-numeric placeholders.
+    bool isApiIdValid = int.TryParse(apiId, out int parsedApiId) && parsedApiId > 0;
+
+    // More robust check for ApiHash: ensure it's not a placeholder.
     bool isApiHashValid = !string.IsNullOrEmpty(apiHash) && !apiHash.Contains("REPLACE") && !apiHash.Contains("YOUR_");
 
     bool isAutoForwardingEnabled = isApiIdValid && isApiHashValid;
