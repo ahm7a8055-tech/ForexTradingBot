@@ -197,8 +197,9 @@ jobs:
         shell: bash
         run: |
           echo "Starting application in the background for smoke test..."
+          # THIS IS THE FIX: --no-launch-profile tells dotnet to ignore launchSettings.json
           dotnet run --project WebAPI/WebAPI.csproj --no-launch-profile &
-          
+
           APP_PID=$!
           echo "Waiting for application to start (polling /healthz)..."
 
@@ -220,8 +221,6 @@ jobs:
           IsSmokeTest: "true"
           ASPNETCORE_ENVIRONMENT: "Development"
           ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
-          # Dummy bot token برای این‌که startup logic گیر نده؛
-          # اگر در کد برای smoke-test بی‌اثر شده، همین کافی است.
           TelegramPanel__BotToken: "123456:ABC-DEF1234567890"
 
   # ================================
@@ -428,6 +427,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Starting application in the background for smoke test..."
+          # THIS IS THE FIX: Added '--no-launch-profile' to the argument list
           $app = Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj', '--no-launch-profile' -PassThru
 
           Write-Host "Waiting for application to start (polling /healthz)..."
@@ -519,8 +519,9 @@ jobs:
         shell: bash
         run: |
           echo "Starting application in the background for smoke test..."
+          # THIS IS THE FIX: --no-launch-profile tells dotnet to ignore launchSettings.json
           dotnet run --project WebAPI/WebAPI.csproj --no-launch-profile &
-          
+
           APP_PID=$!
           echo "Waiting for application to start (polling /healthz)..."
           for i in {1..15}; do
