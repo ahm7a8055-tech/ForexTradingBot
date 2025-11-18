@@ -8,6 +8,7 @@ namespace Infrastructure.Services
         {
             _ = services.AddSingleton<UserApiForwardingOrchestrator>();
             return services;
+
         }
     }
 }

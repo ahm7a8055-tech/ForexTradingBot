@@ -83,91 +83,138 @@ try
     #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
+    // AI-FRIENDLY: Create a small SQLite-backed store for wizard settings.
+    // The DB file will live under ContentRootPath/easysetup_config.db
+    var easySetupStore = new Infrastructure.Configuration.EasySetupConfigStore(builder.Environment.ContentRootPath);
+
+    // 1) Load persisted wizard settings and plug them into the configuration pipeline.
+    //    This happens BEFORE anything else so every service sees them.
+    var persistedSettings = easySetupStore.LoadAll();
+    if (persistedSettings.Count > 0)
+    {
+        ((IConfigurationBuilder)builder.Configuration).AddInMemoryCollection(persistedSettings);
+    }
+
+    // 2) Detect smoke-test mode once and reuse this flag everywhere.
+    string smokeTestFlag = builder.Configuration["IsSmokeTest"] ?? "false";
+    bool isSmokeTest = "true".Equals(smokeTestFlag, StringComparison.OrdinalIgnoreCase);
+
+    // 3) In smoke-test mode, ensure a quick SQLite DB so EF/Hangfire don't break.
+    if (isSmokeTest && string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("DefaultConnection")))
+    {
+        const string smokeConn = "Data Source=smoketest.db";
+
+        builder.Configuration["DatabaseSettings:DatabaseProvider"] = "sqlite";
+        builder.Configuration["ConnectionStrings:DefaultConnection"] = smokeConn;
+
+        // Persist in store so subsequent runs are consistent
+        easySetupStore.Save("DatabaseSettings:DatabaseProvider", "sqlite", isSensitive: false);
+        easySetupStore.Save("ConnectionStrings:DefaultConnection", smokeConn, isSensitive: true);
+
+        Log.Information("[SmokeTest] DefaultConnection missing. Using SQLite: {Conn}", smokeConn);
+    }
+
+    // 4) Run the Easy Setup Wizard (DB + BotToken + optional secrets).
+    //    - In interactive console mode: asks user only for missing values.
+    //    - In non-interactive mode: falls back to SQLite and requires BotToken from config/env.
+    await EasySetupWizard.RunAsync(builder, easySetupStore, isSmokeTest);
+
+
     // --- Custom Configuration Source Registration ---
     // This needs to happen early. We use ConfigureAppConfiguration.
     builder.Host.ConfigureAppConfiguration((hostingContext, configAppBuilder) =>
     {
-        // 1. Build a temporary configuration from sources already added to configAppBuilder
-        //    (like appsettings.json, environment variables, user secrets defined by WebApplication.CreateBuilder)
-        //    This is needed to get the initial DefaultConnection string.
         var tempInitialConfig = configAppBuilder.Build();
 
-        // 2. Setup a temporary ServiceCollection for services needed by DatabaseConfigurationProvider
         var tempServices = new ServiceCollection();
-        tempServices.AddSingleton<IConfiguration>(tempInitialConfig); // Provide this specific configuration snapshot
+        tempServices.AddSingleton<IConfiguration>(tempInitialConfig);
 
         string? defaultConnectionString = tempInitialConfig.GetConnectionString("DefaultConnection");
-        if (string.IsNullOrEmpty(defaultConnectionString))
+        string? dbProviderForDynamicConfig = tempInitialConfig.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant() ?? "postgres";
+
+        if (string.IsNullOrWhiteSpace(defaultConnectionString))
         {
-            Log.Fatal("CRITICAL ERROR: DefaultConnection string is missing. Cannot initialize dynamic configuration from database.");
-            // In a real scenario, might throw or have a more graceful fallback if essential.
-            // For now, if it's missing, the DatabaseConfigurationSource might not be able to connect.
+            Log.Warning("DefaultConnection is missing when initializing DatabaseConfigurationSource. Dynamic DB config will be inactive.");
+            return; // Do not add DB-based config source; app will still run.
         }
 
-        string? dbProviderForDynamicConfig = tempInitialConfig.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant() ?? "postgres";
         if (dbProviderForDynamicConfig == "sqlite")
         {
-            tempServices.AddDbContext<AppDbContext>(options => options.UseSqlite(defaultConnectionString), ServiceLifetime.Singleton); // Singleton for this temp provider
+            tempServices.AddDbContext<AppDbContext>(options => options.UseSqlite(defaultConnectionString), ServiceLifetime.Singleton);
         }
         else if (dbProviderForDynamicConfig == "sqlserver")
         {
             tempServices.AddDbContext<AppDbContext>(options => options.UseSqlServer(defaultConnectionString), ServiceLifetime.Singleton);
         }
-        else // Default to PostgreSQL
+        else // Default: PostgreSQL
         {
             tempServices.AddDbContext<AppDbContext>(options => options.UseNpgsql(defaultConnectionString), ServiceLifetime.Singleton);
         }
 
         var keysFolderTemp = Path.Combine(hostingContext.HostingEnvironment.ContentRootPath, "keys");
         Directory.CreateDirectory(keysFolderTemp);
-        tempServices.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keysFolderTemp)).SetApplicationName("ForexTradingBot");
+
+        tempServices.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(keysFolderTemp))
+            .SetApplicationName("ForexTradingBot");
 
         tempServices.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
         tempServices.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
-        tempServices.AddLogging(lb => lb.AddSerilog(Log.Logger)); // Use existing Serilog global logger
+        tempServices.AddLogging(lb => lb.AddSerilog(Log.Logger));
 
-        // 3. Action to register defined settings (passed to DatabaseConfigurationSource)
         Action<IDynamicConfigurationService, IConfigurationBuilder> registerSettingsAction = (service, currentConfigBuilder) =>
         {
-            // Use the configuration built from sources *before* adding DatabaseConfigurationSource
-            // to get default values for registration.
             var configForDefaults = currentConfigBuilder.Build();
 
             Log.Information("Registering defined settings with DynamicConfigurationService (within ConfigureAppConfiguration)...");
+
             void RegisterSetting(string key, bool isSensitive, string description)
             {
                 service.RegisterSettingDefinition(key, configForDefaults[key], isSensitive, description);
             }
 
+            // Admin
             RegisterSetting("Admin:Username", false, "Admin panel username.");
             RegisterSetting("Admin:Password", true, "Admin panel password.");
+
+            // Connection strings
             RegisterSetting("ConnectionStrings:Redis", true, "Redis connection string.");
+
+            // TelegramPanel
             RegisterSetting("TelegramPanel:BotToken", true, "Main Telegram Bot Token.");
             RegisterSetting("TelegramPanel:AdminUserIds", false, "Comma-separated list of Telegram Admin User IDs.");
             RegisterSetting("TelegramPanel:WebhookAddress", false, "Webhook address for the main Telegram Bot.");
             RegisterSetting("TelegramPanel:WebhookSecretToken", true, "Secret token for the Telegram webhook.");
             RegisterSetting("TelegramPanel:PollingInterval", false, "Polling interval in seconds (if not using webhook).");
             RegisterSetting("TelegramPanel:EnableDebugMode", false, "Enables debug mode for the Telegram panel.");
+
+            // TelegramUserApi
             RegisterSetting("TelegramUserApi:ApiId", false, "Telegram User API ID.");
             RegisterSetting("TelegramUserApi:ApiHash", true, "Telegram User API Hash.");
             RegisterSetting("TelegramUserApi:PhoneNumber", true, "Phone number for Telegram User API client.");
             RegisterSetting("TelegramUserApi:VerificationCodeSource", false, "Source for User API verification code.");
             RegisterSetting("TelegramUserApi:BotToken", true, "Bot token for the forwarder helper bot.");
             RegisterSetting("TelegramUserApi:TwoFactorPasswordSource", false, "Source for User API 2FA password.");
+
+            // CryptoPay
             RegisterSetting("CryptoPay:ApiToken", true, "CryptoPay API Token.");
             RegisterSetting("CryptoPay:BaseUrl", false, "CryptoPay API Base URL.");
             RegisterSetting("CryptoPay:IsTestnet", false, "Indicates if CryptoPay is using testnet.");
             RegisterSetting("CryptoPay:WebhookSecretForCryptoPay", true, "Webhook secret from CryptoPay.");
+
+            // Hangfire
             RegisterSetting("HangfireSettings:StorageType", false, "Hangfire storage type.");
             RegisterSetting("HangfireSettings:DefaultWorkerCount", false, "Default Hangfire worker count.");
             RegisterSetting("HangfireSettings:NotificationWorkerCount", false, "Hangfire worker count for notifications.");
+
+            // Operational flags
             RegisterSetting("OperationalFlags:GlobalLogLevel", false, "Global log level override.");
             RegisterSetting("OperationalFlags:EnableRssModule", false, "Feature flag for RSS module.");
             RegisterSetting("OperationalFlags:EnableForwardingModule", false, "Feature flag for auto-forwarding module.");
+
             Log.Information("All defined settings registered with DynamicConfigurationService (within ConfigureAppConfiguration).");
         };
 
-        // 4. Add the custom configuration source
         configAppBuilder.Add(new DatabaseConfigurationSource(tempServices, registerSettingsAction));
         Log.Information("DatabaseConfigurationSource added via ConfigureAppConfiguration.");
     });
@@ -175,10 +222,6 @@ try
 
     _ = builder.WebHost.UseKestrel();
     builder.Services.AddSingleton<TelegramAdminSink>();
-    // This is more reliable than GetValue<bool> for environment variables.
-    string smokeTestFlag = builder.Configuration["IsSmokeTest"] ?? "false";
-    bool isSmokeTest = "true".Equals(smokeTestFlag, StringComparison.OrdinalIgnoreCase);
-
     // --- AUTO-FIX FOR SMOKETEST: Provide SQLite connection if missing ---
     if (isSmokeTest)
     {
@@ -486,103 +529,12 @@ try
     builder.Services.AddScoped<ISettingsService, SettingsService>();
     builder.Services.AddScoped<IDiagnosticsService, DiagnosticsService>();
     Log.Information("Data Protection, Dynamic Configuration, Settings, and Diagnostics services registered.");
-    bool isFirstRun = string.IsNullOrEmpty(builder.Configuration.GetConnectionString("DefaultConnection"));
+   
     // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
-    if (!isSmokeTest)
-    {
-        string? connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-        string? dbProvider = builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant();
 
-        Log.Information("Database configuration check - ConnectionString: {HasConnectionString}, Provider: {Provider}",
-            !string.IsNullOrEmpty(connectionString), dbProvider ?? "null");
-
-        if (string.IsNullOrEmpty(connectionString))
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("\n--- Database Connection Setup ---");
-            Console.WriteLine("No database connection string found. Please choose:");
-            Console.WriteLine("1. Press Enter to use LocalDB (SQL Server Express)");
-            Console.WriteLine("2. Type '2' or 'sqlite' to use SQLite file database");
-            Console.WriteLine("3. Enter a custom connection string (SQL Server, PostgreSQL, etc.)");
-            Console.ResetColor();
-
-            Console.Write("Enter your choice: ");
-            string? userInput = Console.ReadLine()?.Trim();
-
-            Log.Information("User input received: '{UserInput}'", userInput ?? "null");
-
-            if (string.IsNullOrWhiteSpace(userInput))
-            {
-                connectionString = @"Server=(localdb)\MSSQLLocalDB;Database=ForexTradingBot;Trusted_Connection=true;MultipleActiveResultSets=true";
-                dbProvider = "sqlserver";
-                Log.Information("User chose LocalDB. Connection string set to LocalDB.");
-            }
-            else if (userInput.Equals("1"))
-            {
-                connectionString = @"Server=(localdb)\MSSQLLocalDB;Database=ForexTradingBot;Trusted_Connection=true;MultipleActiveResultSets=true";
-                dbProvider = "sqlserver";
-                Log.Information("User chose LocalDB (option 1). Connection string set to LocalDB.");
-            }
-            else if (userInput.Equals("sqlite", StringComparison.OrdinalIgnoreCase) || userInput.Equals("2"))
-            {
-                connectionString = "Data Source=local_forex_bot.db";
-                dbProvider = "sqlite";
-                Log.Information("User chose SQLite. Connection string set to SQLite file database.");
-            }
-            else
-            {
-                connectionString = userInput;
-                if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
-                {
-                    dbProvider = "postgres";
-                }
-                else
-                {
-                    dbProvider = connectionString.Contains("Server=") || connectionString.Contains("Data Source=") ? "sqlserver" : "sqlite";
-                }
-
-                Log.Information("User provided custom connection string. Provider detected: {Provider}", dbProvider);
-            }
-
-            Log.Information("Setting configuration - ConnectionString: {ConnectionString}, Provider: {Provider}",
-                connectionString?.Replace("Password=", "Password=***"), dbProvider);
-
-            builder.Configuration.GetSection("ConnectionStrings")["DefaultConnection"] = connectionString;
-            builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
-        }
-        else if (string.IsNullOrEmpty(dbProvider))
-        {
-            if (connectionString.Contains("PostgreSQL") || connectionString.Contains("postgres"))
-            {
-                dbProvider = "postgres";
-            }
-            else
-            {
-                dbProvider = connectionString.Contains("Server=") || connectionString.Contains("Data Source=") ? "sqlserver" : "sqlite";
-            }
-
-            builder.Configuration.GetSection("DatabaseSettings")["DatabaseProvider"] = dbProvider;
-            Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
-        }
-    }
+    var configBuilder = builder.Configuration;
 
     // --- FINAL VALIDATION: Ensure connection string is valid before infrastructure registration ---
-    if (!isSmokeTest)
-    {
-        string? finalConnectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-        if (string.IsNullOrWhiteSpace(finalConnectionString))
-        {
-            throw new InvalidOperationException(
-                "No valid database connection string was provided. " +
-                "The application should have prompted for database connection details, but no valid connection string was set. " +
-                "Please ensure you provided a valid connection string when prompted.");
-        }
-
-        Log.Information("Database connection validated. Using provider: {Provider}, Connection: {ConnectionString}",
-            builder.Configuration.GetValue<string>("DatabaseSettings:DatabaseProvider"),
-            finalConnectionString.Replace("Password=", "Password=***")); // Hide password in logs
-    }
-
     _ = builder.Services.AddInfrastructureServices(builder.Configuration, isSmokeTest);
     Log.Information("Infrastructure services registered.");
 
@@ -609,32 +561,6 @@ try
     bool isAutoForwardingEnabled = isApiIdValid && isApiHashValid;
     try
     {
-        #region Restrict Interactive Prompts to Development Only
-        if (Environment.UserInteractive)
-        {
-            // --- Case 1: We are in a Development environment ---
-            if (builder.Environment.IsDevelopment())
-            {
-                // Only prompt for API keys if it's a local developer run (NOT a smoke test).
-                if (!isSmokeTest)
-                {
-                    Log.Information("Development mode: Prompting for missing secrets for local debug session.");
-                    ConfigurationHelper.PromptForMissingSecrets(builder.Configuration);
-                }
-            }
-            // --- Case 2: We are in a Production environment ---
-            else
-            {
-                // In Production, abort if it's interactive UNLESS it's the very first setup run.
-                if (!isFirstRun)
-                {
-                    Log.Fatal("FATAL: Application is trying to run interactively in a production environment after initial setup. This is a security risk. Aborting.");
-                    Environment.Exit(1);
-                }
-            }
-        }
-        #endregion
-
 
         if (isAutoForwardingEnabled)
         {
@@ -986,8 +912,6 @@ try
     // Automatically apply EF Core migrations at startup (async master)
     using (IServiceScope scope = app.Services.CreateScope())
     {
-        // For smoke tests, we only need to ensure the in-memory DB is created.
-        // This is faster and avoids file system/native dependency issues.
         if (isSmokeTest)
         {
             Log.Information("Smoke Test: Ensuring InMemory database is created...");
@@ -995,18 +919,45 @@ try
             await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
             Log.Information("Smoke Test: InMemory database created successfully.");
         }
-        else // The original, robust logic for real runs (no changes needed here)
+        else
         {
             AppDbContext db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
+
             try
             {
-                string? connectionString = app.Services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection");
+                string? connectionString = app.Services
+                    .GetRequiredService<IConfiguration>()
+                    .GetConnectionString("DefaultConnection");
+
                 if (string.IsNullOrWhiteSpace(connectionString))
                 {
-                    throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
+                    throw new InvalidOperationException(
+                        "Database connection string is missing or empty. Cannot proceed with database operations.");
                 }
+
                 Log.Information("Attempting to apply database migrations...");
                 Log.Information("Database provider: {ProviderName}", db.Database.ProviderName);
+
+                // --- NEW: Ensure pg_trgm extension for PostgreSQL providers ---
+                if (db.Database.ProviderName?
+                        .Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    try
+                    {
+                        Log.Information("Ensuring 'pg_trgm' extension exists for current PostgreSQL database...");
+                        await db.Database.ExecuteSqlRawAsync("CREATE EXTENSION IF NOT EXISTS pg_trgm;");
+                        Log.Information("Extension 'pg_trgm' is available.");
+                    }
+                    catch (Exception extEx)
+                    {
+                        // اینجا نمی‌خواهیم کل برنامه بترکه؛ فقط هشدار می‌دیم
+                        var sanitized = SecureExceptionSanitizer.SanitizeForTelegram(extEx);
+                        Log.Warning(sanitized, "Could not create 'pg_trgm' extension. " +
+                                               "GiST/GIN trigram indexes may fail if extension is missing.");
+                    }
+                }
+                // --- END NEW ---
+
 
                 if (db.Database.IsRelational())
                 {
@@ -1031,14 +982,18 @@ try
                 {
                     var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(createEx);
                     Log.Error(sanitizedDetails, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
-                    throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
+                    throw new InvalidOperationException(
+                        $"Database creation failed. Please check your connection string: {createEx.Message}",
+                        createEx);
                 }
             }
             catch (Exception ex)
             {
                 var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex);
                 Log.Error(sanitizedDetails, "Failed to apply database migrations or create database. Connection string may be invalid.");
-                throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
+                throw new InvalidOperationException(
+                    $"Database setup failed. Please check your connection string: {ex.Message}",
+                    ex);
             }
         }
     }
@@ -1458,6 +1413,427 @@ public static class ConfigurationHelper
 }
 #endregion
 
+
+#region Easy Setup Wizard (DB + Secrets)
+
+// AI-FRIENDLY: This wizard runs on first run (or whenever critical values are missing).
+// It reads from:
+//   - appsettings*.json
+//   - environment variables
+//   - easysetup_config.db (EasySetupConfigStore)
+// and only asks the user for values that are still missing.
+//
+// Rules:
+//   - Database: if DefaultConnection is missing, wizard asks and sets it.
+//     * Option 1: SQLite file (simple, cross-platform, Docker-friendly)
+//     * Option 2: Auto local PostgreSQL+Redis via ExternalDependencyManager
+//     * Option 3: Manual connection string
+//   - TelegramPanel:BotToken is REQUIRED. Without it, the app cannot start.
+//   - TelegramUserApi + CryptoPay are OPTIONAL. User can skip them.
+
+internal static class EasySetupWizard
+{
+    public static async Task RunAsync(
+        WebApplicationBuilder builder,
+        Infrastructure.Configuration.EasySetupConfigStore store,
+        bool isSmokeTest)
+    {
+        var config = builder.Configuration;
+
+        // Smoke tests: DB is handled separately; we don't do interactive prompts here.
+        if (isSmokeTest)
+        {
+            return;
+        }
+
+        bool isInteractive = Environment.UserInteractive;
+
+        // STEP 1: Ensure a database connection exists.
+        EnsureDefaultConnection(config, store, isInteractive, builder);
+
+        // STEP 2: Ensure the main Telegram bot token exists (REQUIRED).
+        EnsureTelegramPanelBotToken(config, store, isInteractive);
+
+        // STEP 3: Optional extras (only when interactive).
+        if (isInteractive)
+        {
+            EnsureOptionalTelegramUserApi(config, store);
+            EnsureOptionalCryptoPay(config, store);
+        }
+    }
+
+    #region Database Wizard
+
+    private static void EnsureDefaultConnection(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store,
+        bool isInteractive,
+        WebApplicationBuilder builder)
+    {
+        var currentConnection = config.GetConnectionString("DefaultConnection");
+
+        if (!string.IsNullOrWhiteSpace(currentConnection))
+        {
+            // Already configured (from appsettings, env, or previous wizard run).
+            return;
+        }
+
+        if (!isInteractive)
+        {
+            // Non-interactive environment (Windows service, Docker without console):
+            // We cannot ask the user, so we fall back to a local SQLite db.
+            const string fallbackProvider = "sqlite";
+            const string fallbackConn = "Data Source=local_forex_bot.db";
+
+            config["DatabaseSettings:DatabaseProvider"] = fallbackProvider;
+            config["ConnectionStrings:DefaultConnection"] = fallbackConn;
+
+            store.Save("DatabaseSettings:DatabaseProvider", fallbackProvider, isSensitive: false);
+            store.Save("ConnectionStrings:DefaultConnection", fallbackConn, isSensitive: true);
+
+            Log.Warning(
+                "DefaultConnection was missing in non-interactive mode. Falling back to SQLite at '{ConnectionString}'.",
+                fallbackConn);
+
+            return;
+        }
+
+        // Interactive: show menu once and persist the result.
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("\n--- Easy Setup Wizard :: Database ---");
+        Console.ResetColor();
+        Console.WriteLine("Choose how you want to configure the main database:");
+        Console.WriteLine("1. (Recommended) Use a simple SQLite file (local_forex_bot.db).");
+        Console.WriteLine("2. (Advanced) Auto-install/use local PostgreSQL & Redis.");
+        Console.WriteLine("3. (Manual) Enter your own connection string.");
+        Console.Write("\nYour choice [1/2/3, default = 1]: ");
+
+        var choice = Console.ReadLine()?.Trim();
+        if (string.IsNullOrWhiteSpace(choice)) choice = "1";
+
+        switch (choice)
+        {
+            case "2":
+                SetupDatabaseWithPortablePostgres(config, store, builder);
+                break;
+
+            case "3":
+                SetupDatabaseManually(config, store);
+                break;
+
+            default:
+                SetupDatabaseWithSQLite(config, store);
+                break;
+        }
+    }
+
+    private static void SetupDatabaseWithSQLite(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store)
+    {
+        Console.WriteLine("\nUsing local SQLite file database (local_forex_bot.db).");
+
+        const string provider = "sqlite";
+        const string conn = "Data Source=local_forex_bot.db";
+
+        config["DatabaseSettings:DatabaseProvider"] = provider;
+        config["ConnectionStrings:DefaultConnection"] = conn;
+
+        store.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
+        store.Save("ConnectionStrings:DefaultConnection", conn, isSensitive: true);
+    }
+
+    private static void SetupDatabaseManually(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store)
+    {
+        Console.Write("\nEnter your full database connection string (or leave empty to fall back to SQLite): ");
+        var connectionString = Console.ReadLine()?.Trim();
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.WriteLine("No connection string entered. Falling back to SQLite.");
+            SetupDatabaseWithSQLite(config, store);
+            return;
+        }
+
+        // Try to auto-detect provider based on keywords inside the connection string.
+        var provider = DetectProviderFromConnectionString(connectionString);
+
+        config["DatabaseSettings:DatabaseProvider"] = provider;
+        config["ConnectionStrings:DefaultConnection"] = connectionString;
+
+        store.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
+        store.Save("ConnectionStrings:DefaultConnection", connectionString, isSensitive: true);
+
+        Console.WriteLine($"\nDatabase configured. Provider='{provider}'.");
+    }
+
+    private static string DetectProviderFromConnectionString(string connectionString)
+    {
+        var lowered = connectionString.ToLowerInvariant();
+
+        if (lowered.Contains("host=") && lowered.Contains("port=") && lowered.Contains("postgres"))
+            return "postgres";
+
+        if (lowered.Contains("host=") && lowered.Contains("port="))
+            return "postgres";
+
+        if (lowered.Contains("server=") || lowered.Contains("data source="))
+            return "sqlserver";
+
+        if (lowered.Contains(".db") || lowered.Contains(".sqlite"))
+            return "sqlite";
+
+        // Default fallback if we can't be sure.
+        return "postgres";
+    }
+
+    private static void SetupDatabaseWithPortablePostgres(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store,
+        WebApplicationBuilder builder)
+    {
+        Console.WriteLine("\nStarting automatic setup for local PostgreSQL & Redis...");
+
+        // We use a small, private ServiceProvider for the dependency manager.
+        var tempServices = new ServiceCollection()
+            .AddLogging(b => b.AddSerilog(Log.Logger))
+            .AddSingleton<IExternalDependencyManager, ExternalDependencyManager>()
+            .BuildServiceProvider();
+
+        var dependencyManager = tempServices.GetRequiredService<IExternalDependencyManager>();
+
+        // NOTE: builder.Configuration is a ConfigurationManager (IConfiguration + IConfigurationBuilder),
+        // so we can pass it directly here and let the dependency manager add connection strings.
+        if (!dependencyManager.EnsureDependenciesReadyAsync((IConfigurationBuilder)builder.Configuration).GetAwaiter().GetResult())
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("\nAutomatic PostgreSQL/Redis setup FAILED. Please check the logs.");
+            Console.ResetColor();
+            // If it fails, we don't try clever fallbacks here – let the exception propagate or user retry.
+            throw new InvalidOperationException("Automatic PostgreSQL/Redis setup failed.");
+        }
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine("\n✅ Automatic PostgreSQL & Redis setup successful!");
+        Console.ResetColor();
+
+        // After EnsureDependenciesReadyAsync, the config should contain:
+        //   DatabaseSettings:DatabaseProvider
+        //   ConnectionStrings:DefaultConnection
+        //   ConnectionStrings:Redis (optional)
+        var provider = config["DatabaseSettings:DatabaseProvider"] ?? "postgres";
+        var defaultConn = config.GetConnectionString("DefaultConnection");
+        var redisConn = config.GetConnectionString("Redis");
+
+        if (string.IsNullOrWhiteSpace(defaultConn))
+        {
+            throw new InvalidOperationException("Portable PostgreSQL setup reported success but DefaultConnection is still empty.");
+        }
+
+        store.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
+        store.Save("ConnectionStrings:DefaultConnection", defaultConn, isSensitive: true);
+
+        if (!string.IsNullOrWhiteSpace(redisConn))
+        {
+            store.Save("ConnectionStrings:Redis", redisConn, isSensitive: true);
+        }
+    }
+
+    #endregion
+
+    #region TelegramPanel Bot Token (REQUIRED)
+
+    private static void EnsureTelegramPanelBotToken(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store,
+        bool isInteractive)
+    {
+        var botToken = config["TelegramPanel:BotToken"];
+
+        if (!string.IsNullOrWhiteSpace(botToken) && !IsPlaceholder(botToken))
+        {
+            // Already configured (from appsettings, env, or previous wizard run).
+            return;
+        }
+
+        if (!isInteractive)
+        {
+            // We cannot prompt the user. This is a hard failure.
+            const string errorMessage =
+                "TelegramPanel:BotToken is missing. " +
+                "In non-interactive environments (Windows service / Docker), " +
+                "you MUST provide it via configuration (appsettings or environment variables).";
+
+            Log.Fatal(errorMessage);
+            throw new InvalidOperationException(errorMessage);
+        }
+
+        // Interactive prompt (loop until a non-empty token is provided).
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("\n--- Easy Setup Wizard :: Telegram Panel Bot ---");
+        Console.WriteLine("The main Bot Token is REQUIRED. Without it, the application cannot start.");
+        Console.WriteLine("You can get this token from @BotFather on Telegram.");
+        Console.ResetColor();
+
+        while (true)
+        {
+            Console.Write("Enter your Telegram Bot Token: ");
+            var input = Console.ReadLine()?.Trim();
+
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Bot Token cannot be empty. Please try again.");
+                Console.ResetColor();
+                continue;
+            }
+
+            config["TelegramPanel:BotToken"] = input;
+            store.Save("TelegramPanel:BotToken", input, isSensitive: true);
+
+            Log.Information("TelegramPanel:BotToken was configured via Easy Setup Wizard.");
+            break;
+        }
+    }
+
+    private static bool IsPlaceholder(string value)
+    {
+        value = value.Trim();
+        return value.Contains("REPLACE", StringComparison.OrdinalIgnoreCase)
+               || value.Contains("YOUR_", StringComparison.OrdinalIgnoreCase)
+               || value.Contains("PUT_", StringComparison.OrdinalIgnoreCase);
+    }
+
+    #endregion
+
+    #region TelegramUserApi (OPTIONAL)
+
+    private static void EnsureOptionalTelegramUserApi(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store)
+    {
+        var apiIdRaw = config["TelegramUserApi:ApiId"];
+        var apiHash = config["TelegramUserApi:ApiHash"];
+
+        var hasValidApiId = int.TryParse(apiIdRaw, out var apiId) && apiId > 0;
+        var hasValidApiHash = !string.IsNullOrWhiteSpace(apiHash) && !IsPlaceholder(apiHash ?? "");
+
+        if (hasValidApiId && hasValidApiHash)
+        {
+            // All good; user has already configured this.
+            return;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("\n--- Easy Setup Wizard :: Telegram User API (Optional) ---");
+        Console.WriteLine("Auto-forwarding uses the Telegram User API (my.telegram.org).");
+        Console.WriteLine("You can SKIP this step and enable it later from configuration.");
+        Console.ResetColor();
+
+        Console.Write("Enter TelegramUserApi:ApiId (or press ENTER to skip auto-forwarding): ");
+        var apiIdInput = Console.ReadLine()?.Trim();
+
+        if (string.IsNullOrWhiteSpace(apiIdInput))
+        {
+            // User skipped → disable feature explicitly.
+            config["TelegramUserApi:ApiId"] = null;
+            config["TelegramUserApi:ApiHash"] = null;
+
+            store.Save("TelegramUserApi:ApiId", null, isSensitive: false);
+            store.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
+
+            Log.Information("User skipped TelegramUserApi credentials. Auto-forwarding will be disabled.");
+            return;
+        }
+
+        if (!int.TryParse(apiIdInput, out var parsedApiId) || parsedApiId <= 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("ApiId must be a positive integer. Skipping TelegramUserApi setup.");
+            Console.ResetColor();
+
+            config["TelegramUserApi:ApiId"] = null;
+            config["TelegramUserApi:ApiHash"] = null;
+
+            store.Save("TelegramUserApi:ApiId", null, isSensitive: false);
+            store.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
+
+            return;
+        }
+
+        Console.Write("Enter TelegramUserApi:ApiHash (or press ENTER to skip): ");
+        var hashInput = Console.ReadLine()?.Trim();
+
+        if (string.IsNullOrWhiteSpace(hashInput))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("ApiHash not provided. Auto-forwarding will be disabled.");
+            Console.ResetColor();
+
+            config["TelegramUserApi:ApiId"] = null;
+            config["TelegramUserApi:ApiHash"] = null;
+
+            store.Save("TelegramUserApi:ApiId", null, isSensitive: false);
+            store.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
+            return;
+        }
+
+        // Save valid data
+        config["TelegramUserApi:ApiId"] = parsedApiId.ToString();
+        config["TelegramUserApi:ApiHash"] = hashInput;
+
+        store.Save("TelegramUserApi:ApiId", parsedApiId.ToString(), isSensitive: false);
+        store.Save("TelegramUserApi:ApiHash", hashInput, isSensitive: true);
+
+        Log.Information("TelegramUserApi credentials configured via Easy Setup Wizard.");
+    }
+
+    #endregion
+
+    #region CryptoPay (OPTIONAL)
+
+    private static void EnsureOptionalCryptoPay(
+        IConfiguration config,
+        Infrastructure.Configuration.EasySetupConfigStore store)
+    {
+        var apiToken = config["CryptoPay:ApiToken"];
+
+        if (!string.IsNullOrWhiteSpace(apiToken) && !IsPlaceholder(apiToken))
+        {
+            return; // Already configured
+        }
+
+        Console.ForegroundColor = ConsoleColor.Magenta;
+        Console.WriteLine("\n--- Easy Setup Wizard :: CryptoPay (Optional) ---");
+        Console.WriteLine("If you want to enable CryptoPay payments, provide an API Token.");
+        Console.WriteLine("You can SKIP this step and configure it later.");
+        Console.ResetColor();
+
+        Console.Write("Enter CryptoPay:ApiToken (or press ENTER to skip): ");
+        var tokenInput = Console.ReadLine()?.Trim();
+
+        if (string.IsNullOrWhiteSpace(tokenInput))
+        {
+            // Explicitly disable feature.
+            config["CryptoPay:ApiToken"] = null;
+            store.Save("CryptoPay:ApiToken", null, isSensitive: true);
+
+            Log.Information("User skipped CryptoPay API Token. Payment features will be disabled.");
+            return;
+        }
+
+        config["CryptoPay:ApiToken"] = tokenInput;
+        store.Save("CryptoPay:ApiToken", tokenInput, isSensitive: true);
+
+        Log.Information("CryptoPay API Token configured via Easy Setup Wizard.");
+    }
+
+    #endregion
+}
+
+#endregion
 #region GuidTypeHandler
 /// <summary>
 /// A custom type handler for Guid values.
