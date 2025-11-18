@@ -986,50 +986,60 @@ try
     // Automatically apply EF Core migrations at startup (async master)
     using (IServiceScope scope = app.Services.CreateScope())
     {
-        AppDbContext db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
-        try
+        // For smoke tests, we only need to ensure the in-memory DB is created.
+        // This is faster and avoids file system/native dependency issues.
+        if (isSmokeTest)
         {
-            string? connectionString = app.Services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection");
-            if (string.IsNullOrWhiteSpace(connectionString))
-            {
-                throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
-            }
-            Log.Information("Attempting to apply database migrations...");
-            Log.Information("Database provider: {ProviderName}", db.Database.ProviderName);
-
-            if (db.Database.IsRelational())
-            {
-                await db.Database.MigrateAsync().ConfigureAwait(false);
-                Log.Information("Database migrations applied successfully.");
-            }
-            else
-            {
-                await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
-                Log.Information("Non-relational provider detected. Database created using EnsureCreated().");
-            }
+            Log.Information("Smoke Test: Ensuring InMemory database is created...");
+            AppDbContext db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
+            await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+            Log.Information("Smoke Test: InMemory database created successfully.");
         }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
+        else // The original, robust logic for real runs (no changes needed here)
         {
-            Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
+            AppDbContext db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
             try
             {
-                await db.Database.EnsureCreatedAsync().ConfigureAwait(false); // async master
-                Log.Information("Database created successfully using EnsureCreated().");
+                string? connectionString = app.Services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection");
+                if (string.IsNullOrWhiteSpace(connectionString))
+                {
+                    throw new InvalidOperationException("Database connection string is missing or empty. Cannot proceed with database operations.");
+                }
+                Log.Information("Attempting to apply database migrations...");
+                Log.Information("Database provider: {ProviderName}", db.Database.ProviderName);
+
+                if (db.Database.IsRelational())
+                {
+                    await db.Database.MigrateAsync().ConfigureAwait(false);
+                    Log.Information("Database migrations applied successfully.");
+                }
+                else
+                {
+                    await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                    Log.Information("Non-relational provider detected. Database created using EnsureCreated().");
+                }
             }
-            catch (Exception createEx)
+            catch (InvalidOperationException ex) when (ex.Message.Contains("PendingModelChangesWarning"))
             {
-                // SECURITY: Sanitize exception details to prevent sensitive data exposure
-                var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(createEx); // High security for Telegram
-                Log.Error(sanitizedDetails, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
-                throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
+                Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
+                try
+                {
+                    await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                    Log.Information("Database created successfully using EnsureCreated().");
+                }
+                catch (Exception createEx)
+                {
+                    var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(createEx);
+                    Log.Error(sanitizedDetails, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
+                    throw new InvalidOperationException($"Database creation failed. Please check your connection string: {createEx.Message}", createEx);
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            // SECURITY: Sanitize exception details to prevent sensitive data exposure
-            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
-            Log.Error(sanitizedDetails, "Failed to apply database migrations or create database. Connection string may be invalid.");
-            throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
+            catch (Exception ex)
+            {
+                var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex);
+                Log.Error(sanitizedDetails, "Failed to apply database migrations or create database. Connection string may be invalid.");
+                throw new InvalidOperationException($"Database setup failed. Please check your connection string: {ex.Message}", ex);
+            }
         }
     }
     #endregion
