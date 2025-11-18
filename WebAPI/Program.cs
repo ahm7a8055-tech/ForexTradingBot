@@ -80,6 +80,9 @@ try
         minIo
     );
 
+    // Dapper: register Guid type handler once at startup
+    SqlMapper.AddTypeHandler(new GuidTypeHandler());
+
     #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
     builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "True");
@@ -291,8 +294,6 @@ try
 
     string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
-    builder.Configuration.GetConnectionString("Redis");
-
     if (string.IsNullOrWhiteSpace(redisConnectionString))
     {
         // If no external Redis is configured, start our own embedded one.
@@ -388,7 +389,13 @@ try
     AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported", true);
     // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
     // فعال کردن پشتیبانی از کنترلرهای API
-    _ = builder.Services.AddControllers();
+    builder.Services
+        .AddControllers()
+        .AddJsonOptions(options =>
+        {
+            options.JsonSerializerOptions.Converters.Add(new IntToBoolJsonConverter());
+            options.JsonSerializerOptions.Converters.Add(new FlexibleDateTimeJsonConverter());
+        });
     // فعال کردن API Explorer برای تولید مستندات Swagger/OpenAPI
     _ = builder.Services.AddEndpointsApiExplorer();
 
@@ -631,9 +638,6 @@ try
 
 
 
-
-
-    _ = builder.Services.AddWindowsService();
     bool isRunningInContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true";
     if (OperatingSystem.IsWindows() && !isRunningInContainer)
     {
@@ -737,24 +741,19 @@ try
             {
                 case "postgres":
                 case "postgresql":
-                    // 1. Configure Hangfire to use PostgreSQL storage with tuned options:
                     config.UsePostgreSqlStorage(
-     options => options.UseNpgsqlConnection(connectionString),
-     new Hangfire.PostgreSql.PostgreSqlStorageOptions
-     {
-         // Balance DB load vs. responsiveness
-         QueuePollInterval = TimeSpan.FromSeconds(5),
+                        options => options.UseNpgsqlConnection(connectionString),
+                        new Hangfire.PostgreSql.PostgreSqlStorageOptions
+                        {
+                            QueuePollInterval = TimeSpan.FromSeconds(5),
+                            InvisibilityTimeout = TimeSpan.FromHours(1),
+                            DistributedLockTimeout = TimeSpan.FromSeconds(30),
+                            JobExpirationCheckInterval = TimeSpan.FromHours(1)
+                        }
+                    );
 
-         // Prevent a long-running job from being re-queued while it's still executing
-         InvisibilityTimeout = TimeSpan.FromHours(1),
-
-         // How long to wait for the lock before giving up
-         DistributedLockTimeout = TimeSpan.FromSeconds(30),
-
-         // How often to scan for expired jobs (cleanup)
-         JobExpirationCheckInterval = TimeSpan.FromHours(1) // <<< This is the primary setting to adjust
-     }
- );
+                    Log.Information("✅ Hangfire (PostgreSQL) storage configured.");
+                    break;
 
                     // 2. Tune the BackgroundJobServer to the machine's CPU count:
                     int cpuCount = Environment.ProcessorCount;
