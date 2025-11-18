@@ -197,8 +197,8 @@ jobs:
         shell: bash
         run: |
           echo "Starting application in the background for smoke test..."
-          dotnet run --project WebAPI/WebAPI.csproj &
-
+          dotnet run --project WebAPI/WebAPI.csproj --no-launch-profile &
+          
           APP_PID=$!
           echo "Waiting for application to start (polling /healthz)..."
 
@@ -428,7 +428,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Starting application in the background for smoke test..."
-          $app = Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj' -PassThru
+          $app = Start-Process dotnet -ArgumentList 'run', '--project', 'WebAPI/WebAPI.csproj', '--no-launch-profile' -PassThru
 
           Write-Host "Waiting for application to start (polling /healthz)..."
           foreach ($i in 1..15) {
@@ -519,8 +519,8 @@ jobs:
         shell: bash
         run: |
           echo "Starting application in the background for smoke test..."
-          dotnet run --project WebAPI/WebAPI.csproj &
-
+          dotnet run --project WebAPI/WebAPI.csproj --no-launch-profile &
+          
           APP_PID=$!
           echo "Waiting for application to start (polling /healthz)..."
           for i in {1..15}; do
