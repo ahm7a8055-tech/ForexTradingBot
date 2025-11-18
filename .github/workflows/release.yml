@@ -180,7 +180,7 @@ jobs:
   # ================================
   # 07 - LINUX SMOKE TEST (APP RUN)
   # ================================
-  job_07_test_smoke_linux:
+   job_07_test_smoke_linux:
     name: "💨 07 Run Linux Smoke Test"
     needs: job_06_test_integration_redis
     runs-on: ubuntu-latest
@@ -193,35 +193,48 @@ jobs:
         with:
           global-json-file: global.json
 
+      # 1. Build the application first to separate build time from run time.
+      - name: "🔨 Build application for smoke test"
+        run: dotnet build --project WebAPI/WebAPI.csproj --configuration Release --no-restore
+      
+      # 2. Run the pre-built application with an explicit URL and improved logging.
       - name: "✅ Run Smoke Test"
         shell: bash
         run: |
           echo "Starting application in the background for smoke test..."
-          dotnet run --project WebAPI/WebAPI.csproj &
-
+          # Run the pre-compiled DLL, force it to listen on port 5299, and log output to a file.
+          # The target framework 'net9.0' is inferred from your logs; adjust if it's different.
+          dotnet WebAPI/bin/Release/net9.0/WebAPI.dll --urls http://localhost:5299 > app_output.log 2>&1 &
+          
           APP_PID=$!
-          echo "Waiting for application to start (polling /healthz)..."
-
+          echo "Application started with PID $APP_PID. Waiting for it to become healthy..."
+          
+          # Poll the new, explicit URL.
           for i in {1..15}; do
-            if curl -s --fail http://localhost:5000/healthz > /dev/null; then
+            if curl -s --fail http://localhost:5299/healthz > /dev/null; then
               echo "✅ Health check passed!"
+              # Clean up background process and exit successfully
               kill "$APP_PID" || true
               exit 0
             fi
-
+            
             echo "Health check failed. Retrying in 2 seconds..."
             sleep 2
           done
-
+          
+          # If the loop finishes, the test has failed.
           echo "❌ Health check failed after 30 seconds."
+          echo "==================== Application Logs ===================="
+          cat app_output.log
+          echo "=========================================================="
+          
+          # Clean up and exit with an error.
           kill "$APP_PID" || true
           exit 1
         env:
           IsSmokeTest: "true"
           ASPNETCORE_ENVIRONMENT: "Development"
           ConnectionStrings__DefaultConnection: "Data Source=smoke_test.db"
-          # Dummy bot token برای این‌که startup logic گیر نده؛
-          # اگر در کد برای smoke-test بی‌اثر شده، همین کافی است.
           TelegramPanel__BotToken: "123456:ABC-DEF1234567890"
 
   # ================================
