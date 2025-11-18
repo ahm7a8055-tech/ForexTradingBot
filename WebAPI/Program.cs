@@ -1727,8 +1727,8 @@ internal static class EasySetupWizard
     #region TelegramUserApi (OPTIONAL)
 
     private static void EnsureOptionalTelegramUserApi(
-        IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store)
+          IConfiguration config,
+          Infrastructure.Configuration.EasySetupConfigStore store)
     {
         var apiIdRaw = config["TelegramUserApi:ApiId"];
         var apiHash = config["TelegramUserApi:ApiHash"];
@@ -1745,10 +1745,11 @@ internal static class EasySetupWizard
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- Easy Setup Wizard :: Telegram User API (Optional) ---");
         Console.WriteLine("Auto-forwarding uses the Telegram User API (my.telegram.org).");
-        Console.WriteLine("You can SKIP this step and enable it later from configuration.");
+        Console.WriteLine("You can press ENTER at any prompt to SKIP this feature for now.");
         Console.ResetColor();
+        Console.WriteLine(); // Add a blank line for better spacing
 
-        Console.Write("Enter TelegramUserApi:ApiId (or press ENTER to skip auto-forwarding): ");
+        Console.Write("Enter ApiId: ");
         var apiIdInput = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrWhiteSpace(apiIdInput))
@@ -1779,7 +1780,7 @@ internal static class EasySetupWizard
             return;
         }
 
-        Console.Write("Enter TelegramUserApi:ApiHash (or press ENTER to skip): ");
+        Console.Write("Enter ApiHash: ");
         var hashInput = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrWhiteSpace(hashInput))
@@ -1805,7 +1806,6 @@ internal static class EasySetupWizard
 
         Log.Information("TelegramUserApi credentials configured via Easy Setup Wizard.");
     }
-
     #endregion
 
     #region CryptoPay (OPTIONAL)
