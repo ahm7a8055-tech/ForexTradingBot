@@ -227,7 +227,7 @@ try
     if (isSmokeTest)
     {
         builder.Services.AddSingleton<ICryptoPayApiClient, DisabledCryptoPayApiClient>();
-        app.MapGet("/healthz", () => Results.Ok("OK"));
+
         string? smokeTestConn = builder.Configuration.GetConnectionString("DefaultConnection");
         if (string.IsNullOrWhiteSpace(smokeTestConn))
         {
