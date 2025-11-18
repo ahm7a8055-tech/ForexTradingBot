@@ -144,6 +144,16 @@ try
     {
         var tempInitialConfig = configAppBuilder.Build();
 
+        // AI-FRIENDLY FIX: Re-check for smoke test mode. If true, skip adding the
+        // database configuration source entirely. This prevents a crash when the
+        // database file doesn't exist yet during the initial build phase.
+        bool isSmokeTestInDelegate = "true".Equals(tempInitialConfig["IsSmokeTest"], StringComparison.OrdinalIgnoreCase);
+        if (isSmokeTestInDelegate)
+        {
+            Log.Information("[SmokeTest] Skipping DatabaseConfigurationSource to prevent startup crash.");
+            return;
+        }
+
         var tempServices = new ServiceCollection();
         tempServices.AddSingleton<IConfiguration>(tempInitialConfig);
 
