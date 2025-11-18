@@ -1135,8 +1135,8 @@ try
         // app.UseExceptionHandler("/Error"); //  می‌توانید یک صفحه خطای سفارشی برای کاربران نهایی تعریف کنید
         _ = app.UseHsts(); //  افزودن هدر HTTP Strict Transport Security برای امنیت بیشتر (اجبار استفاده از HTTPS)
     }
-
-    _ = app.UseHttpsRedirection(); //  ریدایرکت خودکار تمام درخواست‌های HTTP به HTTPS
+    if (!isSmokeTest)
+        _ = app.UseHttpsRedirection();
 
     _ = app.UseStaticFiles(); // Serve static files early, especially for login page
 
