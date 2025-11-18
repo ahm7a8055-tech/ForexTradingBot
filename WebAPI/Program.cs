@@ -316,82 +316,73 @@ try
 
     #region Caching and External Services (region master)
 
-    string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
-
-    if (string.IsNullOrWhiteSpace(redisConnectionString))
+    if (isSmokeTest)
     {
-        // If no external Redis is configured, start our own embedded one.
-        Log.Warning("⚠️ Redis connection string not found. Attempting to start embedded Redis server for this session.");
-
-        // 1. Register the IHostedService that will manage the redis-server.exe process.
-        builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
-
-        // 2. Set the connection string to the default for the local, embedded server.
-        redisConnectionString = "localhost:6379"; // Default port for Redis
-
-        // --- THIS IS THE FIX ---
-        // 3. Update the application's configuration in memory so all other services see the new value.
-        //    This ensures consistency across the entire application.
-        builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
-
-        Log.Information("Embedded Redis registered. Connection string set to '{RedisConnectionString}' for this session.", redisConnectionString);
-    }
-    else
-    {
-        Log.Information("✅ External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
-    }
-    try
-    {
-        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-        {
-            var configuration = sp.GetRequiredService<IConfiguration>();
-            string? connectionString = configuration.GetConnectionString("Redis");
-
-            if (string.IsNullOrWhiteSpace(connectionString))
-            {
-                // This should ideally not happen because of your earlier logic, but it's a good safeguard.
-                Log.Fatal("Redis connection string is null or empty at the moment of creating the multiplexer.");
-                throw new InvalidOperationException("Redis connection string is not configured.");
-            }
-
-            var options = ConfigurationOptions.Parse(connectionString);
-
-            // --- THE CRITICAL FIX ---
-            // This tells the multiplexer to NOT throw an exception on startup if it can't connect.
-            // It will continue trying to connect in the background, giving our
-            // EmbeddedRedisService time to start the server.
-            options.AbortOnConnectFail = false;
-            // ------------------------
-
-            options.ConnectTimeout = 10000; // Increase timeout for more resilience on startup
-            options.SyncTimeout = 10000;
-
-            Log.Information("Attempting to create a resilient Redis connection to {Endpoint}...", options.EndPoints.FirstOrDefault());
-
-            // We wrap the connection in a try-catch for better logging, but AbortOnConnectFail=false
-            // should prevent it from throwing here unless the connection string is fundamentally invalid.
-            try
-            {
-                return ConnectionMultiplexer.Connect(options);
-            }
-            catch (Exception ex)
-            {
-                Log.Fatal(ex, "Failed to initiate Redis ConnectionMultiplexer. The connection string may be invalid.");
-                throw; // Re-throw to halt the application if the config is malformed.
-            }
-        });
-
-        Log.Information("✅ Redis services configured. The multiplexer will connect resiliently.");
-    }
-    catch (Exception ex)
-    {
-        // Your existing fallback logic for in-memory Redis is fine.
-        Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
+        Log.Information("[SmokeTest] Bypassing Redis setup and using in-memory fallback.");
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
+    }
+    else
+    {
+        // Original, production-ready Redis logic
+        string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+
+        if (string.IsNullOrWhiteSpace(redisConnectionString))
+        {
+            Log.Warning("⚠️ Redis connection string not found. Attempting to start embedded Redis server for this session.");
+            builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
+            redisConnectionString = "localhost:6379";
+            builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
+            Log.Information("Embedded Redis registered. Connection string set to '{RedisConnectionString}' for this session.", redisConnectionString);
+        }
+        else
+        {
+            Log.Information("✅ External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
+        }
+        try
+        {
+            builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+            {
+                var configuration = sp.GetRequiredService<IConfiguration>();
+                string? connectionString = configuration.GetConnectionString("Redis");
+
+                if (string.IsNullOrWhiteSpace(connectionString))
+                {
+                    Log.Fatal("Redis connection string is null or empty at the moment of creating the multiplexer.");
+                    throw new InvalidOperationException("Redis connection string is not configured.");
+                }
+
+                var options = ConfigurationOptions.Parse(connectionString);
+                options.AbortOnConnectFail = false;
+                options.ConnectTimeout = 10000;
+                options.SyncTimeout = 10000;
+
+                Log.Information("Attempting to create a resilient Redis connection to {Endpoint}...", options.EndPoints.FirstOrDefault());
+
+                try
+                {
+                    return ConnectionMultiplexer.Connect(options);
+                }
+                catch (Exception ex)
+                {
+                    Log.Fatal(ex, "Failed to initiate Redis ConnectionMultiplexer. The connection string may be invalid.");
+                    throw;
+                }
+            });
+            Log.Information("✅ Redis services configured. The multiplexer will connect resiliently.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
+            builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+            {
+                var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+                return new Infrastructure.Services.FallbackRedisService(logger);
+            });
+        }
     }
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
     // Note: We'll test Redis connectivity after the application starts, not during configuration
@@ -1063,6 +1054,9 @@ try
     // --- NEW: Test Redis connectivity after application starts ---
     _ = app.Lifetime.ApplicationStarted.Register(async () =>
     {
+        // Don't run this check in smoke tests as we are using a fake in-memory Redis.
+        if (isSmokeTest) return;
+
         Log.Information("Testing Redis connectivity after application startup...");
 
         try
