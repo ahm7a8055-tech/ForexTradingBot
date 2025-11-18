@@ -82,7 +82,8 @@ try
 
     #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
-
+    builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "True");
+    builder.WebHost.UseSetting("UseLaunchSettings", "false");
     // AI-FRIENDLY: Create a small SQLite-backed store for wizard settings.
     // The DB file will live under ContentRootPath/easysetup_config.db
     var easySetupStore = new Infrastructure.Configuration.EasySetupConfigStore(builder.Environment.ContentRootPath);
@@ -225,6 +226,8 @@ try
     // --- AUTO-FIX FOR SMOKETEST: Provide SQLite connection if missing ---
     if (isSmokeTest)
     {
+        builder.Services.AddSingleton<ICryptoPayApiClient, DisabledCryptoPayApiClient>();
+        app.MapGet("/healthz", () => Results.Ok("OK"));
         string? smokeTestConn = builder.Configuration.GetConnectionString("DefaultConnection");
         if (string.IsNullOrWhiteSpace(smokeTestConn))
         {
