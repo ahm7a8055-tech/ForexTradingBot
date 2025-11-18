@@ -103,6 +103,15 @@ try
     string smokeTestFlag = builder.Configuration["IsSmokeTest"] ?? "false";
     bool isSmokeTest = "true".Equals(smokeTestFlag, StringComparison.OrdinalIgnoreCase);
 
+    // 👇 این تیکه را اضافه کن
+    // Force smoke-test mode automatically when running inside CI (GitHub Actions, etc.)
+    if (!isSmokeTest && string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase))
+    {
+        isSmokeTest = true;
+        builder.Configuration["IsSmokeTest"] = "true";
+        Log.Information("CI environment detected. Forcing IsSmokeTest = true for smoke tests.");
+    }
+
     // 3) In smoke-test mode, ensure a quick SQLite DB so EF/Hangfire don't break.
     if (isSmokeTest && string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("DefaultConnection")))
     {
