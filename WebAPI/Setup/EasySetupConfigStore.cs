@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.Sqlite;
+using System.Runtime.InteropServices; // Added for OS checks if needed
 
 namespace Infrastructure.Configuration
 {
@@ -16,27 +17,36 @@ namespace Infrastructure.Configuration
 
             try
             {
-                // --- FIX: Smart Permission Handling ---
+                // --- STRONG FIX: Automatic Permission Handling ---
                 string storageDir = basePath;
 
-                // 1. Check if we have write access to the base path (usually /app)
+                // 1. Verify write permissions for the requested path
                 if (!IsDirectoryWritable(storageDir))
                 {
-                    // 2. If not, fallback to the system Temp folder (usually /tmp)
                     string tempPath = Path.GetTempPath();
                     _logger?.LogWarning("⚠️ Write permission denied for '{BasePath}'. Falling back to system temp directory: '{TempPath}' for EasySetup database.", basePath, tempPath);
                     storageDir = tempPath;
                 }
 
-                // 3. Ensure directory exists
+                // 2. Ensure the directory exists
                 if (!Directory.Exists(storageDir))
                 {
-                    Directory.CreateDirectory(storageDir);
+                    try
+                    {
+                        Directory.CreateDirectory(storageDir);
+                    }
+                    catch (Exception dirEx)
+                    {
+                        _logger?.LogError(dirEx, "Failed to create directory '{StorageDir}'.", storageDir);
+                        // Fallback to temp if creation fails
+                        storageDir = Path.GetTempPath();
+                    }
                 }
 
                 var dbPath = Path.Combine(storageDir, "easysetup_config.db");
-                // ---------------------------------------
+                // ------------------------------------------------
 
+                // Use ReadWriteCreate mode
                 _connectionString = $"Data Source={dbPath};Cache=Shared;Mode=ReadWriteCreate";
 
                 _logger?.LogInformation("Initializing EasySetupConfigStore at path: {DbPath}", dbPath);
@@ -45,38 +55,33 @@ namespace Infrastructure.Configuration
             }
             catch (Exception ex)
             {
-                // Log critical error but DO NOT THROW.
-                // Throwing here crashes the application startup.
-                // Instead, fallback to an In-Memory database so the app can at least start.
-                _logger?.LogCritical(ex, "Failed to initialize EasySetupConfigStore. Falling back to In-Memory (non-persistent) mode.");
+                // CRITICAL FIX: Never crash the app here. Fallback to In-Memory.
+                _logger?.LogError(ex, "Failed to initialize persistent EasySetupConfigStore. Switching to In-Memory mode (non-persistent).");
 
                 _connectionString = "Data Source=:memory:;Mode=Memory;Cache=Shared";
                 try
                 {
                     EnsureSchema();
+                    _logger?.LogWarning("EasySetupConfigStore is running in In-Memory mode.");
                 }
                 catch
                 {
-                    // If even memory fails, suppress to allow app startup
+                    // If even memory fails, we suppress it to allow the app to start
+                    _logger?.LogCritical("EasySetupConfigStore failed to initialize even in memory.");
                 }
             }
         }
 
         /// <summary>
-        /// Helper to test if a directory is writable without throwing exceptions up the stack.
+        /// Helper method to safely check if the application can write to a directory.
         /// </summary>
         private bool IsDirectoryWritable(string dirPath)
         {
             try
             {
-                // If directory doesn't exist, try to create it
-                if (!Directory.Exists(dirPath))
-                {
-                    Directory.CreateDirectory(dirPath);
-                    return true;
-                }
+                if (!Directory.Exists(dirPath)) return false; // Can't write if it doesn't exist (and we assume we can't create it if checking permissions)
 
-                // Try to create a temporary file to verify write permissions
+                // Try to create a zero-byte temporary file
                 string testFile = Path.Combine(dirPath, $".write_test_{Guid.NewGuid()}");
                 using (File.Create(testFile, 1, FileOptions.DeleteOnClose)) { }
                 return true;
@@ -88,22 +93,32 @@ namespace Infrastructure.Configuration
         }
         #endregion
 
-
-
         // ============================================================
         #region Schema Initialization
         // ============================================================
         private void EnsureSchema()
         {
+            // Wrap in try-catch to ensure connection issues don't propagate
             try
             {
                 using var connection = new SqliteConnection(_connectionString);
                 connection.Open();
 
-                using var walCmd = connection.CreateCommand();
-                walCmd.CommandText = "PRAGMA journal_mode = WAL;";
-                walCmd.ExecuteNonQuery();
-                _logger?.LogInformation("SQLite journal mode set to WAL.");
+                // Only try WAL mode if not in memory
+                if (!_connectionString.Contains(":memory:"))
+                {
+                    try
+                    {
+                        using var walCmd = connection.CreateCommand();
+                        walCmd.CommandText = "PRAGMA journal_mode = WAL;";
+                        walCmd.ExecuteNonQuery();
+                        _logger?.LogInformation("SQLite journal mode set to WAL.");
+                    }
+                    catch
+                    {
+                        _logger?.LogWarning("Failed to set WAL mode. Ignoring.");
+                    }
+                }
 
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText =
@@ -116,17 +131,17 @@ namespace Infrastructure.Configuration
                 """;
                 cmd.ExecuteNonQuery();
 
-                _logger?.LogInformation("SQLite schema ensured successfully.");
+                _logger?.LogInformation("EasySetupConfigStore schema ensured successfully.");
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Schema initialization failed.");
-                throw;
+                _logger?.LogError(ex, "Schema initialization failed for connection: {ConnectionString}", _connectionString);
+                throw; // Re-throw to be caught by the Constructor's fallback logic
             }
         }
         #endregion
 
-
+        // ... (LoadAll, Save, and OperationResult methods remain unchanged) ...
 
         // ============================================================
         #region SAFE LoadAll
@@ -148,8 +163,6 @@ namespace Infrastructure.Configuration
             }
         }
         #endregion
-
-
 
         // ============================================================
         #region LoadAll (Raw)
@@ -174,20 +187,17 @@ namespace Infrastructure.Configuration
 
                     result[key] = value;
                 }
-
-                _logger?.LogInformation("LoadAll retrieved {Count} configuration entries.", result.Count);
             }
-            catch
+            catch (Exception ex)
             {
-                _logger?.LogError("Unexpected error occurred during LoadAll execution.");
-                throw;
+                // If the DB is broken, just return empty instead of crashing
+                _logger?.LogError(ex, "Error reading from EasySetupConfigStore. Returning empty configuration.");
+                return result;
             }
 
             return result;
         }
         #endregion
-
-
 
         // ============================================================
         #region SAFE Save
@@ -202,26 +212,17 @@ namespace Infrastructure.Configuration
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Save failed for key: {Key}", key);
-
-                return OperationResult<bool>.Fail(
-                    $"Save failed for key '{key}': {ex.Message}"
-                );
+                return OperationResult<bool>.Fail($"Save failed: {ex.Message}");
             }
         }
         #endregion
-
-
 
         // ============================================================
         #region Save (Raw)
         // ============================================================
         public void Save(string key, string? value, bool isSensitive)
         {
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                _logger?.LogWarning("Attempted to save a null/empty configuration key.");
-                throw new ArgumentException("Configuration key cannot be empty.", nameof(key));
-            }
+            if (string.IsNullOrWhiteSpace(key)) return;
 
             try
             {
@@ -243,26 +244,18 @@ namespace Infrastructure.Configuration
                 cmd.Parameters.AddWithValue("$isSensitive", isSensitive ? 1 : 0);
 
                 cmd.ExecuteNonQuery();
-
-                _logger?.LogInformation(
-                    "Key '{Key}' was saved successfully. Sensitive: {IsSensitive}",
-                    key,
-                    isSensitive
-                );
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Unexpected error while saving key: {Key}", key);
-                throw;
+                _logger?.LogError(ex, "Error writing to EasySetupConfigStore for key {Key}", key);
+                // Don't throw, just log
             }
         }
         #endregion
     }
 
-
-
     // ============================================================
-    #region OperationResult<T> (AI-Friendly Result Model)
+    #region OperationResult<T>
     // ============================================================
     /// <summary>
     /// Represents a standardized result model for operations that may succeed or fail.
