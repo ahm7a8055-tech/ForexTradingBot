@@ -390,7 +390,7 @@
         }
       ]
     },
-    "job_13_build_win_package": {
+"job_13_build_win_package": {
       "name": "🪟 13 Windows Build, Test, & Package",
       "needs": "job_02_restore_dependencies",
       "runs-on": "windows-latest",
@@ -407,8 +407,8 @@
           }
         },
         {
-          "name": "✅ Run Restore",
-          "run": "dotnet restore"
+          "name": "📦 Publish application (Self-Contained)",
+          "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
         },
         {
           "name": "🧪 Run Unit & Integration Tests (Lightweight)",
@@ -421,19 +421,9 @@
           }
         },
         {
-          "name": "💨 Run Smoke Test (Windows)",
+          "name": "💨 Run Smoke Test (Windows Isolated)",
           "shell": "pwsh",
-          "run": "Write-Host \"Starting application in the background for smoke test...\"\n$processInfo = New-Object System.Diagnostics.ProcessStartInfo\n$processInfo.FileName = \"dotnet\"\n$processInfo.Arguments = \"run --project WebAPI/WebAPI.csproj --no-launch-profile --urls http://localhost:5000\"\n$processInfo.RedirectStandardOutput = $true\n$processInfo.RedirectStandardError = $true\n$processInfo.UseShellExecute = $false\n$app = [System.Diagnostics.Process]::Start($processInfo)\n\nWrite-Host \"Waiting for application to start (polling http://localhost:5000/healthz)...\"\n$maxRetries = 30\nfor ($i = 1; $i -le $maxRetries; $i++) {\n    Start-Sleep -Seconds 2\n    if ($app.HasExited) {\n        Write-Host \"❌ Application exited prematurely!\"\n        Write-Host \"===== STDOUT =====\"\n        Write-Host $app.StandardOutput.ReadToEnd()\n        Write-Host \"===== STDERR =====\"\n        Write-Host $app.StandardError.ReadToEnd()\n        exit 1\n    }\n    try {\n        $response = Invoke-WebRequest -Uri \"http://localhost:5000/healthz\" -UseBasicParsing -ErrorAction Stop\n        if ($response.StatusCode -eq 200) {\n            Write-Host \"✅ Health check passed!\"\n            Stop-Process -Id $app.Id -Force\n            exit 0\n        }\n    } catch {\n        Write-Host \"Health check failed ($i/$maxRetries). Retrying...\"\n    }\n}\n\nWrite-Host \"❌ Health check failed after timeout.\"\nWrite-Host \"===== STDOUT (Partial) =====\"\nWrite-Host $app.StandardOutput.ReadToEnd()\nWrite-Host \"===== STDERR (Partial) =====\"\nWrite-Host $app.StandardError.ReadToEnd()\nStop-Process -Id $app.Id -Force\nexit 1\n",
-          "env": {
-            "IsSmokeTest": "true",
-            "ASPNETCORE_ENVIRONMENT": "Development",
-            "ConnectionStrings__DefaultConnection": "Data Source=smoke_test.db",
-            "TelegramPanel__BotToken": "123456:ABC-DEF1234567890"
-          }
-        },
-        {
-          "name": "📦 Publish application",
-          "run": "dotnet publish WebAPI/WebAPI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish"
+          "run": "Write-Host \"Starting PUBLISHED application for smoke test...\"\n\n# Fix: Run the published EXE directly\n$appExe = \".\\publish\\WebAPI.exe\"\nif (-not (Test-Path $appExe)) { Write-Error \"EXE not found at $appExe\"; exit 1 }\n\n$processInfo = New-Object System.Diagnostics.ProcessStartInfo\n$processInfo.FileName = $appExe\n$processInfo.Arguments = \"--urls http://localhost:5000\"\n$processInfo.RedirectStandardOutput = $true\n$processInfo.RedirectStandardError = $true\n$processInfo.UseShellExecute = $false\n$processInfo.CreateNoWindow = $true\n$processInfo.EnvironmentVariables[\"IsSmokeTest\"] = \"true\"\n$processInfo.EnvironmentVariables[\"ASPNETCORE_ENVIRONMENT\"] = \"Development\"\n$processInfo.EnvironmentVariables[\"ConnectionStrings__DefaultConnection\"] = \"Data Source=smoke_test.db\"\n$processInfo.EnvironmentVariables[\"TelegramPanel__BotToken\"] = \"123456:ABC-DEF1234567890\"\n\n$app = [System.Diagnostics.Process]::Start($processInfo)\nWrite-Host \"App started with PID $($app.Id)\"\n\n$maxRetries = 30\n$healthUrl = \"http://localhost:5000/healthz\"\n\nfor ($i = 1; $i -le $maxRetries; $i++) {\n    Start-Sleep -Seconds 2\n    \n    if ($app.HasExited) {\n        Write-Host \"❌ Application exited prematurely!\"\n        Write-Host \"===== STDOUT =====\"\n        Write-Host $app.StandardOutput.ReadToEnd()\n        Write-Host \"===== STDERR =====\"\n        Write-Host $app.StandardError.ReadToEnd()\n        exit 1\n    }\n\n    try {\n        $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -ErrorAction Stop\n        if ($response.StatusCode -eq 200) {\n            Write-Host \"✅ Health check passed!\"\n            Stop-Process -Id $app.Id -Force\n            exit 0\n        }\n    } catch {\n        Write-Host \"Health check failed ($i/$maxRetries). Retrying...\"\n    }\n}\n\nWrite-Host \"❌ Health check failed after timeout.\"\nStop-Process -Id $app.Id -Force\nWrite-Host \"===== STDOUT =====\"\nWrite-Host $app.StandardOutput.ReadToEnd()\nWrite-Host \"===== STDERR =====\"\nWrite-Host $app.StandardError.ReadToEnd()\nexit 1\n"
         },
         {
           "name": "🏷️ Determine Artifact Name",
