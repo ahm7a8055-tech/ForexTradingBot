@@ -2330,7 +2330,6 @@ namespace Infrastructure.Services
             {
                 string srcKey = source.ToString();
 
-                // 1. Validate Source: Must exist, be a List, and not be empty
                 if (!_cache.TryGetValue(srcKey, out object? srcObj) ||
                     srcObj is not List<RedisValue> sourceList ||
                     sourceList.Count == 0)
@@ -2338,14 +2337,10 @@ namespace Infrastructure.Services
                     return Task.FromResult(RedisValue.Null);
                 }
 
-                // 2. RPOP: Get and remove the last element
-                RedisValue value = sourceList[sourceList.Count - 1];
+                RedisValue value = sourceList[^1];
                 sourceList.RemoveAt(sourceList.Count - 1);
 
-                // 3. LPUSH: Insert into destination
                 string destKey = destination.ToString();
-
-                // Check if destination list exists, if not (or if types mismatch), create new list
                 if (!_cache.TryGetValue(destKey, out object? destObj) || destObj is not List<RedisValue> destList)
                 {
                     destList = new List<RedisValue>();
@@ -2353,7 +2348,6 @@ namespace Infrastructure.Services
                 }
 
                 destList.Insert(0, value);
-
                 return Task.FromResult(value);
             }
         }

@@ -326,79 +326,83 @@ try
 
     #region Caching and External Services (Redis)
 
+    // 1) Determine Redis Connection String
+    string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+    bool hasExternalRedis = !string.IsNullOrWhiteSpace(redisConnectionString);
+
     if (isSmokeTest)
     {
-        Log.Information("[SmokeTest] Bypassing Redis setup and using in-memory fallback.");
-
-        _ = builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        if (hasExternalRedis)
         {
-            ILogger<FallbackRedisService> logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
-            return new Infrastructure.Services.FallbackRedisService(logger);
-        });
-
-        // در حالت SmokeTest هیچ تلاش واقعی برای اتصال Redis انجام نمی‌دهیم
-    }
-    else
-    {
-        // 1) Determine / prepare connection string
-        string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
-
-        if (string.IsNullOrWhiteSpace(redisConnectionString))
-        {
-            Log.Warning("Redis connection string not found. Attempting to start embedded Redis server for this session.");
-
-            // Embedded Redis به عنوان HostedService بالا می‌آید
-            _ = builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
-
-            redisConnectionString = "localhost:6379";
-            builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
-
-            Log.Information(
-                "Embedded Redis registered. Connection string set to '{RedisConnectionString}' for this session.",
-                redisConnectionString
-            );
+            Log.Information("[SmokeTest] External Redis connection string found ('{Conn}'). Using Real Redis for tests.", redisConnectionString);
+            // We will proceed to the standard registration logic below
         }
         else
         {
-            Log.Information("External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
+            Log.Information("[SmokeTest] No Redis connection string found. Using In-Memory Fallback.");
+            builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+            {
+                var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+                return new Infrastructure.Services.FallbackRedisService(logger);
+            });
+            goto RedisSetupComplete; // Skip the rest of the Redis setup
         }
-
-        // 2) Prepare Redis options once (no network I/O here)
-        ConfigurationOptions redisOptions = ConfigurationOptions.Parse(redisConnectionString);
-        redisOptions.AbortOnConnectFail = false;
-        redisOptions.ConnectTimeout = 10000;
-        redisOptions.SyncTimeout = 10000;
-
-        // 3) Register a resilient singleton that either:
-        //    - returns a real ConnectionMultiplexer, OR
-        //    - transparently falls back to in-memory implementation on failure.
-        _ = builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-        {
-            ILogger<Program> logger = sp.GetRequiredService<ILogger<Program>>();
-
-            try
-            {
-                EndPoint? endpoint = redisOptions.EndPoints.FirstOrDefault();
-                logger.LogInformation("Creating Redis ConnectionMultiplexer for {Endpoint}...", endpoint);
-
-                ConnectionMultiplexer mux = ConnectionMultiplexer.Connect(redisOptions);
-
-                logger.LogInformation("Redis ConnectionMultiplexer successfully created for {Endpoint}.", endpoint);
-                return mux;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex,
-                    "Failed to create Redis ConnectionMultiplexer. Falling back to in-memory Redis (FallbackRedisService).");
-
-                ILogger<FallbackRedisService> fallbackLogger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
-                return new Infrastructure.Services.FallbackRedisService(fallbackLogger);
-            }
-        });
-
-        Log.Information("Redis services registered. Multiplexer (or fallback) will be created on first resolution.");
     }
 
+    // 2) If no external Redis and NOT in smoke test (Production/Dev):
+    if (!hasExternalRedis)
+    {
+        // Only attempt Embedded Redis on Windows where we have the binary
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            Log.Warning("Redis connection string not found. Attempting to start Embedded Redis (Windows).");
+            builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
+            redisConnectionString = "localhost:6379";
+            builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
+        }
+        else
+        {
+            Log.Warning("Redis connection string not found and Embedded Redis is not supported on {OS}. Falling back to In-Memory.", RuntimeInformation.OSDescription);
+            builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+            {
+                var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+                return new Infrastructure.Services.FallbackRedisService(logger);
+            });
+            goto RedisSetupComplete;
+        }
+    }
+
+    Log.Information("Configuring Redis with connection: {RedisEndpoint}", redisConnectionString);
+
+    // 3) Standard Redis Registration with Fallback
+    var redisOptions = ConfigurationOptions.Parse(redisConnectionString!);
+    redisOptions.AbortOnConnectFail = false;
+    redisOptions.ConnectTimeout = 5000; // Faster timeout for tests
+    redisOptions.SyncTimeout = 5000;
+
+    builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+    {
+        var logger = sp.GetRequiredService<ILogger<Program>>();
+
+        try
+        {
+            var endpoint = redisOptions.EndPoints.FirstOrDefault();
+            logger.LogInformation("Connecting to Redis at {Endpoint}...", endpoint);
+
+            var mux = ConnectionMultiplexer.Connect(redisOptions);
+
+            logger.LogInformation("✅ Redis connected successfully.");
+            return mux;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "❌ Failed to connect to Redis. Falling back to In-Memory (FallbackRedisService).");
+            var fallbackLogger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+            return new Infrastructure.Services.FallbackRedisService(fallbackLogger);
+        }
+    });
+
+RedisSetupComplete:;
     #endregion
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
     // Note: We'll test Redis connectivity after the application starts, not during configuration
