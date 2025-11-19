@@ -215,15 +215,50 @@ namespace Infrastructure.Configuration
     // ============================================================
     #region OperationResult<T> (AI-Friendly Result Model)
     // ============================================================
+    /// <summary>
+    /// Represents a standardized result model for operations that may succeed or fail.
+    /// Provides a consistent contract for returning data, errors, and success flags.
+    /// </summary>
+    /// <typeparam name="T">
+    /// The type of the payload returned when the operation succeeds.
+    /// </typeparam>
+    /// <remarks>
+    /// This pattern is commonly used for API responses, service-layer results,
+    /// and AI-friendly output formats. It ensures predictable structure and avoids
+    /// exceptions for expected operational failures.
+    /// </remarks>
     public sealed class OperationResult<T>
     {
+        /// <summary>
+        /// Indicates whether the operation completed successfully.
+        /// </summary>
         public bool Success { get; init; }
+
+        /// <summary>
+        /// Contains an error message when the operation fails.
+        /// Null when <see cref="Success"/> is true.
+        /// </summary>
         public string? Error { get; init; }
+
+        /// <summary>
+        /// Contains the returned data when the operation succeeds.
+        /// Null when <see cref="Success"/> is false.
+        /// </summary>
         public T? Data { get; init; }
 
+        /// <summary>
+        /// Creates a successful <see cref="OperationResult{T}"/> with the specified data.
+        /// </summary>
+        /// <param name="data">The payload returned by the operation.</param>
+        /// <returns>A successful result object.</returns>
         public static OperationResult<T> Ok(T data) =>
             new() { Success = true, Data = data };
 
+        /// <summary>
+        /// Creates a failed <see cref="OperationResult{T}"/> with an error message.
+        /// </summary>
+        /// <param name="message">A human-readable error description.</param>
+        /// <returns>A failed result object containing the error.</returns>
         public static OperationResult<T> Fail(string message) =>
             new() { Success = false, Error = message };
     }
