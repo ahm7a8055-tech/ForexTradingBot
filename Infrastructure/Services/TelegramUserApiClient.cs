@@ -829,16 +829,21 @@ namespace Infrastructure.Services
         /// <exception cref="Exception">Thrown for any other critical, unclassified errors.</exception>
         // In Infrastructure/Services/TelegramUserApiClient.cs
 
+        /// <summary>
+        /// Connects to Telegram and logs in the user if needed.
+        /// Manages the connection lifecycle and initial data fetching.
+        /// This method is designed to be resilient to transient network issues and
+        /// specific Telegram API errors, gracefully handling them or propagating
+        /// failures to the caller for higher-level retry mechanisms.
+        /// </summary>
         public async Task ConnectAndLoginAsync(CancellationToken cancellationToken)
         {
-            // ... (SemaphoreSlim lock acquisition and other initial code is fine) ...
             _logger.LogTrace("ConnectAndLoginAsync: Attempting to acquire connection lock.");
             await _connectionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             _logger.LogDebug("ConnectAndLoginAsync: Acquired connection lock.");
 
             try
             {
-                // ... (Initial checks and main resilience pipeline execution) ...
                 if (_client is null)
                 {
                     _logger.LogCritical("ConnectAndLoginAsync: WTelegram.Client instance is unexpectedly null. Cannot proceed.");
@@ -858,15 +863,33 @@ namespace Infrastructure.Services
                 }
                 catch (TL.RpcException e) when (e.Code == 401 && (e.Message.Contains("SESSION_PASSWORD_NEEDED") || e.Message.Contains("account_password_input_needed")))
                 {
-                    // ... (2FA handling is fine) ...
+                    // These are handled by WTelegram's internal logic asking for password via Config callback, 
+                    // but if we get here, it means we might need to log it.
+                    _logger.LogWarning("2FA Password needed but not handled automatically by Config callback.");
                 }
                 catch (TL.RpcException e) when (e.Message.StartsWith("PHONE_MIGRATE_"))
                 {
-                    // ... (DC Migration handling is fine) ...
+                    _logger.LogInformation("DC Migration required ({Message}). WTelegramClient handles this automatically, but retrying login...", e.Message);
+                    // The client usually handles migration, we just need to retry the login call.
+                    // Since we are in a resilience pipeline, it might have already retried or we rely on outer loop.
                 }
+                // --- STRONG FIX START: Handle Missing Config Gracefully ---
+                catch (WTelegram.WTException wtEx) when (wtEx.Message.Contains("phone_number"))
+                {
+                    _logger.LogCritical("🛑 FATAL CONFIGURATION ERROR: The Telegram Client requires a Phone Number to login, but it is missing in the settings. " +
+                                        "Please update 'TelegramUserApi:PhoneNumber' in appsettings.json. " +
+                                        "Auto-forwarding will be DISABLED until the configuration is fixed and the application is restarted.");
+
+                    IsConnected = false;
+                    // We return immediately to stop the crash loop. 
+                    // By not throwing, the background service will assume 'work finished' and won't retry instantly.
+                    return;
+                }
+                // --- STRONG FIX END ---
 
                 if (loggedInUser is null)
                 {
+                    // If we reached here without an exception but user is null, it's a logic failure
                     _logger.LogError("ConnectAndLoginAsync: User API Login Failed: LoginUserIfNeeded returned null after all attempts.");
                     throw new InvalidOperationException("WTelegramClient failed to log in user.");
                 }
@@ -877,40 +900,15 @@ namespace Infrastructure.Services
                 await RefreshDialogsAndCachesAsync(cancellationToken).ConfigureAwait(false);
                 IsConnected = true;
             }
-            // --- START OF RELEVANT CHANGES ---
-            catch (NullReferenceException nre) // Specifically catch the NullReferenceException observed from the client library
+            catch (NullReferenceException nre)
             {
-                // Log this as a WARNING, not an error. This acknowledges the issue but treats it as
-                // a recoverable, transient problem that Polly will handle by retrying.
-                _logger.LogDebug(nre, "(Suppressed) ConnectAndLoginAsync: A transient NullReferenceException occurred inside WTelegram.Client, likely due to a temporary network issue. The resilience policy will now attempt to retry.");
+                _logger.LogDebug(nre, "(Suppressed) ConnectAndLoginAsync: A transient NullReferenceException occurred inside WTelegram.Client. The resilience policy will now attempt to retry.");
                 IsConnected = false;
-
-                // CRITICAL: Re-throw the exception. This is what allows your outer Polly
-                // resilience pipeline (which is calling this entire service) to catch the failure
-                // and trigger its own retry logic. If you don't re-throw, Polly thinks it succeeded.
                 throw;
             }
-            // --- END OF RELEVANT CHANGES ---
             catch (IOException ioEx)
             {
                 _logger.LogError(ioEx, "ConnectAndLoginAsync: A low-level network I/O error occurred. Check network connectivity.");
-                _ = Task.Run(async () =>
-                {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
-                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Level = "Error",
-                        Source = "TelegramUserApiClient",
-                        EventType = "ConnectAndLoginAsync.IOError",
-                        Message = ioEx.Message,
-                        Details = ioEx.StackTrace,
-                        Exception = ioEx.ToString(),
-                        Status = "Failed",
-                        CreatedAt = DateTime.UtcNow
-                    });
-                });
                 IsConnected = false;
                 throw;
             }
@@ -923,60 +921,25 @@ namespace Infrastructure.Services
             catch (TL.RpcException rpcEx)
             {
                 _logger.LogError(rpcEx, "ConnectAndLoginAsync: Telegram API (RPC) error: {ErrorTypeString}, Code: {ErrorCode}.", rpcEx.Message, rpcEx.Code);
-                _ = Task.Run(async () =>
-                {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
-                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Level = "Error",
-                        Source = "TelegramUserApiClient",
-                        EventType = "ConnectAndLoginAsync.RpcError",
-                        Message = rpcEx.Message,
-                        Details = rpcEx.StackTrace,
-                        Exception = rpcEx.ToString(),
-                        Status = "Failed",
-                        CreatedAt = DateTime.UtcNow
-                    });
-                });
                 IsConnected = false;
                 throw;
             }
             catch (Exception ex)
             {
                 _logger.LogCritical(ex, "ConnectAndLoginAsync: Critical, unclassified error occurred.");
-                _ = Task.Run(async () =>
-                {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
-                    await repo.AddAsync(new Domain.Entities.ProMonitoringLog
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Level = "Critical",
-                        Source = "TelegramUserApiClient",
-                        EventType = "ConnectAndLoginAsync.Critical",
-                        Message = ex.Message,
-                        Details = ex.StackTrace,
-                        Exception = ex.ToString(),
-                        Status = "Failed",
-                        CreatedAt = DateTime.UtcNow
-                    });
-                });
                 IsConnected = false;
                 throw;
             }
             finally
             {
-                // ... (SemaphoreSlim release is fine) ...
                 try
                 {
                     _ = _connectionLock.Release();
                     _logger.LogDebug("ConnectAndLoginAsync: Connection lock released.");
                 }
-                catch (ObjectDisposedException ode)
+                catch (ObjectDisposedException)
                 {
-                    _logger.LogWarning(ode, "ConnectAndLoginAsync: Connection lock was disposed during release.");
+                    // Ignore
                 }
             }
         }
