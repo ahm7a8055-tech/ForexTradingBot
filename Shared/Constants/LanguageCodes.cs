@@ -6,4 +6,4 @@ namespace Shared.Constants
         public const string English = "en";
         public const string Russian = "ru";
     }
-} 
+}

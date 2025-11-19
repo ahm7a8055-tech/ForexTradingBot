@@ -1,6 +1,4 @@
-﻿using System.Collections.Generic;
-
-namespace Application.Interfaces
+﻿namespace Application.Common.Interfaces
 {
     /// <summary>
     /// Defines a service for generating unique and relevant sets of hashtags for channel posts.

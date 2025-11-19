@@ -10,7 +10,7 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AlterColumn<decimal>(
+            _ = migrationBuilder.AlterColumn<decimal>(
                 name: "Amount",
                 table: "Transactions",
                 type: "numeric(18,8)",
@@ -18,7 +18,7 @@ namespace Infrastructure.Migrations
                 oldClrType: typeof(decimal),
                 oldType: "numeric(18,4)");
 
-            migrationBuilder.AddColumn<string>(
+            _ = migrationBuilder.AddColumn<string>(
                 name: "Currency",
                 table: "Transactions",
                 type: "character varying(20)",
@@ -29,11 +29,11 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
+            _ = migrationBuilder.DropColumn(
                 name: "Currency",
                 table: "Transactions");
 
-            migrationBuilder.AlterColumn<decimal>(
+            _ = migrationBuilder.AlterColumn<decimal>(
                 name: "Amount",
                 table: "Transactions",
                 type: "numeric(18,4)",

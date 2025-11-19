@@ -46,9 +46,9 @@ namespace TelegramPanel.Extensions
             Log.Information("Registering Telegram Panel specific forwarding services...");
 
             // Register all services that are ONLY needed when forwarding is enabled.
-            services.AddScoped<ITelegramState, NewsSearchState>();
-            services.AddScoped<IForwardingJobActions, ForwardingJobActions>();
-            services.AddScoped<MessageForwardingService>();
+            _ = services.AddScoped<ITelegramState, NewsSearchState>();
+            _ = services.AddScoped<IForwardingJobActions, ForwardingJobActions>();
+            _ = services.AddScoped<MessageForwardingService>();
 
             Log.Information("Telegram Panel forwarding services registered.");
             return services;
@@ -199,8 +199,8 @@ namespace TelegramPanel.Extensions
 
             // Register Forwarding Services
             _ = services.AddScoped<ITelegramState, NewsSearchState>();
-           // _ = services.AddScoped<IForwardingJobActions, ForwardingJobActions>();
-         //   _ = services.AddScoped<MessageForwardingService>();
+            // _ = services.AddScoped<IForwardingJobActions, ForwardingJobActions>();
+            //   _ = services.AddScoped<MessageForwardingService>();
 
             // This will pick up:
             // - MenuCommandHandler (if it implements ITelegramCallbackQueryHandler)

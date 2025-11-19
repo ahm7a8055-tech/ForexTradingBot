@@ -1,10 +1,10 @@
 ﻿// --- File: Infrastructure/Logging/TelegramMessageBuilder.cs (V9.0 - POWERFUL UPGRADE) ---
 
 using Serilog.Events;
+using Shared.Security; // For enhanced exception sanitization
 using System.Text;
 using System.Text.RegularExpressions;
 using Telegram.Bot.Types.ReplyMarkups;
-using Shared.Security; // For enhanced exception sanitization
 
 namespace TelegramPanel.Infrastructure.Logging
 {
@@ -58,7 +58,7 @@ namespace TelegramPanel.Infrastructure.Logging
             // 🆕 NEW: Enhanced level formatting
             string formattedLevel = FormatLevelToString(logEvent.Level);
             string severityEmoji = GetSeverityEmoji(logEvent.Level);
-            
+
             _ = sb.AppendLine($"{headerEmoji} *{severityEmoji} {formattedLevel} | {GetProperty(logEvent, "Application")}*");
 
             // 🆕 NEW: Enhanced occurrence tracking
@@ -74,29 +74,29 @@ namespace TelegramPanel.Infrastructure.Logging
         {
             _ = sb.AppendLine("📄 *Message*");
             string message = logEvent.RenderMessage();
-            
+
             // 🆕 NEW: Enhanced message analysis
             if (logEvent.Exception != null)
             {
                 // Use enhanced sanitizer for better error details
                 string enhancedExceptionInfo = _exceptionSanitizer.Sanitize(logEvent.Exception, includeHash: true);
-                
+
                 // Extract key information from enhanced sanitizer output
-                var exceptionAnalysis = AnalyzeEnhancedExceptionInfo(enhancedExceptionInfo);
-                
+                (string ExceptionType, string Category, string Severity, string ErrorCode, string SanitizedMessage) = AnalyzeEnhancedExceptionInfo(enhancedExceptionInfo);
+
                 _ = sb.AppendLine($"`{message}`");
                 _ = sb.AppendLine();
-                
+
                 _ = sb.AppendLine("💣 *Exception Details*");
-                _ = sb.AppendLine($"🔹 Type: `{exceptionAnalysis.ExceptionType}`");
-                _ = sb.AppendLine($"🔹 Category: `{exceptionAnalysis.Category}`");
-                _ = sb.AppendLine($"🔹 Severity: {exceptionAnalysis.Severity}");
-                _ = sb.AppendLine($"🔹 Error Code: `{exceptionAnalysis.ErrorCode}`");
-                
+                _ = sb.AppendLine($"🔹 Type: `{ExceptionType}`");
+                _ = sb.AppendLine($"🔹 Category: `{Category}`");
+                _ = sb.AppendLine($"🔹 Severity: {Severity}");
+                _ = sb.AppendLine($"🔹 Error Code: `{ErrorCode}`");
+
                 // 🆕 NEW: Show sanitized exception message
-                if (!string.IsNullOrEmpty(exceptionAnalysis.SanitizedMessage))
+                if (!string.IsNullOrEmpty(SanitizedMessage))
                 {
-                    _ = sb.AppendLine($"🔹 Message: `{exceptionAnalysis.SanitizedMessage}`");
+                    _ = sb.AppendLine($"🔹 Message: `{SanitizedMessage}`");
                 }
             }
             else
@@ -140,7 +140,7 @@ namespace TelegramPanel.Infrastructure.Logging
             _ = sb.AppendLine($"📍 Environment: `{GetProperty(logEvent, "EnvironmentName")}`");
             _ = sb.AppendLine($"💻 Machine: `{GetProperty(logEvent, "MachineName")}`");
             _ = sb.AppendLine($"🔗 Request ID: `{GetProperty(logEvent, "RequestId") ?? "N/A"}`");
-            
+
             // 🆕 NEW: Additional context information
             string processId = Environment.ProcessId.ToString();
             _ = sb.AppendLine($"🆔 Process ID: `{processId}`");
@@ -156,22 +156,22 @@ namespace TelegramPanel.Infrastructure.Logging
             }
 
             _ = sb.AppendLine("🤖 *AI-Powered Analysis*");
-            
+
             // 🆕 NEW: Use enhanced sanitizer for intelligent analysis
             string enhancedExceptionInfo = _exceptionSanitizer.Sanitize(logEvent.Exception, includeHash: false);
-            var analysis = ExtractIntelligentSuggestions(enhancedExceptionInfo);
-            
-            foreach (var suggestion in analysis.Suggestions)
+            (List<string> Suggestions, List<string> ErrorPatterns) = ExtractIntelligentSuggestions(enhancedExceptionInfo);
+
+            foreach (string suggestion in Suggestions)
             {
                 _ = sb.AppendLine($"- {suggestion}");
             }
-            
+
             // 🆕 NEW: Add error patterns and trends
-            if (analysis.ErrorPatterns.Any())
+            if (ErrorPatterns.Any())
             {
                 _ = sb.AppendLine();
                 _ = sb.AppendLine("📊 *Error Patterns Detected*");
-                foreach (var pattern in analysis.ErrorPatterns)
+                foreach (string pattern in ErrorPatterns)
                 {
                     _ = sb.AppendLine($"- {pattern}");
                 }
@@ -223,14 +223,14 @@ namespace TelegramPanel.Infrastructure.Logging
         {
             // 🆕 NEW: Smarter sanitization that preserves important error details
             string sanitized = message;
-            
+
             // Only redact truly sensitive patterns, not entire error messages
             sanitized = SensitiveDataRegex.Replace(sanitized, "$1: \"[REDACTED]\"");
-            
+
             // Preserve important error information
             sanitized = sanitized.Replace("[EMPTY_MESSAGE]", "No message available");
             sanitized = sanitized.Replace("[NULL_EXCEPTION]", "Exception object was null");
-            
+
             return sanitized;
         }
 
@@ -265,7 +265,7 @@ namespace TelegramPanel.Infrastructure.Logging
 
         private Telegram.Bot.Types.ReplyMarkups.ReplyMarkup BuildActionButtons(LogEvent logEvent)
         {
-            List<InlineKeyboardButton> buttons = new();
+            List<InlineKeyboardButton> buttons = [];
             if (!string.IsNullOrEmpty(_dashboardUrl))
             {
                 string url = _dashboardUrl;
@@ -297,15 +297,15 @@ namespace TelegramPanel.Infrastructure.Logging
         #region 🆕 NEW: Enhanced Analysis Methods
         private (string ExceptionType, string Category, string Severity, string ErrorCode, string SanitizedMessage) AnalyzeEnhancedExceptionInfo(string enhancedExceptionInfo)
         {
-            var lines = enhancedExceptionInfo.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            
+            string[] lines = enhancedExceptionInfo.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
             string exceptionType = "Unknown";
             string category = "UNKNOWN_ERROR";
             string severity = "🔵 INFO";
             string errorCode = "GEN-0000";
             string sanitizedMessage = "";
 
-            foreach (var line in lines)
+            foreach (string line in lines)
             {
                 if (line.Contains("Exception Type:"))
                 {
@@ -318,7 +318,7 @@ namespace TelegramPanel.Infrastructure.Logging
                 else if (line.Contains("MESSAGE"))
                 {
                     // Get the next line as the message
-                    var messageIndex = Array.IndexOf(lines, line) + 1;
+                    int messageIndex = Array.IndexOf(lines, line) + 1;
                     if (messageIndex < lines.Length)
                     {
                         sanitizedMessage = lines[messageIndex].Trim('`');
@@ -327,7 +327,7 @@ namespace TelegramPanel.Infrastructure.Logging
             }
 
             // Extract category and severity from the header
-            var headerMatch = Regex.Match(enhancedExceptionInfo, @"🚨\s*(.+?)\s*\|\s*(.+?)(?:\r|\n|$)");
+            Match headerMatch = Regex.Match(enhancedExceptionInfo, @"🚨\s*(.+?)\s*\|\s*(.+?)(?:\r|\n|$)");
             if (headerMatch.Success)
             {
                 severity = headerMatch.Groups[1].Value.Trim();
@@ -339,13 +339,13 @@ namespace TelegramPanel.Infrastructure.Logging
 
         private (List<string> Suggestions, List<string> ErrorPatterns) ExtractIntelligentSuggestions(string enhancedExceptionInfo)
         {
-            var suggestions = new List<string>();
-            var errorPatterns = new List<string>();
+            List<string> suggestions = [];
+            List<string> errorPatterns = [];
 
-            var lines = enhancedExceptionInfo.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string[] lines = enhancedExceptionInfo.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             bool inSuggestions = false;
 
-            foreach (var line in lines)
+            foreach (string line in lines)
             {
                 if (line.Contains("INTELLIGENT ANALYSIS"))
                 {
@@ -384,11 +384,7 @@ namespace TelegramPanel.Infrastructure.Logging
         private string ExtractValue(string line, string prefix)
         {
             int index = line.IndexOf(prefix);
-            if (index >= 0)
-            {
-                return line.Substring(index + prefix.Length).Trim();
-            }
-            return "";
+            return index >= 0 ? line[(index + prefix.Length)..].Trim() : "";
         }
         #endregion
     }

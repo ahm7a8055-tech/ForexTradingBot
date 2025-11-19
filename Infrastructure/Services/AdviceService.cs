@@ -2249,7 +2249,7 @@ namespace Infrastructure.Services
         public string GetNextUniqueAdviceForChannel()
         {
             // First attempt is a highly performant, lock-free read.
-            if (_channelAdviceQueue.TryDequeue(out var advice))
+            if (_channelAdviceQueue.TryDequeue(out string? advice))
             {
                 return advice;
             }
@@ -2300,10 +2300,10 @@ namespace Infrastructure.Services
             {
                 // GetOrAdd is a thread-safe factory method. It retrieves the user's existing queue
                 // or creates a new one if this is the user's first request.
-                var userQueue = _userAdviceQueues.GetOrAdd(userId, _ => CreateNewShuffledConcurrentQueue());
+                ConcurrentQueue<string> userQueue = _userAdviceQueues.GetOrAdd(userId, _ => CreateNewShuffledConcurrentQueue());
 
                 // Attempt to get an item from the user's current queue.
-                if (userQueue.TryDequeue(out var advice))
+                if (userQueue.TryDequeue(out string? advice))
                 {
                     return advice; // Success! The most common and fastest path.
                 }
@@ -2311,7 +2311,7 @@ namespace Infrastructure.Services
                 // --- RESET AND START OVER (for this user) ---
                 // If we're here, the user's personal queue is empty. We must replace it.
                 // Create a new, full, shuffled queue to serve as the replacement.
-                var newQueue = CreateNewShuffledConcurrentQueue();
+                ConcurrentQueue<string> newQueue = CreateNewShuffledConcurrentQueue();
 
                 // Attempt to atomically replace the old, empty queue (`userQueue`)
                 // with the new, full one (`newQueue`).
@@ -2352,7 +2352,7 @@ namespace Infrastructure.Services
             }
 
             // Create a mutable copy of the master list to avoid modifying the original.
-            var shuffledArray = AllAdvices.ToArray();
+            string[] shuffledArray = AllAdvices.ToArray();
 
             // Shuffle the copy in-place using an efficient and unbiased algorithm.
             Shuffle(shuffledArray);
@@ -2372,7 +2372,7 @@ namespace Infrastructure.Services
             int n = array.Length;
             // UPGRADE: Using Random.Shared for a thread-safe, high-performance, shared Random instance (.NET 6+).
             // This is the recommended approach for concurrent applications.
-            var random = Random.Shared;
+            Random random = Random.Shared;
 
             for (int i = n - 1; i > 0; i--)
             {

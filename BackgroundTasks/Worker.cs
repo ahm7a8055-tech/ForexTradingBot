@@ -167,8 +167,8 @@ namespace BackgroundTasks
                     _logger.LogError(ex, "An unhandled error occurred during processing cycle. This might be a critical issue.");
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -193,8 +193,8 @@ namespace BackgroundTasks
                                          _consecutiveFailures, _options.CircuitBreakerResetMilliseconds);
                         _ = Task.Run(async () =>
                         {
-                            using var scope = _serviceProvider.CreateScope();
-                            var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                            using IServiceScope scope = _serviceProvider.CreateScope();
+                            IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                             await repo.AddAsync(new ProMonitoringLog
                             {
                                 Timestamp = DateTime.UtcNow,
@@ -269,8 +269,8 @@ namespace BackgroundTasks
                         _logger.LogError(ex, "All {MaxRetries} retry attempts failed for task processing.", _options.MaxRetries);
                         _ = Task.Run(async () =>
                         {
-                            using var scope = _serviceProvider.CreateScope();
-                            var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                            using IServiceScope scope = _serviceProvider.CreateScope();
+                            IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                             await repo.AddAsync(new ProMonitoringLog
                             {
                                 Timestamp = DateTime.UtcNow,

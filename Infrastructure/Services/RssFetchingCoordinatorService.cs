@@ -354,8 +354,8 @@ namespace Infrastructure.Services
                     // Background error log
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,

@@ -39,8 +39,8 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
         // This ensures that if the application restarts, it gets a new ID,
         // but a single running instance always uses the same ID.
         // In a containerized environment (like Docker/Kubernetes), the machine name (pod name) will be unique.
-        var processId = Process.GetCurrentProcess().Id;
-        var machineName = Environment.MachineName;
+        int processId = Process.GetCurrentProcess().Id;
+        string machineName = Environment.MachineName;
         _consumerId = $"{machineName}-{processId}";
         // --- END OF FIX ---
 
@@ -70,7 +70,7 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
                 {
                     TypeNameHandling = TypeNameHandling.All
                 });
-                await _redisDb.ListLeftPushAsync(_mainQueueKey, jsonUpdate);
+                _ = await _redisDb.ListLeftPushAsync(_mainQueueKey, jsonUpdate);
             }
             catch (JsonException jsonEx)
             {
@@ -118,14 +118,14 @@ public class RedisUpdateChannel : ITelegramUpdateChannel
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to deserialize update from Redis. Moving to dead-letter queue. JSON: {Json}", redisValue.ToString());
-                    await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
+                    _ = await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
                     continue;
                 }
 
                 if (update == null)
                 {
                     _logger.LogError("Deserialization resulted in a null Update object. Moving to dead-letter queue. JSON: {Json}", redisValue.ToString());
-                    await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
+                    _ = await _redisDb.ListMoveAsync(_processingQueueKey, _deadLetterQueueKey, ListSide.Left, ListSide.Left);
                     continue;
                 }
 

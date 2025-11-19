@@ -1,9 +1,6 @@
-using System;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace Shared.Security
 {
@@ -141,8 +138,11 @@ namespace Shared.Security
         /// <returns>Enhanced sanitized exception string with analysis</returns>
         public string Sanitize(Exception exception)
         {
-            if (exception == null) return "[NULL_EXCEPTION]";
-            
+            if (exception == null)
+            {
+                return "[NULL_EXCEPTION]";
+            }
+
             try
             {
                 return BuildEnhancedExceptionReport(exception, includeHash: false, includeEncryption: false);
@@ -161,8 +161,11 @@ namespace Shared.Security
         /// <returns>Enhanced sanitized exception string with hash and analysis</returns>
         public string Sanitize(Exception exception, bool includeHash)
         {
-            if (exception == null) return "[NULL_EXCEPTION]";
-            
+            if (exception == null)
+            {
+                return "[NULL_EXCEPTION]";
+            }
+
             try
             {
                 return BuildEnhancedExceptionReport(exception, includeHash, includeEncryption: false);
@@ -181,8 +184,11 @@ namespace Shared.Security
         /// <returns>Enhanced sanitized and encrypted exception string</returns>
         public string SanitizeWithEncryption(Exception exception, string? encryptionKey = null)
         {
-            if (exception == null) return "[NULL_EXCEPTION]";
-            
+            if (exception == null)
+            {
+                return "[NULL_EXCEPTION]";
+            }
+
             try
             {
                 return BuildEnhancedExceptionReport(exception, includeHash: true, includeEncryption: true, encryptionKey);
@@ -201,8 +207,11 @@ namespace Shared.Security
         /// <returns>Decrypted exception string</returns>
         public string DecryptException(string encryptedString, string? encryptionKey = null)
         {
-            if (string.IsNullOrEmpty(encryptedString)) return "[EMPTY_ENCRYPTED_STRING]";
-            
+            if (string.IsNullOrEmpty(encryptedString))
+            {
+                return "[EMPTY_ENCRYPTED_STRING]";
+            }
+
             try
             {
                 return DecryptString(encryptedString, encryptionKey);
@@ -217,77 +226,77 @@ namespace Shared.Security
         #region 🆕 NEW: Enhanced Private Methods
         private string BuildEnhancedExceptionReport(Exception exception, bool includeHash, bool includeEncryption, string? encryptionKey = null)
         {
-            var sb = new StringBuilder();
-            
+            StringBuilder sb = new();
+
             // 🆕 NEW: Exception Header with Category and Severity
             string exceptionType = exception.GetType().Name;
             string category = GetErrorCategory(exceptionType);
             string severity = GetErrorSeverity(category);
-            
-            sb.AppendLine($"🚨 {severity} | {category}");
-            sb.AppendLine($"💥 Exception Type: {exceptionType}");
-            sb.AppendLine($"🔢 Error Code: {GetErrorCode(exception)}");
-            sb.AppendLine();
+
+            _ = sb.AppendLine($"🚨 {severity} | {category}");
+            _ = sb.AppendLine($"💥 Exception Type: {exceptionType}");
+            _ = sb.AppendLine($"🔢 Error Code: {GetErrorCode(exception)}");
+            _ = sb.AppendLine();
 
             // 🆕 NEW: Enhanced Message Section
-            sb.AppendLine("📄 MESSAGE");
+            _ = sb.AppendLine("📄 MESSAGE");
             string sanitizedMessage = ApplySmartSanitization(exception.Message);
-            sb.AppendLine($"`{sanitizedMessage}`");
-            sb.AppendLine();
+            _ = sb.AppendLine($"`{sanitizedMessage}`");
+            _ = sb.AppendLine();
 
             // 🆕 NEW: Stack Trace Analysis
             if (exception.StackTrace != null)
             {
-                sb.AppendLine("🗺️ STACK TRACE ANALYSIS");
-                var stackAnalysis = AnalyzeStackTrace(exception.StackTrace);
-                sb.AppendLine($"📍 Primary Location: {stackAnalysis.PrimaryLocation}");
-                sb.AppendLine($"🔧 Method: {stackAnalysis.MethodName}");
-                sb.AppendLine($"📂 File: {stackAnalysis.FileName}");
-                sb.AppendLine($"#️⃣ Line: {stackAnalysis.LineNumber}");
-                sb.AppendLine();
+                _ = sb.AppendLine("🗺️ STACK TRACE ANALYSIS");
+                (string? PrimaryLocation, string? MethodName, string? FileName, int LineNumber) = AnalyzeStackTrace(exception.StackTrace);
+                _ = sb.AppendLine($"📍 Primary Location: {PrimaryLocation}");
+                _ = sb.AppendLine($"🔧 Method: {MethodName}");
+                _ = sb.AppendLine($"📂 File: {FileName}");
+                _ = sb.AppendLine($"#️⃣ Line: {LineNumber}");
+                _ = sb.AppendLine();
             }
 
             // 🆕 NEW: Intelligent Analysis and Suggestions
-            sb.AppendLine("🤖 INTELLIGENT ANALYSIS");
-            var suggestions = GetErrorSuggestions(category, exception);
-            foreach (var suggestion in suggestions)
+            _ = sb.AppendLine("🤖 INTELLIGENT ANALYSIS");
+            string[] suggestions = GetErrorSuggestions(category, exception);
+            foreach (string suggestion in suggestions)
             {
-                sb.AppendLine($"- {suggestion}");
+                _ = sb.AppendLine($"- {suggestion}");
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
 
             // 🆕 NEW: Inner Exception Analysis
             if (exception.InnerException != null)
             {
-                sb.AppendLine("🔗 INNER EXCEPTION");
+                _ = sb.AppendLine("🔗 INNER EXCEPTION");
                 string innerType = exception.InnerException.GetType().Name;
                 string innerCategory = GetErrorCategory(innerType);
-                sb.AppendLine($"Type: {innerType} ({innerCategory})");
-                sb.AppendLine($"Message: `{ApplySmartSanitization(exception.InnerException.Message)}`");
-                sb.AppendLine();
+                _ = sb.AppendLine($"Type: {innerType} ({innerCategory})");
+                _ = sb.AppendLine($"Message: `{ApplySmartSanitization(exception.InnerException.Message)}`");
+                _ = sb.AppendLine();
             }
 
             // 🆕 NEW: Context Information
-            sb.AppendLine("📊 CONTEXT INFO");
-            sb.AppendLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC");
-            sb.AppendLine($"Environment: {Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Unknown"}");
-            sb.AppendLine($"Machine: {Environment.MachineName}");
-            sb.AppendLine($"Process ID: {Environment.ProcessId}");
-            sb.AppendLine();
+            _ = sb.AppendLine("📊 CONTEXT INFO");
+            _ = sb.AppendLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC");
+            _ = sb.AppendLine($"Environment: {Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Unknown"}");
+            _ = sb.AppendLine($"Machine: {Environment.MachineName}");
+            _ = sb.AppendLine($"Process ID: {Environment.ProcessId}");
+            _ = sb.AppendLine();
 
             // Security features
             if (includeHash)
             {
                 string hash = GenerateSecurityHash(exception.ToString());
-                sb.AppendLine($"🔐 Security Hash: {hash}");
+                _ = sb.AppendLine($"🔐 Security Hash: {hash}");
             }
 
             if (includeEncryption)
             {
                 string encryptedOriginal = EncryptString(exception.ToString(), encryptionKey);
                 string hash = GenerateSecurityHash(exception.ToString());
-                sb.AppendLine($"🔐 Security Hash: {hash}");
-                sb.AppendLine($"🔒 Encrypted Original: {encryptedOriginal}");
+                _ = sb.AppendLine($"🔐 Security Hash: {hash}");
+                _ = sb.AppendLine($"🔒 Encrypted Original: {encryptedOriginal}");
             }
 
             return sb.ToString();
@@ -295,24 +304,27 @@ namespace Shared.Security
 
         private string ApplySmartSanitization(string input)
         {
-            if (string.IsNullOrEmpty(input)) return "[EMPTY_MESSAGE]";
-            
+            if (string.IsNullOrEmpty(input))
+            {
+                return "[EMPTY_MESSAGE]";
+            }
+
             string sanitized = input;
-            
+
             // Apply pattern-based redaction only for truly sensitive data
             for (int i = 0; i < SensitivePatterns.Length && i < RedactedReplacements.Length; i++)
             {
-                sanitized = Regex.Replace(sanitized, SensitivePatterns[i], RedactedReplacements[i], 
+                sanitized = Regex.Replace(sanitized, SensitivePatterns[i], RedactedReplacements[i],
                     RegexOptions.IgnoreCase | RegexOptions.Multiline);
             }
-            
+
             // 🆕 NEW: Preserve important error details while redacting sensitive parts
             // Only redact specific sensitive patterns, not entire messages
-            sanitized = Regex.Replace(sanitized, @"(?:password|pwd)\s*=\s*[^;\s]+", "[PASSWORD_REDACTED]", 
+            sanitized = Regex.Replace(sanitized, @"(?:password|pwd)\s*=\s*[^;\s]+", "[PASSWORD_REDACTED]",
                 RegexOptions.IgnoreCase);
-            sanitized = Regex.Replace(sanitized, @"(?:token|secret)\s*=\s*[a-zA-Z0-9\-_]{20,}", "[TOKEN_REDACTED]", 
+            sanitized = Regex.Replace(sanitized, @"(?:token|secret)\s*=\s*[a-zA-Z0-9\-_]{20,}", "[TOKEN_REDACTED]",
                 RegexOptions.IgnoreCase);
-            
+
             return sanitized;
         }
 
@@ -329,22 +341,21 @@ namespace Shared.Security
         private string GetErrorCode(Exception exception)
         {
             // 🆕 NEW: Extract meaningful error codes
-            if (exception is System.Data.SqlClient.SqlException sqlEx)
-                return $"SQL-{sqlEx.Number}";
-            if (exception is Npgsql.PostgresException pgEx)
-                return $"PG-{pgEx.SqlState}";
-            if (exception is System.Net.Http.HttpRequestException httpEx)
-                return $"HTTP-{GetHttpStatusCode(httpEx)}";
-            if (exception is System.ComponentModel.Win32Exception win32Ex)
-                return $"WIN32-{win32Ex.NativeErrorCode}";
-            
-            return $"GEN-{Math.Abs(exception.GetHashCode() % 10000):D4}";
+            return exception is System.Data.SqlClient.SqlException sqlEx
+                ? $"SQL-{sqlEx.Number}"
+                : exception is Npgsql.PostgresException pgEx
+                ? $"PG-{pgEx.SqlState}"
+                : exception is System.Net.Http.HttpRequestException httpEx
+                ? $"HTTP-{GetHttpStatusCode(httpEx)}"
+                : exception is System.ComponentModel.Win32Exception win32Ex
+                ? $"WIN32-{win32Ex.NativeErrorCode}"
+                : $"GEN-{Math.Abs(exception.GetHashCode() % 10000):D4}";
         }
 
         private int GetHttpStatusCode(System.Net.Http.HttpRequestException httpEx)
         {
             // Try to extract HTTP status code from the exception
-            var statusMatch = Regex.Match(httpEx.Message, @"(\d{3})");
+            Match statusMatch = Regex.Match(httpEx.Message, @"(\d{3})");
             return statusMatch.Success ? int.Parse(statusMatch.Groups[1].Value) : 0;
         }
 
@@ -352,19 +363,19 @@ namespace Shared.Security
         {
             try
             {
-                var lines = stackTrace.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                
+                string[] lines = stackTrace.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
                 // Find the first non-framework line
-                foreach (var line in lines)
+                foreach (string line in lines)
                 {
-                    var match = Regex.Match(line.Trim(), @"at\s+(.+)\s+in\s+(.+):line\s+(\d+)");
+                    Match match = Regex.Match(line.Trim(), @"at\s+(.+)\s+in\s+(.+):line\s+(\d+)");
                     if (match.Success)
                     {
                         string methodName = match.Groups[1].Value;
                         string filePath = match.Groups[2].Value;
                         int lineNumber = int.Parse(match.Groups[3].Value);
                         string fileName = System.IO.Path.GetFileName(filePath);
-                        
+
                         // Skip framework and system methods
                         if (!IsFrameworkMethod(methodName))
                         {
@@ -372,9 +383,9 @@ namespace Shared.Security
                         }
                     }
                 }
-                
+
                 // Fallback to first line
-                var fallbackMatch = Regex.Match(lines.FirstOrDefault() ?? "", @"at\s+(.+)\s+in\s+(.+):line\s+(\d+)");
+                Match fallbackMatch = Regex.Match(lines.FirstOrDefault() ?? "", @"at\s+(.+)\s+in\s+(.+):line\s+(\d+)");
                 if (fallbackMatch.Success)
                 {
                     return (
@@ -386,13 +397,13 @@ namespace Shared.Security
                 }
             }
             catch { }
-            
+
             return ("Unknown", "Unknown", "Unknown", 0);
         }
 
         private bool IsFrameworkMethod(string methodName)
         {
-            var frameworkNames = new[] { "System.", "Microsoft.", "mscorlib", "netstandard" };
+            string[] frameworkNames = new[] { "System.", "Microsoft.", "mscorlib", "netstandard" };
             return frameworkNames.Any(framework => methodName.StartsWith(framework, StringComparison.OrdinalIgnoreCase));
         }
 
@@ -402,47 +413,50 @@ namespace Shared.Security
             {
                 return suggestions;
             }
-            
+
             // 🆕 NEW: Dynamic suggestions based on exception content
-            var dynamicSuggestions = new List<string>();
-            
+            List<string> dynamicSuggestions = [];
+
             if (exception.Message.Contains("connection", StringComparison.OrdinalIgnoreCase))
             {
                 dynamicSuggestions.Add("🔍 Check network connectivity and firewall settings");
                 dynamicSuggestions.Add("🔗 Verify connection strings and endpoints");
             }
-            
+
             if (exception.Message.Contains("permission", StringComparison.OrdinalIgnoreCase))
             {
                 dynamicSuggestions.Add("🔐 Verify user permissions and access rights");
                 dynamicSuggestions.Add("👤 Check authentication and authorization");
             }
-            
+
             if (exception.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
             {
                 dynamicSuggestions.Add("⏱️ Increase timeout values or optimize performance");
                 dynamicSuggestions.Add("🔄 Implement retry logic with exponential backoff");
             }
-            
+
             if (dynamicSuggestions.Count == 0)
             {
                 dynamicSuggestions.Add("🔍 Review the stack trace for specific error details");
                 dynamicSuggestions.Add("📋 Check application logs for additional context");
                 dynamicSuggestions.Add("🔄 Consider restarting the affected service");
             }
-            
+
             return dynamicSuggestions.ToArray();
         }
 
         private static string GenerateSecurityHash(string input)
         {
-            if (string.IsNullOrEmpty(input)) return "[EMPTY_HASH]";
-            
+            if (string.IsNullOrEmpty(input))
+            {
+                return "[EMPTY_HASH]";
+            }
+
             try
             {
-                using var sha256 = SHA256.Create();
+                using SHA256 sha256 = SHA256.Create();
                 byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
-                return Convert.ToBase64String(hashBytes).Substring(0, 16); // First 16 chars for readability
+                return Convert.ToBase64String(hashBytes)[..16]; // First 16 chars for readability
             }
             catch
             {
@@ -452,20 +466,23 @@ namespace Shared.Security
 
         private static string EncryptString(string plainText, string? key = null)
         {
-            if (string.IsNullOrEmpty(plainText)) return "[EMPTY_PLAINTEXT]";
-            
+            if (string.IsNullOrEmpty(plainText))
+            {
+                return "[EMPTY_PLAINTEXT]";
+            }
+
             try
             {
                 string encryptionKey = key ?? GetDefaultEncryptionKey();
-                
-                using var aes = Aes.Create();
-                aes.Key = Encoding.UTF8.GetBytes(encryptionKey.PadRight(32).Substring(0, 32));
+
+                using Aes aes = Aes.Create();
+                aes.Key = Encoding.UTF8.GetBytes(encryptionKey.PadRight(32)[..32]);
                 aes.IV = new byte[16]; // Zero IV for simplicity (use random IV in production)
-                
-                using var encryptor = aes.CreateEncryptor();
+
+                using ICryptoTransform encryptor = aes.CreateEncryptor();
                 byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
                 byte[] encryptedBytes = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
-                
+
                 return Convert.ToBase64String(encryptedBytes);
             }
             catch (Exception ex)
@@ -476,20 +493,23 @@ namespace Shared.Security
 
         private static string DecryptString(string encryptedText, string? key = null)
         {
-            if (string.IsNullOrEmpty(encryptedText)) return "[EMPTY_ENCRYPTED_TEXT]";
-            
+            if (string.IsNullOrEmpty(encryptedText))
+            {
+                return "[EMPTY_ENCRYPTED_TEXT]";
+            }
+
             try
             {
                 string encryptionKey = key ?? GetDefaultEncryptionKey();
-                
-                using var aes = Aes.Create();
-                aes.Key = Encoding.UTF8.GetBytes(encryptionKey.PadRight(32).Substring(0, 32));
+
+                using Aes aes = Aes.Create();
+                aes.Key = Encoding.UTF8.GetBytes(encryptionKey.PadRight(32)[..32]);
                 aes.IV = new byte[16]; // Zero IV for simplicity
-                
-                using var decryptor = aes.CreateDecryptor();
+
+                using ICryptoTransform decryptor = aes.CreateDecryptor();
                 byte[] encryptedBytes = Convert.FromBase64String(encryptedText);
                 byte[] decryptedBytes = decryptor.TransformFinalBlock(encryptedBytes, 0, encryptedBytes.Length);
-                
+
                 return Encoding.UTF8.GetString(decryptedBytes);
             }
             catch (Exception ex)
@@ -506,4 +526,4 @@ namespace Shared.Security
         }
         #endregion
     }
-} 
+}

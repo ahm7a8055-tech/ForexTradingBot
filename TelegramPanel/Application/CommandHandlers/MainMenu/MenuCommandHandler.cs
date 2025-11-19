@@ -42,7 +42,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         #endregion
 
         #region Constructor
-        public MenuCommandHandler(ILogger<MenuCommandHandler> logger, ITelegramMessageSender messageSender, IMemoryCacheService<UiCacheEntry> uiCache , IServiceProvider serviceProvider)
+        public MenuCommandHandler(ILogger<MenuCommandHandler> logger, ITelegramMessageSender messageSender, IMemoryCacheService<UiCacheEntry> uiCache, IServiceProvider serviceProvider)
         {
 
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -190,9 +190,9 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 // --- ENHANCEMENT: Log the failure to the database in a background task ---
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
                     // We resolve the repository here to avoid making it a direct dependency of this handler.
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,

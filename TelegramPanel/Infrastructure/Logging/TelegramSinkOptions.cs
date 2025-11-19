@@ -15,7 +15,7 @@ namespace TelegramPanel.Infrastructure.Logging
         public string BotToken { get; set; } = string.Empty;
 
         [Required, MinLength(1, ErrorMessage = "At least one Admin User ID is required.")]
-        public List<long> AdminUserIds { get; set; } = new();
+        public List<long> AdminUserIds { get; set; } = [];
 
         public string? DashboardUrl { get; set; }
         public TimeSpan ThrottlingPeriod { get; set; } = TimeSpan.FromMinutes(5);

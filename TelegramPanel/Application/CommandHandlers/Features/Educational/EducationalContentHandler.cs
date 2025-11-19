@@ -454,7 +454,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Educational
             string absolutePath = Path.Combine(BaseLearningPath, relativePath);
             string title = BuildBreadcrumbTitle(relativePath);
 
-            List<InlineKeyboardButton> allItems = new();
+            List<InlineKeyboardButton> allItems = [];
 
             try
             {
@@ -492,7 +492,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Educational
             // --- Keyboard Assembly ---
             List<List<InlineKeyboardButton>> keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
 
-            List<InlineKeyboardButton> navButtons = new();
+            List<InlineKeyboardButton> navButtons = [];
             string encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
             if (page > 1)
             {
@@ -551,7 +551,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Educational
             try
             {
                 // --- STEP 2: Open File Stream and Prepare InputFile ---
-                FileStream? fileStream = new FileStream(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                FileStream? fileStream = new(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 InputFile? inputFile = InputFile.FromStream(fileStream, fileName);
 
                 // --- FIX: Truncate caption to prevent exceeding Telegram's limits ---
@@ -673,7 +673,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Educational
         {
             List<List<InlineKeyboardButton>> keyboardRows = itemsForPage.Select(b => new List<InlineKeyboardButton> { b }).ToList();
 
-            List<InlineKeyboardButton> navButtons = new();
+            List<InlineKeyboardButton> navButtons = [];
             string encodedCurrentPath = EncodeUrlSafeBase64(relativePath);
             if (page > 1)
             {

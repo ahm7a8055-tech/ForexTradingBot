@@ -172,7 +172,7 @@ namespace Infrastructure.ExternalServices
             string endpoint = "getInvoices";
             if (request != null)
             {
-                List<string> queryParams = new();
+                List<string> queryParams = [];
                 if (!string.IsNullOrWhiteSpace(request.Asset))
                 {
                     queryParams.Add($"asset={request.Asset}");

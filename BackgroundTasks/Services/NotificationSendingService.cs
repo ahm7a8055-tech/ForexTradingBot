@@ -25,8 +25,6 @@ using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TelegramPanel.Formatters; // For TelegramMessageFormatter
 using static TelegramPanel.Infrastructure.ActualTelegramMessageActions;
-using TelegramPanel.Application.CommandHandlers.MainMenu;
-using Shared.Utilities.DependencyInjection;
 #endregion
 
 namespace BackgroundTasks.Services
@@ -708,7 +706,7 @@ namespace BackgroundTasks.Services
 
             _logger.LogTrace("Building Telegram keyboard with {ButtonCount} initial buttons.", buttons.Count);
 
-            List<InlineKeyboardButton> validButtons = new();
+            List<InlineKeyboardButton> validButtons = [];
 
             foreach (NotificationButton button in buttons)
             {
@@ -821,8 +819,8 @@ namespace BackgroundTasks.Services
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -849,8 +847,8 @@ namespace BackgroundTasks.Services
                         // Background error log
                         _ = Task.Run(async () =>
                         {
-                            using var scope = _serviceProvider.CreateScope();
-                            var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                            using IServiceScope scope = _serviceProvider.CreateScope();
+                            IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                             await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                             {
                                 Timestamp = DateTime.UtcNow,
@@ -876,8 +874,8 @@ namespace BackgroundTasks.Services
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1049,7 +1047,7 @@ namespace BackgroundTasks.Services
             // A more robust approach is to split by potential paragraph terminators, clean each paragraph, and rejoin.
 
             // Split into potential paragraphs (using double newline as a strong indicator)
-            var paragraphs = cleaned.Split(new[] { "\r\n\r\n", "\n\n", "\r\r" }, StringSplitOptions.RemoveEmptyEntries);
+            string[] paragraphs = cleaned.Split(new[] { "\r\n\r\n", "\n\n", "\r\r" }, StringSplitOptions.RemoveEmptyEntries);
 
             for (int i = 0; i < paragraphs.Length; i++)
             {
@@ -1087,13 +1085,11 @@ namespace BackgroundTasks.Services
             StringBuilder messageTextBuilder = new();
 
             // --- In-Method Strategy: Escaping Logic ---
-            Func<string?, string> escapeMarkdownV2 = (input) =>
+            static string escapeMarkdownV2(string? input)
             {
-                if (string.IsNullOrEmpty(input))
-                {
-                    return string.Empty;
-                }
-                return input
+                return string.IsNullOrEmpty(input)
+                    ? string.Empty
+                    : input
                     .Replace("_", "\\_")
                     .Replace("*", "\\*")
                     .Replace("[", "\\[")
@@ -1110,7 +1106,7 @@ namespace BackgroundTasks.Services
                     .Replace("|", "\\|")
                     .Replace("{", "\\{")
                     .Replace("}", "\\}");
-            };
+            }
             // --- End In-Method Strategy: Escaping Logic ---
 
 
@@ -1118,17 +1114,15 @@ namespace BackgroundTasks.Services
 
             // 1. Process and escape Title, using cleaned content
             string title = escapeMarkdownV2(CleanRawContent(newsItem.Title)?.Trim() ?? "Untitled News");
-            messageTextBuilder.AppendLine($"*{title}*");
+            _ = messageTextBuilder.AppendLine($"*{title}*");
 
             // 2. Process and escape Source Name, using cleaned content
             string sourceName = escapeMarkdownV2(CleanRawContent(newsItem.SourceName)?.Trim() ?? "Unknown Source");
-            messageTextBuilder.AppendLine(); // Blank line for separation
-            messageTextBuilder.AppendLine($"_{sourceName}_");
+            _ = messageTextBuilder.AppendLine(); // Blank line for separation
+            _ = messageTextBuilder.AppendLine($"_{sourceName}_");
 
             // 3. Process and escape Summary, using cleaned content
             string summaryRaw = CleanRawContent(newsItem.Summary ?? string.Empty);
-            string formattedSummary = string.Empty;
-
             if (!string.IsNullOrWhiteSpace(summaryRaw))
             {
                 // Apply escaping *after* cleaning and paragraph structuring
@@ -1136,10 +1130,9 @@ namespace BackgroundTasks.Services
 
                 // Re-structure paragraphs after escaping, ensuring proper separation.
                 // (This step is already integrated into CleanRawContent, so we just use its output)
-                formattedSummary = summaryEscaped;
-
-                messageTextBuilder.AppendLine(); // Blank line for visual separation
-                messageTextBuilder.AppendLine(formattedSummary);
+                string formattedSummary = summaryEscaped;
+                _ = messageTextBuilder.AppendLine(); // Blank line for visual separation
+                _ = messageTextBuilder.AppendLine(formattedSummary);
             }
 
             // 4. Process and add Link
@@ -1147,7 +1140,7 @@ namespace BackgroundTasks.Services
 
             if (!string.IsNullOrWhiteSpace(link) && Uri.TryCreate(link, UriKind.Absolute, out _))
             {
-                messageTextBuilder.AppendLine(); // Blank line for visual separation
+                _ = messageTextBuilder.AppendLine(); // Blank line for visual separation
             }
             // --- End In-Method Strategy: Data Preparation and Formatting ---
 

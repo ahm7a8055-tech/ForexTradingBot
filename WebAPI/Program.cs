@@ -41,6 +41,10 @@ using WebAPI.Middleware; // Added for AuthRedirectMiddleware
 // ✅ NEW USINGS FOR HEALTH CHECKS
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using System.Net;
+using Application.Common.Interfaces.Admin;
+using Infrastructure.Services.Admin;
+
 #endregion
 
 #region Main Program logger
@@ -62,8 +66,8 @@ Log.Logger = new LoggerConfiguration()
 AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
 {
     // SECURITY: Sanitize exception details to prevent sensitive data exposure
-    var exception = (Exception)eventArgs.ExceptionObject;
-    var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(exception); // High security for Telegram
+    Exception exception = (Exception)eventArgs.ExceptionObject;
+    string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(exception); // High security for Telegram
     Log.Fatal(sanitizedDetails, "FATAL UNHANDLED EXCEPTION");
     Log.CloseAndFlush(); // Ensure the fatal log is sent before the app dies
 };
@@ -88,8 +92,8 @@ try
 
     #region WebApplicationBuilder Setup (region master)
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
-    builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "True");
-    builder.WebHost.UseSetting("UseLaunchSettings", "false");
+    _ = builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "True");
+    _ = builder.WebHost.UseSetting("UseLaunchSettings", "false");
 
     // AI-FRIENDLY: Create a small SQLite-backed store for wizard settings.
     // The DB file will live under ContentRootPath/easysetup_config.db
@@ -105,7 +109,7 @@ try
         var persistedSettings = easySetupStore.LoadAll();
         if (persistedSettings.Count > 0)
         {
-            ((IConfigurationBuilder)builder.Configuration).AddInMemoryCollection(persistedSettings);
+            _ = builder.Configuration.AddInMemoryCollection(persistedSettings);
         }
     }
     catch (Exception ex)
@@ -128,9 +132,10 @@ try
     // 3) In smoke-test mode, ensure a quick SQLite DB so EF/Hangfire don't break.
     if (isSmokeTest)
     {
-        // A) FIX: Bind to 0.0.0.0:80 so Docker port mapping (-p 8080:80) works.
-        //    Previously "localhost:5000" made the app unreachable from outside the container.
-        builder.Configuration["Urls"] = "http://0.0.0.0:80";
+        // A) FIX: Bind to 0.0.0.0:5000. 
+        //    - "0.0.0.0" ensures it's reachable from outside the Docker container.
+        //    - "5000" is a non-privileged port, safe for Linux/Windows runners without sudo/admin.
+        builder.Configuration["Urls"] = "http://0.0.0.0:5000";
 
         // B) Force a quick SQLite DB, overriding any other settings to ensure isolation.
         const string smokeConn = "Data Source=smoketest.db";
@@ -142,7 +147,7 @@ try
         easySetupStore?.Save("DatabaseSettings:DatabaseProvider", "sqlite", isSensitive: false);
         easySetupStore?.Save("ConnectionStrings:DefaultConnection", smokeConn, isSensitive: true);
 
-        Log.Information("[SmokeTest] Overriding configuration for smoke test: URL=http://0.0.0.0:80, DB=SQLite");
+        Log.Information("[SmokeTest] Overriding configuration for smoke test: URL=http://0.0.0.0:5000, DB=SQLite");
     }
 
     // 4) Run the Easy Setup Wizard (DB + BotToken + optional secrets).
@@ -153,9 +158,9 @@ try
 
     // --- Custom Configuration Source Registration ---
     // This needs to happen early. We use ConfigureAppConfiguration.
-    builder.Host.ConfigureAppConfiguration((hostingContext, configAppBuilder) =>
+    _ = builder.Host.ConfigureAppConfiguration((hostingContext, configAppBuilder) =>
     {
-        var tempInitialConfig = configAppBuilder.Build();
+        IConfigurationRoot tempInitialConfig = configAppBuilder.Build();
 
         // AI-FRIENDLY FIX: Re-check for smoke test mode. If true, skip adding the
         // database configuration source entirely. This prevents a crash when the
@@ -167,8 +172,8 @@ try
             return;
         }
 
-        var tempServices = new ServiceCollection();
-        tempServices.AddSingleton<IConfiguration>(tempInitialConfig);
+        ServiceCollection tempServices = new();
+        _ = tempServices.AddSingleton<IConfiguration>(tempInitialConfig);
 
         string? defaultConnectionString = tempInitialConfig.GetConnectionString("DefaultConnection");
         string? dbProviderForDynamicConfig = tempInitialConfig.GetValue<string>("DatabaseSettings:DatabaseProvider")?.ToLowerInvariant() ?? "postgres";
@@ -179,33 +184,26 @@ try
             return; // Do not add DB-based config source; app will still run.
         }
 
-        if (dbProviderForDynamicConfig == "sqlite")
-        {
-            tempServices.AddDbContext<AppDbContext>(options => options.UseSqlite(defaultConnectionString), ServiceLifetime.Singleton);
-        }
-        else if (dbProviderForDynamicConfig == "sqlserver")
-        {
-            tempServices.AddDbContext<AppDbContext>(options => options.UseSqlServer(defaultConnectionString), ServiceLifetime.Singleton);
-        }
-        else // Default: PostgreSQL
-        {
-            tempServices.AddDbContext<AppDbContext>(options => options.UseNpgsql(defaultConnectionString), ServiceLifetime.Singleton);
-        }
+        _ = dbProviderForDynamicConfig == "sqlite"
+            ? tempServices.AddDbContext<AppDbContext>(options => options.UseSqlite(defaultConnectionString), ServiceLifetime.Singleton)
+            : dbProviderForDynamicConfig == "sqlserver"
+                ? tempServices.AddDbContext<AppDbContext>(options => options.UseSqlServer(defaultConnectionString), ServiceLifetime.Singleton)
+                : tempServices.AddDbContext<AppDbContext>(options => options.UseNpgsql(defaultConnectionString), ServiceLifetime.Singleton);
 
-        var keysFolderTemp = Path.Combine(hostingContext.HostingEnvironment.ContentRootPath, "keys");
-        Directory.CreateDirectory(keysFolderTemp);
+        string keysFolderTemp = Path.Combine(hostingContext.HostingEnvironment.ContentRootPath, "keys");
+        _ = Directory.CreateDirectory(keysFolderTemp);
 
-        tempServices.AddDataProtection()
+        _ = tempServices.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(keysFolderTemp))
             .SetApplicationName("ForexTradingBot");
 
-        tempServices.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
-        tempServices.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
-        tempServices.AddLogging(lb => lb.AddSerilog(Log.Logger));
+        _ = tempServices.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
+        _ = tempServices.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
+        _ = tempServices.AddLogging(lb => lb.AddSerilog(Log.Logger));
 
-        Action<IDynamicConfigurationService, IConfigurationBuilder> registerSettingsAction = (service, currentConfigBuilder) =>
+        void registerSettingsAction(IDynamicConfigurationService service, IConfigurationBuilder currentConfigBuilder)
         {
-            var configForDefaults = currentConfigBuilder.Build();
+            IConfigurationRoot configForDefaults = currentConfigBuilder.Build();
 
             Log.Information("Registering defined settings with DynamicConfigurationService (within ConfigureAppConfiguration)...");
 
@@ -254,19 +252,19 @@ try
             RegisterSetting("OperationalFlags:EnableForwardingModule", false, "Feature flag for auto-forwarding module.");
 
             Log.Information("All defined settings registered with DynamicConfigurationService (within ConfigureAppConfiguration).");
-        };
+        }
 
-        configAppBuilder.Add(new DatabaseConfigurationSource(tempServices, registerSettingsAction));
+        _ = configAppBuilder.Add(new DatabaseConfigurationSource(tempServices, registerSettingsAction));
         Log.Information("DatabaseConfigurationSource added via ConfigureAppConfiguration.");
     });
     // --- End of Custom Configuration Source Registration ---
 
     _ = builder.WebHost.UseKestrel();
-    builder.Services.AddSingleton<TelegramAdminSink>();
+    _ = builder.Services.AddSingleton<TelegramAdminSink>();
     // --- AUTO-FIX FOR SMOKETEST: Provide SQLite connection if missing ---
     if (isSmokeTest)
     {
-        builder.Services.AddSingleton<ICryptoPayApiClient, DisabledCryptoPayApiClient>();
+        _ = builder.Services.AddSingleton<ICryptoPayApiClient, DisabledCryptoPayApiClient>();
 
         string? smokeTestConn = builder.Configuration.GetConnectionString("DefaultConnection");
         if (string.IsNullOrWhiteSpace(smokeTestConn))
@@ -332,9 +330,9 @@ try
     {
         Log.Information("[SmokeTest] Bypassing Redis setup and using in-memory fallback.");
 
-        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        _ = builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+            ILogger<FallbackRedisService> logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
 
@@ -343,14 +341,14 @@ try
     else
     {
         // 1) Determine / prepare connection string
-        var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+        string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
         if (string.IsNullOrWhiteSpace(redisConnectionString))
         {
             Log.Warning("Redis connection string not found. Attempting to start embedded Redis server for this session.");
 
             // Embedded Redis به عنوان HostedService بالا می‌آید
-            builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
+            _ = builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
 
             redisConnectionString = "localhost:6379";
             builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
@@ -366,7 +364,7 @@ try
         }
 
         // 2) Prepare Redis options once (no network I/O here)
-        var redisOptions = ConfigurationOptions.Parse(redisConnectionString);
+        ConfigurationOptions redisOptions = ConfigurationOptions.Parse(redisConnectionString);
         redisOptions.AbortOnConnectFail = false;
         redisOptions.ConnectTimeout = 10000;
         redisOptions.SyncTimeout = 10000;
@@ -374,16 +372,16 @@ try
         // 3) Register a resilient singleton that either:
         //    - returns a real ConnectionMultiplexer, OR
         //    - transparently falls back to in-memory implementation on failure.
-        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        _ = builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            var logger = sp.GetRequiredService<ILogger<Program>>();
+            ILogger<Program> logger = sp.GetRequiredService<ILogger<Program>>();
 
             try
             {
-                var endpoint = redisOptions.EndPoints.FirstOrDefault();
+                EndPoint? endpoint = redisOptions.EndPoints.FirstOrDefault();
                 logger.LogInformation("Creating Redis ConnectionMultiplexer for {Endpoint}...", endpoint);
 
-                var mux = ConnectionMultiplexer.Connect(redisOptions);
+                ConnectionMultiplexer mux = ConnectionMultiplexer.Connect(redisOptions);
 
                 logger.LogInformation("Redis ConnectionMultiplexer successfully created for {Endpoint}.", endpoint);
                 return mux;
@@ -393,7 +391,7 @@ try
                 logger.LogError(ex,
                     "Failed to create Redis ConnectionMultiplexer. Falling back to in-memory Redis (FallbackRedisService).");
 
-                var fallbackLogger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+                ILogger<FallbackRedisService> fallbackLogger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
                 return new Infrastructure.Services.FallbackRedisService(fallbackLogger);
             }
         });
@@ -409,9 +407,9 @@ try
     #endregion
 
     #region AutoMapper and LoggingSanitizer (region master)
-    builder.Services.AddAutoMapper(typeof(Program));
-    builder.Services.AddSingleton<Application.Common.Interfaces.ILoggingSanitizer, Infrastructure.Security.PiiLoggingSanitizer>();
-    builder.Services.AddSingleton<Shared.Security.IExceptionSanitizer, Shared.Security.ExceptionSanitizer>();
+    _ = builder.Services.AddAutoMapper(typeof(Program));
+    _ = builder.Services.AddSingleton<Application.Common.Interfaces.ILoggingSanitizer, Infrastructure.Security.PiiLoggingSanitizer>();
+    _ = builder.Services.AddSingleton<Shared.Security.IExceptionSanitizer, Shared.Security.ExceptionSanitizer>();
     #endregion
 
     #region Add Core ASP.NET Core Services (region master)
@@ -422,7 +420,7 @@ try
     AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported", true);
     // ------------------- ۲. اضافه کردن سرویس‌های پایه ASP.NET Core -------------------
     // فعال کردن پشتیبانی از کنترلرهای API
-    builder.Services
+    _ = builder.Services
         .AddControllers()
         .AddJsonOptions(options =>
         {
@@ -433,7 +431,7 @@ try
     _ = builder.Services.AddEndpointsApiExplorer();
 
     // Configure Cookie Authentication for Admin Dashboard
-    builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    _ = builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
         .AddCookie(options =>
         {
             options.Cookie.HttpOnly = true;
@@ -519,9 +517,9 @@ try
     #region Configure Application Options/Settings (region master)
 
 
-    builder.Services.Configure<AdminNotificationSettings>(
+    _ = builder.Services.Configure<AdminNotificationSettings>(
     builder.Configuration.GetSection(AdminNotificationSettings.SectionName));
-    builder.Services.AddSingleton<INotificationToAdminService, NotificationToAdminService>();
+    _ = builder.Services.AddSingleton<INotificationToAdminService, NotificationToAdminService>();
     // ------------------- ۳. پیکربندی Options (خواندن تنظیمات از appsettings.json) -------------------
     // مپ کردن بخش "TelegramSettings" از appsettings.json به کلاس Domain.Settings.TelegramSettings
     // این کلاس می‌تواند شامل تنظیمات عمومی تلگرام مانند AdminUserId باشد.
@@ -557,25 +555,25 @@ try
     // The /keys folder must be accessible ONLY to the app's service account. Do not allow other users or admins access.
     // #endregion
     // Consider using Azure Blob Storage, Redis, or another provider for key persistence in a distributed environment.
-    var keysFolder = Path.Combine(builder.Environment.ContentRootPath, "keys");
-    Directory.CreateDirectory(keysFolder); // Ensure the directory exists
-    builder.Services.AddDataProtection()
+    string keysFolder = Path.Combine(builder.Environment.ContentRootPath, "keys");
+    _ = Directory.CreateDirectory(keysFolder); // Ensure the directory exists
+    _ = builder.Services.AddDataProtection()
         .PersistKeysToFileSystem(new DirectoryInfo(keysFolder))
         .SetApplicationName("ForexTradingBot"); // Unique application name to isolate keys
 
     // Register custom dynamic configuration services
-    builder.Services.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
-    builder.Services.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
+    _ = builder.Services.AddSingleton<ISettingsProtectionService, SettingsProtectionService>();
+    _ = builder.Services.AddSingleton<IDynamicConfigurationService, DynamicConfigurationService>();
 
     // Register other core infrastructure services that might be missing
     // Assuming Scoped lifetime is appropriate as they often use DbContext or HttpClientFactory.
-    builder.Services.AddScoped<ISettingsService, SettingsService>();
-    builder.Services.AddScoped<IDiagnosticsService, DiagnosticsService>();
+    _ = builder.Services.AddScoped<ISettingsService, SettingsService>();
+    _ = builder.Services.AddScoped<IDiagnosticsService, DiagnosticsService>();
     Log.Information("Data Protection, Dynamic Configuration, Settings, and Diagnostics services registered.");
 
     // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
 
-    var configBuilder = builder.Configuration;
+    ConfigurationManager configBuilder = builder.Configuration;
 
     // --- FINAL VALIDATION: Ensure connection string is valid before infrastructure registration ---
     _ = builder.Services.AddInfrastructureServices(builder.Configuration, isSmokeTest);
@@ -612,16 +610,16 @@ try
             Log.Information("✅ Auto-Forwarding feature ENABLED. Registering REAL services...");
 
             // Register the REAL implementation and all its dependencies
-            builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(
+            _ = builder.Services.Configure<Infrastructure.Settings.TelegramUserApiSettings>(
                 builder.Configuration.GetSection("TelegramUserApi"));
 
-            builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
-            builder.Services.AddHostedService<TelegramUserApiInitializationService>();
+            _ = builder.Services.AddSingleton<ITelegramUserApiClient, TelegramUserApiClient>();
+            _ = builder.Services.AddHostedService<TelegramUserApiInitializationService>();
 
-            builder.Services.AddForwardingInfrastructure();
-            builder.Services.AddForwardingServices();
-            builder.Services.AddForwardingOrchestratorServices();
-            builder.Services.AddTelegramPanelForwardingServices();
+            _ = builder.Services.AddForwardingInfrastructure();
+            _ = builder.Services.AddForwardingServices();
+            _ = builder.Services.AddForwardingOrchestratorServices();
+            _ = builder.Services.AddTelegramPanelForwardingServices();
 
             Log.Information("All Auto-Forwarding services have been successfully registered.");
         }
@@ -632,7 +630,7 @@ try
 
             // Register the DISABLED implementation. This satisfies the DI container
             // for any service that requires ITelegramUserApiClient, preventing a crash.
-            builder.Services.AddSingleton<ITelegramUserApiClient, DisabledTelegramUserApiClient>();
+            _ = builder.Services.AddSingleton<ITelegramUserApiClient, DisabledTelegramUserApiClient>();
         }
 
 
@@ -645,7 +643,7 @@ try
         {
             // The service is ONLY registered if the feature is enabled.
             // This prevents the constructor from ever being called if the token is missing.
-            builder.Services.AddHttpClient<Application.Common.Interfaces.ICryptoPayApiClient, CryptoPayApiClient>()
+            _ = builder.Services.AddHttpClient<Application.Common.Interfaces.ICryptoPayApiClient, CryptoPayApiClient>()
                 .AddTypedClient((httpClient, serviceProvider) =>
                 {
                     IOptions<CryptoPaySettings> options = serviceProvider.GetRequiredService<IOptions<CryptoPaySettings>>();
@@ -658,7 +656,7 @@ try
         else
         {
             // Register a disabled implementation to avoid DI errors
-            builder.Services.AddSingleton<Application.Common.Interfaces.ICryptoPayApiClient, Infrastructure.ExternalServices.DisabledCryptoPayApiClient>();
+            _ = builder.Services.AddSingleton<Application.Common.Interfaces.ICryptoPayApiClient, Infrastructure.ExternalServices.DisabledCryptoPayApiClient>();
             Log.Information("ℹ️ CryptoPay feature DISABLED (CryptoPay secrets not found or were skipped). Using DisabledCryptoPayApiClient.");
         }
 
@@ -687,7 +685,7 @@ try
             // This is not a fatal error, so we just log it and continue.
             // The app might be connecting to a remote or non-service SQL instance.
             // SECURITY: Sanitize exception details to prevent sensitive data exposure
-            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(exSql); // High security for Telegram
+            string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(exSql); // High security for Telegram
             Log.Warning(sanitizedDetails, "Could not ensure local SQL Server services are running. This may be expected.");
         }
     }
@@ -715,10 +713,10 @@ try
     // =========================================================================
     // ✅✅ CORRECTED HANGFIRE CONFIGURATION (PROVIDER-AWARE) ✅✅
     // =========================================================================
-    builder.Services.AddHangfire(config =>
+    _ = builder.Services.AddHangfire(config =>
     {
         // Apply the JSON serializer settings first, as they are needed regardless of storage.
-        config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
+        _ = config.UseSerializerSettings(new Newtonsoft.Json.JsonSerializerSettings
         {
             TypeNameHandling = Newtonsoft.Json.TypeNameHandling.All
         });
@@ -727,7 +725,7 @@ try
         if (isSmokeTest)
         {
             Log.Information("✅ Smoke Test: Configuring Hangfire with In-Memory storage.");
-            config.UseMemoryStorage();
+            _ = config.UseMemoryStorage();
             return; // Exit the configuration lambda early.
         }
 
@@ -776,7 +774,7 @@ try
             {
                 case "postgres":
                 case "postgresql":
-                    config.UsePostgreSqlStorage(
+                    _ = config.UsePostgreSqlStorage(
                         options => options.UseNpgsqlConnection(connectionString),
                         new Hangfire.PostgreSql.PostgreSqlStorageOptions
                         {
@@ -816,12 +814,12 @@ try
                     break;
 
                 case "sqlserver":
-                    config.UseSqlServerStorage(connectionString);
+                    _ = config.UseSqlServerStorage(connectionString);
                     Log.Information("✅ Hangfire successfully configured with SQL Server storage.");
                     break;
 
                 case "sqlite":
-                    config.UseSQLiteStorage(connectionString);
+                    _ = config.UseSQLiteStorage(connectionString);
                     Log.Information("✅ Hangfire successfully configured with SQLite storage.");
                     break;
 
@@ -833,12 +831,12 @@ try
         {
             // --- THIS IS THE FALLBACK LOGIC ---
             // SECURITY: Sanitize exception details to prevent sensitive data exposure
-            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
             Log.Error(sanitizedDetails, "FAILED to configure Hangfire with the specified database storage. FALLING BACK TO IN-MEMORY STORAGE.");
             Log.Warning("Hangfire jobs will NOT be persisted and will be lost if the application restarts.");
 
             // CORRECTED: Do NOT call AddHangfire again. Just configure the existing 'config' object.
-            config.UseMemoryStorage();
+            _ = config.UseMemoryStorage();
         }
     });
 
@@ -852,14 +850,14 @@ try
                                ?? Math.Max(1, Math.Min(Math.Min(cpuCount, ramGB * 2), 16));
 
     // 4. ثبت دو سرور با صف‌ها و WorkerCount مخصوص:
-    builder.Services.AddHangfireServer(options =>
+    _ = builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Notifications";
         options.WorkerCount = notificationWorkerCount;
         options.Queues = new[] { "notifications" };
         options.ServerCheckInterval = TimeSpan.FromSeconds(15);
     });
-    builder.Services.AddHangfireServer(options =>
+    _ = builder.Services.AddHangfireServer(options =>
     {
         options.ServerName = $"{Environment.MachineName}:Default";
         options.WorkerCount = defaultWorkerCount;
@@ -886,12 +884,12 @@ try
     Log.Information("Application host built. Performing mandatory startup tasks...");
 
     // Initialize and register defined settings with the DynamicConfigurationService
-    using (var scope = app.Services.CreateScope())
+    using (IServiceScope scope = app.Services.CreateScope())
     {
-        var services = scope.ServiceProvider;
-        var dynamicConfigService = services.GetRequiredService<IDynamicConfigurationService>();
-        var configuration = services.GetRequiredService<IConfiguration>();
-        var logger = services.GetRequiredService<ILogger<Program>>(); // Using ILogger<Program> for this setup log
+        IServiceProvider services = scope.ServiceProvider;
+        IDynamicConfigurationService dynamicConfigService = services.GetRequiredService<IDynamicConfigurationService>();
+        IConfiguration configuration = services.GetRequiredService<IConfiguration>();
+        ILogger<Program> logger = services.GetRequiredService<ILogger<Program>>(); // Using ILogger<Program> for this setup log
 
         logger.LogInformation("Registering defined settings with DynamicConfigurationService...");
 
@@ -953,7 +951,7 @@ try
         {
             Log.Information("Smoke Test: Ensuring InMemory database is created...");
             AppDbContext db = scope.ServiceProvider.GetRequiredService<Infrastructure.Data.AppDbContext>();
-            await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+            _ = await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
             Log.Information("Smoke Test: InMemory database created successfully.");
         }
         else
@@ -982,13 +980,13 @@ try
                     try
                     {
                         Log.Information("Ensuring 'pg_trgm' extension exists for current PostgreSQL database...");
-                        await db.Database.ExecuteSqlRawAsync("CREATE EXTENSION IF NOT EXISTS pg_trgm;");
+                        _ = await db.Database.ExecuteSqlRawAsync("CREATE EXTENSION IF NOT EXISTS pg_trgm;");
                         Log.Information("Extension 'pg_trgm' is available.");
                     }
                     catch (Exception extEx)
                     {
                         // اینجا نمی‌خواهیم کل برنامه بترکه؛ فقط هشدار می‌دیم
-                        var sanitized = SecureExceptionSanitizer.SanitizeForTelegram(extEx);
+                        string sanitized = SecureExceptionSanitizer.SanitizeForTelegram(extEx);
                         Log.Warning(sanitized, "Could not create 'pg_trgm' extension. " +
                                                "GiST/GIN trigram indexes may fail if extension is missing.");
                     }
@@ -1003,7 +1001,7 @@ try
                 }
                 else
                 {
-                    await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                    _ = await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
                     Log.Information("Non-relational provider detected. Database created using EnsureCreated().");
                 }
             }
@@ -1012,12 +1010,12 @@ try
                 Log.Warning("Migration failed due to pending model changes. Attempting to create database...");
                 try
                 {
-                    await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+                    _ = await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
                     Log.Information("Database created successfully using EnsureCreated().");
                 }
                 catch (Exception createEx)
                 {
-                    var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(createEx);
+                    string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(createEx);
                     Log.Error(sanitizedDetails, "Failed to create database using EnsureCreated(). Connection string may be invalid.");
                     throw new InvalidOperationException(
                         $"Database creation failed. Please check your connection string: {createEx.Message}",
@@ -1026,7 +1024,7 @@ try
             }
             catch (Exception ex)
             {
-                var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex);
+                string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex);
                 Log.Error(sanitizedDetails, "Failed to apply database migrations or create database. Connection string may be invalid.");
                 throw new InvalidOperationException(
                     $"Database setup failed. Please check your connection string: {ex.Message}",
@@ -1066,7 +1064,7 @@ try
         catch (Exception ex)
         {
             // SECURITY: Sanitize exception details to prevent sensitive data exposure
-            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
             Log.Error(sanitizedDetails, "An error occurred while trying to enqueue startup maintenance jobs.");
         }
     });
@@ -1075,7 +1073,10 @@ try
     _ = app.Lifetime.ApplicationStarted.Register(async () =>
     {
         // Don't run this check in smoke tests as we are using a fake in-memory Redis.
-        if (isSmokeTest) return;
+        if (isSmokeTest)
+        {
+            return;
+        }
 
         Log.Information("Testing Redis connectivity after application startup...");
 
@@ -1091,7 +1092,7 @@ try
             string testKey = $"test_connection_{Guid.NewGuid():N}";
             string testValue = DateTime.UtcNow.ToString();
 
-            await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10));
+            _ = await redisDb.StringSetAsync(testKey, testValue, TimeSpan.FromSeconds(10));
             RedisValue retrievedValue = await redisDb.StringGetAsync(testKey);
 
             if (retrievedValue == testValue)
@@ -1106,7 +1107,7 @@ try
         catch (Exception ex)
         {
             // SECURITY: Sanitize exception details to prevent sensitive data exposure
-            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
             Log.Warning(sanitizedDetails, "⚠️ Redis connectivity test failed. Some distributed features may not work properly.");
 
             // In release mode, prompt user for options
@@ -1160,7 +1161,9 @@ try
         _ = app.UseHsts(); //  افزودن هدر HTTP Strict Transport Security برای امنیت بیشتر (اجبار استفاده از HTTPS)
     }
     if (!isSmokeTest)
+    {
         _ = app.UseHttpsRedirection();
+    }
 
     _ = app.UseStaticFiles(); // Serve static files early, especially for login page
 
@@ -1176,7 +1179,7 @@ try
     _ = app.UseMiddleware<AuthRedirectMiddleware>();
 
     // Explicitly map the root path to handle login/dashboard redirection
-    app.MapGet("/", (HttpContext context) =>
+    _ = app.MapGet("/", (HttpContext context) =>
     {
         if (context.User?.Identity?.IsAuthenticated ?? false)
         {
@@ -1236,7 +1239,7 @@ try
     });
     programLogger.LogInformation("Hangfire recurring jobs registration initiated (will run after application starts).");
 
-    var recurringJobManager = app.Services.GetRequiredService<IRecurringJobManager>();
+    IRecurringJobManager recurringJobManager = app.Services.GetRequiredService<IRecurringJobManager>();
     recurringJobManager.AddOrUpdate<UserCleanupService>(
         "user-cleanup-job",
         job => job.CheckAndDeleteUnreachableUsersAsync(),
@@ -1251,7 +1254,7 @@ try
     // even if the Telegram Bot Token is missing/invalid (Unhealthy).
     // This allows the "Waiting for application..." script to pass successfully.
     // =====================================================================================
-    var healthCheckOptions = new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    HealthCheckOptions healthCheckOptions = new()
     {
         Predicate = _ => true,
         ResultStatusCodes = isSmokeTest ?
@@ -1309,7 +1312,7 @@ try
     string firstUrl = urls.Split(';')[0].Trim();
     // ... after app.UseSerilogRequestLogging() and other middleware ...
 
-    app.MapGet("/testerror", () =>
+    _ = app.MapGet("/testerror", () =>
     {
         // This will force an exception and a high-level log event
         try
@@ -1321,12 +1324,12 @@ try
             // Use the ILogger from the dependency injection container
             ILogger<Program> logger = app.Services.GetRequiredService<ILogger<Program>>();
             // SECURITY: Sanitize exception details to prevent sensitive data exposure
-            var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+            string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
             logger.LogError(sanitizedDetails, "Caught a test exception.");
             return Results.Problem("A test error was logged. Check your Telegram and console.");
         }
     });
-    app.UseSerilogRequestLogging();
+    _ = app.UseSerilogRequestLogging();
     // In the middleware pipeline section (before app.Run()) - app.UseStaticFiles() moved earlier
     await app.RunAsync();
 }
@@ -1334,7 +1337,7 @@ catch (Exception ex)
 {
     //  لاگ کردن خطاهای بسیار بحرانی که مانع از اجرای برنامه شده‌اند.
     // SECURITY: Sanitize exception details to prevent sensitive data exposure
-    var sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
+    string sanitizedDetails = SecureExceptionSanitizer.SanitizeForTelegram(ex); // High security for Telegram
     Log.Fatal(sanitizedDetails, "Application host very much terminated unexpectedly.");
     // Environment.ExitCode = 1; //  برای نشان دادن خروج ناموفق به سیستم عامل یا اسکریپت‌های دیگر
 }
@@ -1504,7 +1507,7 @@ internal static class EasySetupWizard
         Infrastructure.Configuration.EasySetupConfigStore? store, // FIX: accept nullable store
         bool isSmokeTest)
     {
-        var config = builder.Configuration;
+        ConfigurationManager config = builder.Configuration;
 
         // Smoke tests: DB is handled separately; we don't do interactive prompts here.
         if (isSmokeTest)
@@ -1536,7 +1539,7 @@ internal static class EasySetupWizard
         bool isInteractive,
         WebApplicationBuilder builder)
     {
-        var currentConnection = config.GetConnectionString("DefaultConnection");
+        string? currentConnection = config.GetConnectionString("DefaultConnection");
 
         if (!string.IsNullOrWhiteSpace(currentConnection))
         {
@@ -1574,8 +1577,11 @@ internal static class EasySetupWizard
         Console.WriteLine("3. (Manual) Enter your own connection string.");
         Console.Write("\nYour choice [1/2/3, default = 1]: ");
 
-        var choice = Console.ReadLine()?.Trim();
-        if (string.IsNullOrWhiteSpace(choice)) choice = "1";
+        string? choice = Console.ReadLine()?.Trim();
+        if (string.IsNullOrWhiteSpace(choice))
+        {
+            choice = "1";
+        }
 
         switch (choice)
         {
@@ -1614,7 +1620,7 @@ internal static class EasySetupWizard
         Infrastructure.Configuration.EasySetupConfigStore? store)
     {
         Console.Write("\nEnter your full database connection string (or leave empty to fall back to SQLite): ");
-        var connectionString = Console.ReadLine()?.Trim();
+        string? connectionString = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
@@ -1624,7 +1630,7 @@ internal static class EasySetupWizard
         }
 
         // Try to auto-detect provider based on keywords inside the connection string.
-        var provider = DetectProviderFromConnectionString(connectionString);
+        string provider = DetectProviderFromConnectionString(connectionString);
 
         config["DatabaseSettings:DatabaseProvider"] = provider;
         config["ConnectionStrings:DefaultConnection"] = connectionString;
@@ -1637,19 +1643,27 @@ internal static class EasySetupWizard
 
     private static string DetectProviderFromConnectionString(string connectionString)
     {
-        var lowered = connectionString.ToLowerInvariant();
+        string lowered = connectionString.ToLowerInvariant();
 
         if (lowered.Contains("host=") && lowered.Contains("port=") && lowered.Contains("postgres"))
+        {
             return "postgres";
+        }
 
         if (lowered.Contains("host=") && lowered.Contains("port="))
+        {
             return "postgres";
+        }
 
         if (lowered.Contains("server=") || lowered.Contains("data source="))
+        {
             return "sqlserver";
+        }
 
         if (lowered.Contains(".db") || lowered.Contains(".sqlite"))
+        {
             return "sqlite";
+        }
 
         // Default fallback if we can't be sure.
         return "postgres";
@@ -1663,16 +1677,16 @@ internal static class EasySetupWizard
         Console.WriteLine("\nStarting automatic setup for local PostgreSQL & Redis...");
 
         // We use a small, private ServiceProvider for the dependency manager.
-        var tempServices = new ServiceCollection()
+        ServiceProvider tempServices = new ServiceCollection()
             .AddLogging(b => b.AddSerilog(Log.Logger))
             .AddSingleton<IExternalDependencyManager, ExternalDependencyManager>()
             .BuildServiceProvider();
 
-        var dependencyManager = tempServices.GetRequiredService<IExternalDependencyManager>();
+        IExternalDependencyManager dependencyManager = tempServices.GetRequiredService<IExternalDependencyManager>();
 
         // NOTE: builder.Configuration is a ConfigurationManager (IConfiguration + IConfigurationBuilder),
         // so we can pass it directly here and let the dependency manager add connection strings.
-        if (!dependencyManager.EnsureDependenciesReadyAsync((IConfigurationBuilder)builder.Configuration).GetAwaiter().GetResult())
+        if (!dependencyManager.EnsureDependenciesReadyAsync(builder.Configuration).GetAwaiter().GetResult())
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine("\nAutomatic PostgreSQL/Redis setup FAILED. Please check the logs.");
@@ -1689,9 +1703,9 @@ internal static class EasySetupWizard
         //   DatabaseSettings:DatabaseProvider
         //   ConnectionStrings:DefaultConnection
         //   ConnectionStrings:Redis (optional)
-        var provider = config["DatabaseSettings:DatabaseProvider"] ?? "postgres";
-        var defaultConn = config.GetConnectionString("DefaultConnection");
-        var redisConn = config.GetConnectionString("Redis");
+        string provider = config["DatabaseSettings:DatabaseProvider"] ?? "postgres";
+        string? defaultConn = config.GetConnectionString("DefaultConnection");
+        string? redisConn = config.GetConnectionString("Redis");
 
         if (string.IsNullOrWhiteSpace(defaultConn))
         {
@@ -1716,7 +1730,7 @@ internal static class EasySetupWizard
         Infrastructure.Configuration.EasySetupConfigStore? store,
         bool isInteractive)
     {
-        var botToken = config["TelegramPanel:BotToken"];
+        string? botToken = config["TelegramPanel:BotToken"];
 
         if (!string.IsNullOrWhiteSpace(botToken) && !IsPlaceholder(botToken))
         {
@@ -1746,7 +1760,7 @@ internal static class EasySetupWizard
         while (true)
         {
             Console.Write("Enter your Telegram Bot Token: ");
-            var input = Console.ReadLine()?.Trim();
+            string? input = Console.ReadLine()?.Trim();
 
             if (string.IsNullOrWhiteSpace(input))
             {
@@ -1780,11 +1794,11 @@ internal static class EasySetupWizard
           IConfiguration config,
           Infrastructure.Configuration.EasySetupConfigStore? store)
     {
-        var apiIdRaw = config["TelegramUserApi:ApiId"];
-        var apiHash = config["TelegramUserApi:ApiHash"];
+        string? apiIdRaw = config["TelegramUserApi:ApiId"];
+        string? apiHash = config["TelegramUserApi:ApiHash"];
 
-        var hasValidApiId = int.TryParse(apiIdRaw, out var apiId) && apiId > 0;
-        var hasValidApiHash = !string.IsNullOrWhiteSpace(apiHash) && !IsPlaceholder(apiHash ?? "");
+        bool hasValidApiId = int.TryParse(apiIdRaw, out int apiId) && apiId > 0;
+        bool hasValidApiHash = !string.IsNullOrWhiteSpace(apiHash) && !IsPlaceholder(apiHash ?? "");
 
         if (hasValidApiId && hasValidApiHash)
         {
@@ -1800,7 +1814,7 @@ internal static class EasySetupWizard
         Console.WriteLine(); // Add a blank line for better spacing
 
         Console.Write("Enter ApiId: ");
-        var apiIdInput = Console.ReadLine()?.Trim();
+        string? apiIdInput = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrWhiteSpace(apiIdInput))
         {
@@ -1815,7 +1829,7 @@ internal static class EasySetupWizard
             return;
         }
 
-        if (!int.TryParse(apiIdInput, out var parsedApiId) || parsedApiId <= 0)
+        if (!int.TryParse(apiIdInput, out int parsedApiId) || parsedApiId <= 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine("ApiId must be a positive integer. Skipping TelegramUserApi setup.");
@@ -1831,7 +1845,7 @@ internal static class EasySetupWizard
         }
 
         Console.Write("Enter ApiHash: ");
-        var hashInput = Console.ReadLine()?.Trim();
+        string? hashInput = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrWhiteSpace(hashInput))
         {
@@ -1864,7 +1878,12 @@ internal static class EasySetupWizard
         IConfiguration config,
         Infrastructure.Configuration.EasySetupConfigStore? store)
     {
-        var apiToken = config["CryptoPay:ApiToken"];
+        if (store is null)
+        {
+            throw new ArgumentNullException(nameof(store));
+        }
+
+        string? apiToken = config["CryptoPay:ApiToken"];
 
         if (!string.IsNullOrWhiteSpace(apiToken) && !IsPlaceholder(apiToken))
         {
@@ -1878,7 +1897,7 @@ internal static class EasySetupWizard
         Console.ResetColor();
 
         Console.Write("Enter CryptoPay:ApiToken (or press ENTER to skip): ");
-        var tokenInput = Console.ReadLine()?.Trim();
+        string? tokenInput = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrWhiteSpace(tokenInput))
         {
@@ -1927,16 +1946,9 @@ public class IntToBoolJsonConverter : JsonConverter<bool>
 {
     public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        if (reader.TokenType == JsonTokenType.Number)
-        {
-            return reader.GetInt32() != 0;
-        }
-        if (reader.TokenType == JsonTokenType.True)
-        {
-            return true;
-        }
-
-        return reader.TokenType == JsonTokenType.False ? false : throw new JsonException();
+        return reader.TokenType == JsonTokenType.Number
+            ? reader.GetInt32() != 0
+            : reader.TokenType == JsonTokenType.True || (reader.TokenType == JsonTokenType.False ? false : throw new JsonException());
     }
 
     public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
@@ -1968,12 +1980,9 @@ public class FlexibleDateTimeJsonConverter : JsonConverter<DateTime>
         if (reader.TokenType == JsonTokenType.String)
         {
             string? str = reader.GetString();
-            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out DateTime dt))
-            {
-                return dt;
-            }
-
-            return DateTime.TryParse(str, out dt) ? dt : throw new JsonException($"Could not parse DateTime: {str}");
+            return DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out DateTime dt)
+                ? dt
+                : DateTime.TryParse(str, out dt) ? dt : throw new JsonException($"Could not parse DateTime: {str}");
         }
         return reader.GetDateTime();
     }

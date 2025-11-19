@@ -66,7 +66,7 @@ namespace Application.Services
 
             try
             {
-                var user = await _userRepository.GetByIdAsync(userId, cancellationToken);
+                User? user = await _userRepository.GetByIdAsync(userId, cancellationToken);
                 if (user == null)
                 {
                     return Result<CryptoPayInvoiceDto>.Failure("User not found.");
@@ -123,7 +123,7 @@ namespace Application.Services
                     };
 
                     await _transactionRepository.AddAsync(pendingTransaction, cancellationToken);
-                    await _context.SaveChangesAsync(cancellationToken);
+                    _ = await _context.SaveChangesAsync(cancellationToken);
 
                     return invoiceResult;
                 }

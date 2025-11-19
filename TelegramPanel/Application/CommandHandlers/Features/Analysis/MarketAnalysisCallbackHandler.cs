@@ -523,8 +523,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
             InlineKeyboardMarkup errorKeyboard = GetMarketAnalysisKeyboard(symbol); // Assumes this method is safe
 
             // Use a list of Tasks to collect reporting attempts
-            List<Task> reportingTasks = new()
-            {
+            List<Task> reportingTasks =
+            [
                 // --- Attempt 1: Edit the message to show the "unavailable" state ---
                 Task.Run(async () => // Use Task.Run to make this attempt independent
                 {
@@ -559,7 +559,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
                         // Do NOT re-throw here
                     }
                 }, CancellationToken.None) // Use CancellationToken.None for independence, or pass cancellationToken
-            };
+            ];
 
 
             // Execute reporting tasks in parallel.
@@ -609,8 +609,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
             InlineKeyboardMarkup errorKeyboard = GetMarketAnalysisKeyboard(symbol); // Assumes this method is safe and purely building UI markup
 
             // Use a list of Tasks to collect reporting attempts
-            List<Task> reportingTasks = new()
-            {
+            List<Task> reportingTasks =
+            [
                 // --- Attempt 1: Edit the message to show the error state ---
                 Task.Run(async () => // Use Task.Run to make this attempt independent and handle its own error
                 {
@@ -649,7 +649,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
                         // Do NOT re-throw here
                     }
                 }, CancellationToken.None) // Use CancellationToken.None for independence, or pass cancellationToken
-            };
+            ];
 
 
             // Execute reporting tasks in parallel.
@@ -678,8 +678,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,

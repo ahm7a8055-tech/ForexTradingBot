@@ -41,8 +41,8 @@ namespace TelegramPanel.Infrastructure.Services
         {
             try
             {
-                List<BotCommand> commands = new()
-                {
+                List<BotCommand> commands =
+                [
                     new() { Command = StartCmd.Command, Description = StartCmd.Description },
                     new() { Command = HelpCmd.Command, Description = HelpCmd.Description },
                     new() { Command = MenuCmd.Command, Description = MenuCmd.Description },
@@ -56,7 +56,7 @@ namespace TelegramPanel.Infrastructure.Services
                     new() { Command = ContactCmd.Command, Description = ContactCmd.Description },
                     new() { Command = FeedbackCmd.Command, Description = FeedbackCmd.Description },
                     new() { Command = FaqCmd.Command, Description = FaqCmd.Description }
-                };
+                ];
 
                 await _botClient.SetMyCommands(
                     commands: commands,

@@ -6,9 +6,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using System.Text.Json;
-using System; // Added for TimeSpan
-using System.Threading.Tasks; // Added for Task
-using System.Threading; // Added for CancellationToken
 
 namespace Infrastructure.Services
 {
@@ -74,7 +71,10 @@ namespace Infrastructure.Services
 
         public async Task UpdateTelegramBotSettingsAsync(TelegramBotSettingsDto settings, CancellationToken cancellationToken = default)
         {
-            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (settings == null)
+            {
+                throw new ArgumentNullException(nameof(settings));
+            }
 
             await UpdateSettingInDbAsync(TelegramBotSettingsKey, settings, cancellationToken);
 
@@ -106,7 +106,10 @@ namespace Infrastructure.Services
 
         public async Task UpdateTelegramClientSettingsAsync(TelegramClientSettingsDto settings, CancellationToken cancellationToken = default)
         {
-            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (settings == null)
+            {
+                throw new ArgumentNullException(nameof(settings));
+            }
 
             await UpdateSettingInDbAsync(TelegramClientSettingsKey, settings, cancellationToken);
 
@@ -159,7 +162,7 @@ namespace Infrastructure.Services
                 ON CONFLICT (""Key"") DO UPDATE
                 SET ""Value"" = @JsonValue::jsonb;";
 
-            await connection.ExecuteAsync(
+            _ = await connection.ExecuteAsync(
                 new CommandDefinition(sql, new { Key = key, JsonValue = jsonValue }, cancellationToken: cancellationToken));
             _logger.LogInformation("Setting for key {DbKey} updated in database.", key);
         }

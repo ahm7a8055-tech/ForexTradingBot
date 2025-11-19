@@ -1,5 +1,4 @@
-﻿using Application.Interfaces;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using System.Text;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
@@ -96,13 +95,13 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 
             List<(string Name, string Code)> countriesToShow = CountryHelper.AllCountries.Skip((page - 1) * CountriesPerPage).Take(CountriesPerPage).ToList();
 
-            List<List<InlineKeyboardButton>> buttonRows = new();
+            List<List<InlineKeyboardButton>> buttonRows = [];
             for (int i = 0; i < countriesToShow.Count; i += 3)
             {
                 buttonRows.Add(countriesToShow.Skip(i).Take(3).Select(c => InlineKeyboardButton.WithCallbackData(c.Name, $"{CallbackPrefix}:{SelectCountryAction}:{c.Code}")).ToList());
             }
 
-            List<InlineKeyboardButton> navRow = new();
+            List<InlineKeyboardButton> navRow = [];
             if (page > 1)
             {
                 navRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Prev", $"{CallbackPrefix}:{ListPageAction}:{page - 1}"));
@@ -198,7 +197,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
 
         private string FormatCountryReportMessage(CloudflareCountryReportDto data)
         {
-            List<string> sections = new();
+            List<string> sections = [];
 
             // --- Section: At a Glance ---
             StringBuilder summarySb = new();
@@ -405,14 +404,9 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Cloudflare
             _ = finalReport.AppendLine("`Source/IP: 🟩Human/IPv6 🟥Bot/IPv4`");
 
             _ = finalReport.AppendLine("\n`-----------------------------------`");
-            if (!string.IsNullOrWhiteSpace(data.ReportTimestamp) && DateTime.TryParse(data.ReportTimestamp, out DateTime reportTime))
-            {
-                _ = finalReport.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._");
-            }
-            else
-            {
-                _ = finalReport.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
-            }
+            _ = !string.IsNullOrWhiteSpace(data.ReportTimestamp) && DateTime.TryParse(data.ReportTimestamp, out DateTime reportTime)
+                ? finalReport.AppendLine($"_Data from Cloudflare Radar as of {reportTime:MMM dd, HH:mm} UTC._")
+                : finalReport.AppendLine($"_Data from Cloudflare Radar as of {DateTime.UtcNow:MMM dd, HH:mm} UTC._");
 
             return finalReport.ToString();
         }

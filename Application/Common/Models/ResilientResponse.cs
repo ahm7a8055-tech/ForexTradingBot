@@ -60,12 +60,15 @@ public class ResilientResponse<T>
     /// <summary>
     /// Creates a successful response.
     /// </summary>
-    public static ResilientResponse<T> CreateSuccess(T data) => new()
+    public static ResilientResponse<T> CreateSuccess(T data)
     {
-        Success = true,
-        Data = data,
-        Type = ResilientResponseType.Success
-    };
+        return new()
+        {
+            Success = true,
+            Data = data,
+            Type = ResilientResponseType.Success
+        };
+    }
 
     /// <summary>
     /// Creates a response for a temporary, retryable error.
@@ -74,13 +77,16 @@ public class ResilientResponse<T>
     /// <param name="reason">The human-readable error reason.</param>
     /// <param name="status">The optional Google-specific error status code.</param>
     /// <param name="retryAfterSeconds">The recommended delay before the next attempt.</param>
-    public static ResilientResponse<T> CreateRetryableError(int code, string reason, string? status = null, int? retryAfterSeconds = null) => new()
+    public static ResilientResponse<T> CreateRetryableError(int code, string reason, string? status = null, int? retryAfterSeconds = null)
     {
-        Success = false,
-        Type = ResilientResponseType.RetryableError,
-        Error = new ErrorDetails(code, reason, status),
-        RetryAfter = retryAfterSeconds
-    };
+        return new()
+        {
+            Success = false,
+            Type = ResilientResponseType.RetryableError,
+            Error = new ErrorDetails(code, reason, status),
+            RetryAfter = retryAfterSeconds
+        };
+    }
 
     /// <summary>
     /// Creates a response for a permanent, non-retryable error.
@@ -88,12 +94,15 @@ public class ResilientResponse<T>
     /// <param name="code">The HTTP status code.</param>
     /// <param name="reason">The human-readable error reason.</param>
     /// <param name="status">The optional Google-specific error status code.</param>
-    public static ResilientResponse<T> CreateNonRetryableError(int code, string reason, string? status = null) => new()
+    public static ResilientResponse<T> CreateNonRetryableError(int code, string reason, string? status = null)
     {
-        Success = false,
-        Type = ResilientResponseType.NonRetryableError,
-        Error = new ErrorDetails(code, reason, status)
-    };
+        return new()
+        {
+            Success = false,
+            Type = ResilientResponseType.NonRetryableError,
+            Error = new ErrorDetails(code, reason, status)
+        };
+    }
 
     #endregion
 }

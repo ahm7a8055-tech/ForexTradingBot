@@ -1,5 +1,3 @@
-using System;
-
 namespace Shared.Security
 {
     /// <summary>
@@ -39,4 +37,4 @@ namespace Shared.Security
         /// <returns>Decrypted exception string</returns>
         string DecryptException(string encryptedString, string? encryptionKey = null);
     }
-} 
+}

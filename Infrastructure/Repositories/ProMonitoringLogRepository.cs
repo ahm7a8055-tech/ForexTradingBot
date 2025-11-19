@@ -8,13 +8,16 @@ namespace Infrastructure.Repositories
     public class ProMonitoringLogRepository : IProMonitoringLogRepository
     {
         private readonly AppDbContext _db;
-        public ProMonitoringLogRepository(AppDbContext db) => _db = db;
+        public ProMonitoringLogRepository(AppDbContext db)
+        {
+            _db = db;
+        }
 
         #region Create
         public async Task AddAsync(ProMonitoringLog log, CancellationToken cancellationToken = default)
         {
-            _db.ProMonitoringLogs.Add(log);
-            await _db.SaveChangesAsync(cancellationToken);
+            _ = _db.ProMonitoringLogs.Add(log);
+            _ = await _db.SaveChangesAsync(cancellationToken);
         }
         #endregion
 
@@ -29,37 +32,44 @@ namespace Infrastructure.Repositories
             return await _db.ProMonitoringLogs.AsNoTracking().ToListAsync(cancellationToken);
         }
 
-         public async Task<List<ProMonitoringLog>> GetRecentPagedAsync(int limit, int offset, CancellationToken cancellationToken = default)
-    {
-        // Basic validation
-        if (limit <= 0) limit = 10;
-        if (offset < 0) offset = 0;
+        public async Task<List<ProMonitoringLog>> GetRecentPagedAsync(int limit, int offset, CancellationToken cancellationToken = default)
+        {
+            // Basic validation
+            if (limit <= 0)
+            {
+                limit = 10;
+            }
 
-        return await _db.ProMonitoringLogs
-            .AsNoTracking() // Performance boost for read-only queries
-            .OrderByDescending(log => log.Timestamp) // IMPORTANT: Order first!
-            .Skip(offset)                             // Then, skip the records from previous pages
-            .Take(limit)                              // Finally, take the records for the current page
-            .ToListAsync(cancellationToken);
-    }
+            if (offset < 0)
+            {
+                offset = 0;
+            }
+
+            return await _db.ProMonitoringLogs
+                .AsNoTracking() // Performance boost for read-only queries
+                .OrderByDescending(log => log.Timestamp) // IMPORTANT: Order first!
+                .Skip(offset)                             // Then, skip the records from previous pages
+                .Take(limit)                              // Finally, take the records for the current page
+                .ToListAsync(cancellationToken);
+        }
         #endregion
 
         #region Update
         public async Task UpdateAsync(ProMonitoringLog log, CancellationToken cancellationToken = default)
         {
-            _db.ProMonitoringLogs.Update(log);
-            await _db.SaveChangesAsync(cancellationToken);
+            _ = _db.ProMonitoringLogs.Update(log);
+            _ = await _db.SaveChangesAsync(cancellationToken);
         }
         #endregion
 
         #region Delete
         public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
         {
-            var log = await _db.ProMonitoringLogs.FindAsync(new object[] { id }, cancellationToken);
+            ProMonitoringLog? log = await _db.ProMonitoringLogs.FindAsync(new object[] { id }, cancellationToken);
             if (log != null)
             {
-                _db.ProMonitoringLogs.Remove(log);
-                await _db.SaveChangesAsync(cancellationToken);
+                _ = _db.ProMonitoringLogs.Remove(log);
+                _ = await _db.SaveChangesAsync(cancellationToken);
             }
         }
 
@@ -70,4 +80,4 @@ namespace Infrastructure.Repositories
         }
         #endregion
     }
-} 
+}

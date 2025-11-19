@@ -1,13 +1,9 @@
 ﻿using Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using TL;
 using WTelegram;
 
-namespace Infrastructure.Services
+namespace Infrastructure.ExternalServices
 {
     /// <summary>
     /// A robust "Null Object" implementation of ITelegramUserApiClient.
@@ -38,7 +34,10 @@ namespace Infrastructure.Services
         public Task ConnectAndLoginAsync(CancellationToken cancellationToken)
         {
             // Respect cancellation token even in no-op
-            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled(cancellationToken);
+            }
 
             _logger.LogWarning("ConnectAndLoginAsync called, but feature is disabled. No connection established.");
             return Task.CompletedTask;
@@ -46,7 +45,10 @@ namespace Infrastructure.Services
 
         public Task<Messages_MessagesBase> GetMessagesAsync(InputPeer peer, int[] msgIds, CancellationToken cancellationToken)
         {
-            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<Messages_MessagesBase>(cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<Messages_MessagesBase>(cancellationToken);
+            }
 
             _logger.LogWarning("GetMessagesAsync called, but feature is disabled. Returning empty message list.");
 
@@ -64,7 +66,10 @@ namespace Infrastructure.Services
 
         public Task<UpdatesBase> SendMessageAsync(InputPeer peer, string message, CancellationToken cancellationToken, int? replyToMsgId = null, ReplyMarkup? replyMarkup = null, IEnumerable<MessageEntity>? entities = null, bool noWebpage = false, bool background = false, bool clearDraft = false, DateTime? schedule_date = null, InputMedia? media = null)
         {
-            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<UpdatesBase>(cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<UpdatesBase>(cancellationToken);
+            }
 
             _logger.LogWarning("SendMessageAsync called, but feature is disabled. Returning empty update container.");
 
@@ -83,7 +88,10 @@ namespace Infrastructure.Services
 
         public Task SendMediaGroupAsync(InputPeer peer, ICollection<InputMedia> media, CancellationToken cancellationToken, string? albumCaption = null, MessageEntity[]? albumEntities = null, int? replyToMsgId = null, bool background = false, DateTime? schedule_date = null, bool sendAsBot = false)
         {
-            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled(cancellationToken);
+            }
 
             _logger.LogWarning("SendMediaGroupAsync called, but feature is disabled. No action taken.");
             return Task.CompletedTask;
@@ -91,7 +99,10 @@ namespace Infrastructure.Services
 
         public Task<UpdatesBase?> ForwardMessagesAsync(InputPeer toPeer, int[] messageIds, InputPeer fromPeer, CancellationToken cancellationToken, bool dropAuthor = false, bool noForwards = false)
         {
-            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<UpdatesBase?>(cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<UpdatesBase?>(cancellationToken);
+            }
 
             _logger.LogWarning("ForwardMessagesAsync called, but feature is disabled. Returning null.");
 

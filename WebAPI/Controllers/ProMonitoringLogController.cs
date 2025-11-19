@@ -1,10 +1,6 @@
 using Application.Common.Interfaces;
 using Domain.Entities;
 using Microsoft.AspNetCore.Mvc;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
-using System;
 
 namespace WebAPI.Controllers
 {
@@ -13,7 +9,10 @@ namespace WebAPI.Controllers
     public class ProMonitoringLogController : ControllerBase
     {
         private readonly IProMonitoringLogRepository _repo;
-        public ProMonitoringLogController(IProMonitoringLogRepository repo) => _repo = repo;
+        public ProMonitoringLogController(IProMonitoringLogRepository repo)
+        {
+            _repo = repo;
+        }
 
         #region Create
         [HttpPost]
@@ -28,15 +27,14 @@ namespace WebAPI.Controllers
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken)
         {
-            var log = await _repo.GetByIdAsync(id, cancellationToken);
-            if (log == null) return NotFound();
-            return Ok(log);
+            ProMonitoringLog? log = await _repo.GetByIdAsync(id, cancellationToken);
+            return log == null ? NotFound() : Ok(log);
         }
 
         [HttpGet]
         public async Task<IActionResult> GetAll(CancellationToken cancellationToken)
         {
-            var logs = await _repo.GetAllAsync(cancellationToken);
+            List<ProMonitoringLog> logs = await _repo.GetAllAsync(cancellationToken);
             return Ok(logs);
         }
         #endregion
@@ -45,7 +43,11 @@ namespace WebAPI.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] ProMonitoringLog log, CancellationToken cancellationToken)
         {
-            if (id != log.Id) return BadRequest();
+            if (id != log.Id)
+            {
+                return BadRequest();
+            }
+
             await _repo.UpdateAsync(log, cancellationToken);
             return NoContent();
         }
@@ -60,4 +62,4 @@ namespace WebAPI.Controllers
         }
         #endregion
     }
-} 
+}

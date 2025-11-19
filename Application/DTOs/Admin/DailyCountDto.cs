@@ -1,6 +1,4 @@
-﻿using System;
-
-namespace Application.DTOs.Admin
+﻿namespace Application.DTOs.Admin
 {
     public class DailyCountDto
     {

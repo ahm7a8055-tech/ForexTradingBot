@@ -2,11 +2,6 @@ using Application.DTOs.Telegram;
 using Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System; // For ArgumentNullException
-using System.Threading.Tasks;
-using System.Threading;
-using Microsoft.Extensions.Logging; // For ILogger
-using Microsoft.AspNetCore.Http; // For StatusCodes
 
 namespace WebAPI.Controllers
 {
@@ -32,7 +27,7 @@ namespace WebAPI.Controllers
         {
             try
             {
-                var settings = await _settingsService.GetTelegramBotSettingsAsync(cancellationToken);
+                TelegramBotSettingsDto settings = await _settingsService.GetTelegramBotSettingsAsync(cancellationToken);
                 return Ok(settings);
             }
             catch (Exception ex)
@@ -74,7 +69,7 @@ namespace WebAPI.Controllers
         {
             try
             {
-                var settings = await _settingsService.GetTelegramClientSettingsAsync(cancellationToken);
+                TelegramClientSettingsDto settings = await _settingsService.GetTelegramClientSettingsAsync(cancellationToken);
                 return Ok(settings);
             }
             catch (Exception ex)

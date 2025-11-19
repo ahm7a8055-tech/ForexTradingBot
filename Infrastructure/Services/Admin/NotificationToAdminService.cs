@@ -1,4 +1,4 @@
-﻿using Application.Common.Interfaces;
+﻿using Application.Common.Interfaces.Admin;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Shared.Settings;
@@ -6,7 +6,7 @@ using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
 
-namespace Infrastructure.Services
+namespace Infrastructure.Services.Admin
 {
     /// <summary>
     /// Implements the admin notification service using the Telegram Bot API.
@@ -66,7 +66,7 @@ namespace Infrastructure.Services
         {
             try
             {
-                await _telegramBotClient.SendMessage(
+                _ = await _telegramBotClient.SendMessage(
                     chatId: _settings.AdminChatId,
                     text: message,
                     parseMode: ParseMode.Markdown,
@@ -87,7 +87,7 @@ namespace Infrastructure.Services
         {
             try
             {
-                var chunks = SplitMessageIntoChunks(longMessage);
+                List<string> chunks = SplitMessageIntoChunks(longMessage);
                 int totalChunks = chunks.Count;
 
                 for (int i = 0; i < totalChunks; i++)
@@ -96,7 +96,7 @@ namespace Infrastructure.Services
                     string header = $"**(Part {i + 1}/{totalChunks})**\n\n";
                     string messagePart = header + chunks[i];
 
-                    await _telegramBotClient.SendMessage(
+                    _ = await _telegramBotClient.SendMessage(
                         chatId: _settings.AdminChatId,
                         text: messagePart,
                         parseMode: ParseMode.Markdown,
@@ -125,17 +125,20 @@ namespace Infrastructure.Services
         /// </summary>
         private static List<string> SplitMessageIntoChunks(string originalMessage)
         {
-            var chunks = new List<string>();
-            if (string.IsNullOrEmpty(originalMessage)) return chunks;
+            List<string> chunks = [];
+            if (string.IsNullOrEmpty(originalMessage))
+            {
+                return chunks;
+            }
 
             // The effective max length for a chunk must account for the header we will add later.
             // e.g., "(Part 99/99)\n\n" is roughly 16 characters. Let's use 30 for safety.
             const int maxChunkLength = MaxTelegramMessageLength - 30;
 
-            var currentChunk = new StringBuilder();
-            var lines = originalMessage.Split('\n');
+            StringBuilder currentChunk = new();
+            string[] lines = originalMessage.Split('\n');
 
-            foreach (var line in lines)
+            foreach (string line in lines)
             {
                 // If adding the next line would exceed the limit, finish the current chunk.
                 if (currentChunk.Length + line.Length + 1 > maxChunkLength)
@@ -144,7 +147,7 @@ namespace Infrastructure.Services
                     if (currentChunk.Length > 0)
                     {
                         chunks.Add(currentChunk.ToString());
-                        currentChunk.Clear();
+                        _ = currentChunk.Clear();
                     }
                 }
 
@@ -161,7 +164,7 @@ namespace Infrastructure.Services
                 }
                 else
                 {
-                    currentChunk.AppendLine(line);
+                    _ = currentChunk.AppendLine(line);
                 }
             }
 

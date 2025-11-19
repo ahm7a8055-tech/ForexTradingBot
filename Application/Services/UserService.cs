@@ -8,7 +8,6 @@ using AutoMapper;                   // For IMapper
 using Domain.Entities;              // For User, TokenWallet, Subscription
 using Microsoft.Extensions.Logging;
 using Shared.Extensions; // For ILogger
-using Microsoft.EntityFrameworkCore;
 // Remove if not directly used: using StackExchange.Redis;
 // Remove if not directly used: using Microsoft.Extensions.Caching.Distributed;
 #endregion
@@ -369,7 +368,7 @@ namespace Application.Services
                 await _cacheService.SetAsync($"user:id:{registeredUserDto.Id}", registeredUserDto, TimeSpan.FromHours(1));
 
                 // SECURITY: Sanitize username in success log
-                var sanitizedRegisteredUsername = _logSanitizer.Sanitize(registeredUserDto.Username);
+                string sanitizedRegisteredUsername = _logSanitizer.Sanitize(registeredUserDto.Username);
                 _logger.LogInformation("User {SanitizedUsername} (ID: {UserId}) registered and saved successfully. TokenWallet ID: {TokenWalletId}",
                     sanitizedRegisteredUsername, registeredUserDto.Id, registeredUserDto.TokenWallet?.Id);
 

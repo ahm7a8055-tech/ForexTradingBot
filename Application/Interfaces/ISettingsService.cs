@@ -1,7 +1,5 @@
 ﻿using Application.DTOs.Settings;
 using Application.DTOs.Telegram; // Added for new DTOs
-using System.Threading.Tasks;    // Added for Task
-using System.Threading;          // Added for CancellationToken
 
 namespace Application.Interfaces
 {

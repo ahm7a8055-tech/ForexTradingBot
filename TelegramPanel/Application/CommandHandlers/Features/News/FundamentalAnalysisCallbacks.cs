@@ -251,7 +251,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.News
             (List<NewsItem> highPrecisionItems, int _) = await _newsItemRepository.SearchNewsAsync(keywordSet.HighPrecisionTerms, startDate, DateTime.UtcNow, 1, 100, false, isVipUser, cancellationToken);
             (List<NewsItem> generalItems, int _) = await _newsItemRepository.SearchNewsAsync(keywordSet.GeneralTerms, startDate, DateTime.UtcNow, 1, 100, false, isVipUser, cancellationToken);
 
-            Dictionary<Guid, NewsItem> combinedNews = new();
+            Dictionary<Guid, NewsItem> combinedNews = [];
             foreach (NewsItem item in highPrecisionItems)
             {
                 combinedNews[item.Id] = item;
@@ -289,7 +289,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.News
         {
             HashSet<string> highPrecision = new(StringComparer.OrdinalIgnoreCase);
             HashSet<string> general = new(StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, List<string>> termsByCurrency = new();
+            Dictionary<string, List<string>> termsByCurrency = [];
             symbol = symbol.ToUpperInvariant();
 
             Dictionary<string, string> nicknames = new()
@@ -371,8 +371,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.News
 
         private InlineKeyboardMarkup BuildPaginationKeyboard(string symbol, int currentPage, int totalCount, int pageSize, bool isVipUser)
         {
-            List<List<InlineKeyboardButton>> rows = new();
-            List<InlineKeyboardButton> paginationRow = new();
+            List<List<InlineKeyboardButton>> rows = [];
+            List<InlineKeyboardButton> paginationRow = [];
             int totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
 
             if (currentPage > 1)
@@ -407,7 +407,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.News
 
         private InlineKeyboardMarkup GetNoNewsKeyboard(string symbol, bool isVipUser)
         {
-            List<List<InlineKeyboardButton>> rows = new();
+            List<List<InlineKeyboardButton>> rows = [];
             if (!isVipUser)
             {
                 rows.Add([InlineKeyboardButton.WithCallbackData("🌟 Try VIP for More News Sources", $"{ViewFundamentalAnalysisPrefix}:{symbol}:{SubscribeVipAction}")]);

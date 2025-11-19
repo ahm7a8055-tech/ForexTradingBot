@@ -1,19 +1,13 @@
 using Application.Common.Interfaces;
 using Application.DTOs.Admin; // For DynamicSettingDto
-using Application.Interfaces;
 using Domain.Entities;
 using Infrastructure.Data; // For AppDbContext
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection; // For IServiceScopeFactory
 using Microsoft.Extensions.Logging;
 using Shared.Security; // For SecureExceptionSanitizer
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Text.RegularExpressions;
 
 namespace Infrastructure.Services
 {
@@ -29,7 +23,7 @@ namespace Infrastructure.Services
         private readonly ILogger<DynamicConfigurationService> _logger;
 
         // Store defined settings with their metadata
-        private readonly Dictionary<string, SettingDefinition> _definedSettings = new Dictionary<string, SettingDefinition>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, SettingDefinition> _definedSettings = new(StringComparer.OrdinalIgnoreCase);
 
         private record SettingDefinition(string Key, string? DefaultValueFromConfig, bool IsSensitive, string? Description);
 
@@ -54,10 +48,12 @@ namespace Infrastructure.Services
         private static string SanitizeForLogging(string? input)
         {
             if (string.IsNullOrWhiteSpace(input))
+            {
                 return "[EMPTY_INPUT]";
+            }
 
             // Remove newlines, carriage returns, and other problematic characters
-            var sanitized = input
+            string sanitized = input
                 .Replace("\r", "")
                 .Replace("\n", "")
                 .Replace("\t", " ")
@@ -83,27 +79,29 @@ namespace Infrastructure.Services
         private static string SanitizeSensitiveData(string? sensitiveInput)
         {
             if (string.IsNullOrWhiteSpace(sensitiveInput))
+            {
                 return "[EMPTY_INPUT]";
+            }
 
-            var sanitized = sensitiveInput;
+            string sanitized = sensitiveInput;
 
             // Redact connection string patterns
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"(?:password|pwd)\s*=\s*[^;\s]+", "password=***", 
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized,
+                @"(?:password|pwd)\s*=\s*[^;\s]+", "password=***",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "userid=***", 
+
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized,
+                @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "userid=***",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             // Redact bot token patterns
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"[0-9]+:[a-zA-Z0-9\-_]{35}", "***:***", 
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized,
+                @"[0-9]+:[a-zA-Z0-9\-_]{35}", "***:***",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             // Redact API keys and tokens
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, 
-                @"[a-zA-Z0-9\-_]{20,}", "***", 
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized,
+                @"[a-zA-Z0-9\-_]{20,}", "***",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             return sanitized;
@@ -117,11 +115,13 @@ namespace Infrastructure.Services
         private string? ValidateSettingKey(string? key)
         {
             if (string.IsNullOrWhiteSpace(key))
+            {
                 return null;
+            }
 
             // SECURITY: Sanitize input before validation
-            var sanitizedKey = SanitizeForLogging(key);
-            
+            string sanitizedKey = SanitizeForLogging(key);
+
             // Basic validation - check for required format
             if (!key.Contains(":") || key.Length > 100)
             {
@@ -143,7 +143,7 @@ namespace Infrastructure.Services
         public void RegisterSettingDefinition(string key, string? defaultValueFromConfig, bool isSensitive, string? description)
         {
             // SECURITY: Validate setting key before registration
-            var validatedKey = ValidateSettingKey(key);
+            string? validatedKey = ValidateSettingKey(key);
             if (validatedKey == null)
             {
                 _logger.LogWarning("Cannot register setting definition: Invalid key format.");
@@ -151,10 +151,10 @@ namespace Infrastructure.Services
             }
 
             // SECURITY: Sanitize description before logging
-            var sanitizedDescription = SanitizeForLogging(description);
-            var sanitizedDefaultValue = isSensitive ? "[SENSITIVE_DEFAULT]" : SanitizeForLogging(defaultValueFromConfig);
-            
-            _logger.LogDebug("Registering setting definition: {SanitizedKey}, IsSensitive: {IsSensitive}, Description: {SanitizedDescription}, Default: {SanitizedDefaultValue}", 
+            string sanitizedDescription = SanitizeForLogging(description);
+            string sanitizedDefaultValue = isSensitive ? "[SENSITIVE_DEFAULT]" : SanitizeForLogging(defaultValueFromConfig);
+
+            _logger.LogDebug("Registering setting definition: {SanitizedKey}, IsSensitive: {IsSensitive}, Description: {SanitizedDescription}, Default: {SanitizedDefaultValue}",
                 SanitizeForLogging(validatedKey), isSensitive, sanitizedDescription, sanitizedDefaultValue);
 
             _definedSettings[validatedKey] = new SettingDefinition(validatedKey, defaultValueFromConfig, isSensitive, description);
@@ -167,17 +167,17 @@ namespace Infrastructure.Services
 
         public async Task<IDynamicSetting?> GetSettingAsync(string key, CancellationToken cancellationToken = default)
         {
-            var validatedKey = ValidateSettingKey(key);
+            string? validatedKey = ValidateSettingKey(key);
             if (validatedKey == null)
             {
                 _logger.LogWarning("GetSettingAsync called with invalid key format.");
                 return null;
             }
 
-            if (!_definedSettings.TryGetValue(validatedKey, out var definition))
+            if (!_definedSettings.TryGetValue(validatedKey, out SettingDefinition? definition))
             {
                 // SECURITY: Sanitize key before logging
-                var sanitizedKey = SanitizeForLogging(validatedKey);
+                string sanitizedKey = SanitizeForLogging(validatedKey);
                 _logger.LogDebug("GetSettingAsync called for key '{SanitizedKey}' not explicitly defined. Checking IConfiguration.", sanitizedKey);
                 return null;
             }
@@ -186,9 +186,9 @@ namespace Infrastructure.Services
             bool isOverriddenByEnv = !string.IsNullOrEmpty(envVarValue);
 
             ApplicationSetting? dbSetting = null;
-            using (var scope = _serviceScopeFactory.CreateScope())
+            using (IServiceScope scope = _serviceScopeFactory.CreateScope())
             {
-                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 dbSetting = await dbContext.ApplicationSettings
                     .AsNoTracking()
                     .FirstOrDefaultAsync(s => s.SettingKey == validatedKey, cancellationToken);
@@ -230,20 +230,20 @@ namespace Infrastructure.Services
 
         public async Task<string?> GetDecryptedValueAsync(string key, CancellationToken cancellationToken = default)
         {
-            var validatedKey = ValidateSettingKey(key);
+            string? validatedKey = ValidateSettingKey(key);
             if (validatedKey == null)
             {
                 _logger.LogWarning("GetDecryptedValueAsync called with invalid key format.");
                 return null;
             }
 
-            if (!_definedSettings.TryGetValue(validatedKey, out var definition))
+            if (!_definedSettings.TryGetValue(validatedKey, out SettingDefinition? definition))
             {
                 // For internal consumption, if a key isn't defined but is requested,
                 // it might imply an issue or an ad-hoc key.
                 // Fallback to direct configuration lookup for maximum flexibility,
                 // assuming it's not a UI-managed dynamic setting.
-                _logger.LogDebug("GetDecryptedValueAsync called for key '{SanitizedKey}' not explicitly defined. Checking IConfiguration.", 
+                _logger.LogDebug("GetDecryptedValueAsync called for key '{SanitizedKey}' not explicitly defined. Checking IConfiguration.",
                     SanitizeForLogging(validatedKey));
                 return _configuration[validatedKey.Replace(":", "__")] ?? _configuration[validatedKey];
             }
@@ -255,9 +255,9 @@ namespace Infrastructure.Services
             }
 
             ApplicationSetting? dbSetting = null;
-            using (var scope = _serviceScopeFactory.CreateScope())
+            using (IServiceScope scope = _serviceScopeFactory.CreateScope())
             {
-                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 dbSetting = await dbContext.ApplicationSettings
                     .AsNoTracking()
                     .FirstOrDefaultAsync(s => s.SettingKey == validatedKey, cancellationToken);
@@ -274,8 +274,8 @@ namespace Infrastructure.Services
                     catch (Exception ex)
                     {
                         // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                        var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                        _logger.LogError(sanitizedException, "Failed to decrypt setting '{SanitizedKey}' from database. Returning null or default.", 
+                        string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                        _logger.LogError(sanitizedException, "Failed to decrypt setting '{SanitizedKey}' from database. Returning null or default.",
                             SanitizeForLogging(validatedKey));
                         // Fallback to default from config if decryption fails
                         return definition.DefaultValueFromConfig;
@@ -290,25 +290,28 @@ namespace Infrastructure.Services
 
         public async Task<IEnumerable<IDynamicSetting>> GetAllSettingsAsync(CancellationToken cancellationToken = default)
         {
-            var allSettings = new List<IDynamicSetting>();
+            List<IDynamicSetting> allSettings = [];
             Dictionary<string, ApplicationSetting> dbSettings;
 
-            using (var scope = _serviceScopeFactory.CreateScope())
+            using (IServiceScope scope = _serviceScopeFactory.CreateScope())
             {
-                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 dbSettings = await dbContext.ApplicationSettings
                     .AsNoTracking()
                     .ToDictionaryAsync(s => s.SettingKey, s => s, cancellationToken);
             }
 
-            foreach (var key in _definedSettings.Keys.OrderBy(k => k))
+            foreach (string? key in _definedSettings.Keys.OrderBy(k => k))
             {
-                if (!_definedSettings.TryGetValue(key, out var definition)) continue;
+                if (!_definedSettings.TryGetValue(key, out SettingDefinition? definition))
+                {
+                    continue;
+                }
 
                 string? envVarValue = _configuration[key.Replace(":", "__")];
                 bool isOverriddenByEnv = !string.IsNullOrEmpty(envVarValue);
 
-                dbSettings.TryGetValue(key, out ApplicationSetting? dbSetting);
+                _ = dbSettings.TryGetValue(key, out ApplicationSetting? dbSetting);
 
                 string? currentValueInDb = dbSetting?.SettingValue;
                 string? effectiveValue;
@@ -348,30 +351,33 @@ namespace Infrastructure.Services
 
         public async Task UpdateSettingsAsync(Dictionary<string, string?> settingsToUpdate, CancellationToken cancellationToken = default)
         {
-            if (settingsToUpdate == null) throw new ArgumentNullException(nameof(settingsToUpdate));
+            if (settingsToUpdate == null)
+            {
+                throw new ArgumentNullException(nameof(settingsToUpdate));
+            }
 
-            using var scope = _serviceScopeFactory.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            using IServiceScope scope = _serviceScopeFactory.CreateScope();
+            AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-            using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            using IDbContextTransaction transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
             try
             {
-                foreach (var kvp in settingsToUpdate)
+                foreach (KeyValuePair<string, string?> kvp in settingsToUpdate)
                 {
-                    var key = kvp.Key;
-                    var newValue = kvp.Value; // This is the raw, plaintext new value from UI
+                    string key = kvp.Key;
+                    string? newValue = kvp.Value; // This is the raw, plaintext new value from UI
 
                     // SECURITY: Validate setting key before processing
-                    var validatedKey = ValidateSettingKey(key);
+                    string? validatedKey = ValidateSettingKey(key);
                     if (validatedKey == null)
                     {
                         _logger.LogWarning("Attempted to update setting with invalid key format. Skipping.");
                         continue;
                     }
 
-                    if (!_definedSettings.TryGetValue(validatedKey, out var definition))
+                    if (!_definedSettings.TryGetValue(validatedKey, out SettingDefinition? definition))
                     {
-                        _logger.LogWarning("Attempted to update undefined setting: {SanitizedKey}. Skipping.", 
+                        _logger.LogWarning("Attempted to update undefined setting: {SanitizedKey}. Skipping.",
                             SanitizeForLogging(validatedKey));
                         continue; // Or throw, based on strictness
                     }
@@ -387,27 +393,20 @@ namespace Infrastructure.Services
                             Description = definition.Description,
                             IsEncrypted = definition.IsSensitive
                         };
-                        dbContext.ApplicationSettings.Add(dbSetting);
+                        _ = dbContext.ApplicationSettings.Add(dbSetting);
                     }
 
                     dbSetting.IsEncrypted = definition.IsSensitive; // Ensure this flag is correctly set based on definition
-                    if (definition.IsSensitive)
-                    {
-                        dbSetting.SettingValue = string.IsNullOrEmpty(newValue) ? null : _protectionService.Encrypt(newValue);
-                    }
-                    else
-                    {
-                        dbSetting.SettingValue = newValue;
-                    }
+                    dbSetting.SettingValue = definition.IsSensitive ? string.IsNullOrEmpty(newValue) ? null : _protectionService.Encrypt(newValue) : newValue;
                     dbSetting.LastModifiedUtc = DateTime.UtcNow;
-                    
+
                     // SECURITY: Use sanitized key for logging
-                    _logger.LogInformation("Setting '{SanitizedKey}' updated in database (value {IsSensitive}).", 
-                        SanitizeForLogging(validatedKey), 
+                    _logger.LogInformation("Setting '{SanitizedKey}' updated in database (value {IsSensitive}).",
+                        SanitizeForLogging(validatedKey),
                         definition.IsSensitive ? "is sensitive and was encrypted" : "is not sensitive");
                 }
 
-                await dbContext.SaveChangesAsync(cancellationToken);
+                _ = await dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 _logger.LogInformation("{Count} settings updated successfully in the database.", settingsToUpdate.Count);
 
@@ -421,7 +420,7 @@ namespace Infrastructure.Services
             {
                 await transaction.RollbackAsync(cancellationToken);
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Error updating settings in database. Transaction rolled back.");
                 throw; // Re-throw to indicate failure
             }

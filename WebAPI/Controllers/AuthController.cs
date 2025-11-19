@@ -1,14 +1,9 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Configuration;
-using System;
-using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
-using System.Threading.Tasks;
 
 namespace WebAPI.Controllers
 {
@@ -44,8 +39,8 @@ namespace WebAPI.Controllers
                 return BadRequest(ModelState);
             }
 
-            var adminUsername = _configuration["Admin:Username"];
-            var adminPassword = _configuration["Admin:Password"];
+            string? adminUsername = _configuration["Admin:Username"];
+            string? adminPassword = _configuration["Admin:Password"];
 
             if (string.IsNullOrEmpty(adminUsername) || string.IsNullOrEmpty(adminPassword))
             {
@@ -56,17 +51,17 @@ namespace WebAPI.Controllers
 
             if (model.Username == adminUsername && model.Password == adminPassword)
             {
-                var claims = new List<Claim>
-                {
-                    new Claim(ClaimTypes.Name, model.Username!),
-                    new Claim(ClaimTypes.Role, "Admin"),
+                List<Claim> claims =
+                [
+                    new(ClaimTypes.Name, model.Username!),
+                    new(ClaimTypes.Role, "Admin"),
                     // Add other claims as needed
-                };
+                ];
 
-                var claimsIdentity = new ClaimsIdentity(
+                ClaimsIdentity claimsIdentity = new(
                     claims, CookieAuthenticationDefaults.AuthenticationScheme);
 
-                var authProperties = new AuthenticationProperties
+                AuthenticationProperties authProperties = new()
                 {
                     //AllowRefresh = <bool>,
                     // Refreshing the authentication session should be allowed.

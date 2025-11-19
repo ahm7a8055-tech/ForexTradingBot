@@ -272,7 +272,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
                     return; // Exit the method.
                 }
 
-                List<List<InlineKeyboardButton>> keyboardRows = new();
+                List<List<InlineKeyboardButton>> keyboardRows = [];
                 for (int i = 0; i < buttons.Count; i += 2)
                 {
                     keyboardRows.Add(buttons.Skip(i).Take(2).ToList());
@@ -376,8 +376,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
 
                 int positiveScore = 0;
                 int negativeScore = 0;
-                List<(NewsItem, int)> positiveArticles = new();
-                List<(NewsItem, int)> negativeArticles = new();
+                List<(NewsItem, int)> positiveArticles = [];
+                List<(NewsItem, int)> negativeArticles = [];
 
                 foreach (NewsItem item in newsItems)
                 {
@@ -593,7 +593,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.Analysis
                 }
 
                 // Ensure all rows are of the same concrete type: List<InlineKeyboardButton>
-                List<List<InlineKeyboardButton>> keyboardRows = new(); // Changed to List<List<...>> for type safety
+                List<List<InlineKeyboardButton>> keyboardRows = []; // Changed to List<List<...>> for type safety
                 for (int i = 0; i < buttons.Count; i += 2)
                 {
                     keyboardRows.Add(buttons.Skip(i).Take(2).ToList());

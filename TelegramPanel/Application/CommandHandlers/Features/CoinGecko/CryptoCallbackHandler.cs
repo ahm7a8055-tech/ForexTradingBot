@@ -241,14 +241,9 @@ namespace TelegramPanel.Application.CommandHandlers.Features.CoinGecko
                 _ = errorText.AppendLine($"_Attempted action: *{EscapeTextForTelegramMarkup(action.ToUpper())}*_{EscapeTextForTelegramMarkup(paramDict.Any() ? " with params: " + string.Join(", ", paramDict.Select(kv => $"{kv.Key}={kv.Value}")) : "")}");
 
                 // Include exception message details carefully
-                if (!string.IsNullOrEmpty(ex.Message) && !ex.Message.Contains("Failed") && !ex.Message.Contains("Object reference not set")) // Simple heuristic to exclude common generic developer errors
-                {
-                    _ = errorText.AppendLine($"_Details: {EscapeTextForTelegramMarkup(ex.Message)}_");
-                }
-                else
-                {
-                    _ = errorText.AppendLine("_Please try again or return to the main menu._");
-                }
+                _ = !string.IsNullOrEmpty(ex.Message) && !ex.Message.Contains("Failed") && !ex.Message.Contains("Object reference not set")
+                    ? errorText.AppendLine($"_Details: {EscapeTextForTelegramMarkup(ex.Message)}_")
+                    : errorText.AppendLine("_Please try again or return to the main menu._");
 
                 // Build context-aware error keyboard (similar logic as before)
                 InlineKeyboardMarkup errorKeyboard;
@@ -258,7 +253,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.CoinGecko
                     contextPage = 1;
                 }
 
-                List<List<InlineKeyboardButton>> keyboardRows = new();
+                List<List<InlineKeyboardButton>> keyboardRows = [];
                 if (action == DetailsAction)
                 {
                     keyboardRows.Add([InlineKeyboardButton.WithCallbackData($"⬅️ Back to Page {contextPage}", $"{CallbackPrefix}_{ListAction}_{PageParam}_{contextPage}")]);
@@ -378,8 +373,8 @@ namespace TelegramPanel.Application.CommandHandlers.Features.CoinGecko
                 _ = sb.AppendLine().AppendLine("👇 Select a coin below for full details."); // Added emoji
             }
 
-            List<List<InlineKeyboardButton>> keyboardRows = new();
-            List<InlineKeyboardButton> buttonRow = new();
+            List<List<InlineKeyboardButton>> keyboardRows = [];
+            List<InlineKeyboardButton> buttonRow = [];
 
             // Add buttons for each coin on the page
             int buttonsInRow = 0;
@@ -429,7 +424,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.CoinGecko
             }
 
             // Pagination buttons
-            List<InlineKeyboardButton> paginationRow = new();
+            List<InlineKeyboardButton> paginationRow = [];
             if (page > 1)
             {
                 // Callback for previous page - Uses only safe characters and integers
@@ -460,13 +455,13 @@ namespace TelegramPanel.Application.CommandHandlers.Features.CoinGecko
             // Create callback data to go back to the specific list page.
             string backCallbackData = $"{CallbackPrefix}_{ListAction}_{PageParam}_{page}";
 
-            List<List<InlineKeyboardButton>> keyboardRows = new()
-            {
-                ([InlineKeyboardButton.WithCallbackData($"⬅️ Back to Page {page}", backCallbackData)]),
+            List<List<InlineKeyboardButton>> keyboardRows =
+            [
+                [InlineKeyboardButton.WithCallbackData($"⬅️ Back to Page {page}", backCallbackData)],
 
                 // ASSUMING MenuCallbackQueryHandler.BackToMainMenuGeneral is a VALID callback data string
-                ([InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral)]) // Add Main Menu button here too
-            };
+                [InlineKeyboardButton.WithCallbackData("🏠 Main Menu", MenuCallbackQueryHandler.BackToMainMenuGeneral)] // Add Main Menu button here too
+            ];
 
             return new InlineKeyboardMarkup(keyboardRows);
         }

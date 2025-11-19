@@ -19,12 +19,12 @@ namespace TelegramPanel.Infrastructure.Helper // یا یک namespace مناسب 
                 return null; // or new InlineKeyboardMarkup(new List<List<InlineKeyboardButton>>());
             }
 
-            List<List<InlineKeyboardButton>> rowsAsList = new();
+            List<List<InlineKeyboardButton>> rowsAsList = [];
             foreach (InlineKeyboardButton[] rowArray in buttonRows)
             {
                 if (rowArray != null)
                 {
-                    rowsAsList.Add(new List<InlineKeyboardButton>(rowArray));
+                    rowsAsList.Add([.. rowArray]);
                 }
             }
             return new InlineKeyboardMarkup(rowsAsList);
@@ -49,12 +49,12 @@ namespace TelegramPanel.Infrastructure.Helper // یا یک namespace مناسب 
                 return null;
             }
 
-            List<List<InlineKeyboardButton>> rowsAsList = new();
+            List<List<InlineKeyboardButton>> rowsAsList = [];
             foreach (IEnumerable<InlineKeyboardButton> rowEnum in buttonRows)
             {
                 if (rowEnum != null)
                 {
-                    rowsAsList.Add(new List<InlineKeyboardButton>(rowEnum));
+                    rowsAsList.Add([.. rowEnum]);
                 }
             }
             return new InlineKeyboardMarkup(rowsAsList);

@@ -1,5 +1,4 @@
-﻿using System;
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -11,7 +10,7 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "ProMonitoringLogs",
                 columns: table => new
                 {
@@ -33,35 +32,35 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_ProMonitoringLogs", x => x.Id);
+                    _ = table.PrimaryKey("PK_ProMonitoringLogs", x => x.Id);
                 });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ProMonitoringLog_CorrelationId",
                 table: "ProMonitoringLogs",
                 column: "CorrelationId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ProMonitoringLog_EventType_Timestamp",
                 table: "ProMonitoringLogs",
                 columns: new[] { "EventType", "Timestamp" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ProMonitoringLog_JobId",
                 table: "ProMonitoringLogs",
                 column: "JobId");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ProMonitoringLog_Level_Timestamp",
                 table: "ProMonitoringLogs",
                 columns: new[] { "Level", "Timestamp" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ProMonitoringLog_Status",
                 table: "ProMonitoringLogs",
                 column: "Status");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_ProMonitoringLog_UserId",
                 table: "ProMonitoringLogs",
                 column: "UserId");
@@ -70,7 +69,7 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "ProMonitoringLogs");
         }
     }

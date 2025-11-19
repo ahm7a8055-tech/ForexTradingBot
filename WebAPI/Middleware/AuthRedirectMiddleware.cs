@@ -1,7 +1,3 @@
-using Microsoft.AspNetCore.Http;
-using System.Linq;
-using System.Threading.Tasks;
-
 namespace WebAPI.Middleware
 {
     public class AuthRedirectMiddleware
@@ -17,7 +13,7 @@ namespace WebAPI.Middleware
 
         public async Task InvokeAsync(HttpContext context)
         {
-            var requestPath = context.Request.Path.Value;
+            string? requestPath = context.Request.Path.Value;
 
             // Check if the request path is one of the protected static HTML files
             if (_protectedPaths.Contains(requestPath, StringComparer.OrdinalIgnoreCase))

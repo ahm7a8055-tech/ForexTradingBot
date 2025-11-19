@@ -1,6 +1,5 @@
 ﻿// File: Application/DTOs/Fred/FredSeriesSearchResponseDto.cs
 using Application.Common.Interfaces.Fred;
-using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace Application.DTOs.Fred
@@ -49,7 +48,7 @@ namespace Application.DTOs.Fred
         /// known naming quirk in the FRED API's JSON response for this endpoint.
         /// </remarks>
         [JsonPropertyName("seriess")]
-        public List<FredSeriesDto> Series { get; set; } = new();
+        public List<FredSeriesDto> Series { get; set; } = [];
         #endregion
 
         #endregion

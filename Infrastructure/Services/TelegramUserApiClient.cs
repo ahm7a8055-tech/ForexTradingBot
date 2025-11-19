@@ -1,10 +1,10 @@
 ﻿// File: src/Infrastructure/Services/TelegramUserApiClient.cs
 #region Usings
 using Application.Common.Interfaces;
+using Application.Common.Interfaces.Admin;
 using Application.Interfaces;
 using Infrastructure.Settings;
 using Microsoft.Extensions.Caching.Memory;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
@@ -12,6 +12,7 @@ using Polly.Retry;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using TL;
@@ -114,7 +115,11 @@ namespace Infrastructure.Services
             {
                 if (!string.IsNullOrEmpty(dir))
                 {
-                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    if (!Directory.Exists(dir))
+                    {
+                        _ = Directory.CreateDirectory(dir);
+                    }
+
                     string dummyPath = Path.Combine(dir, ".write_test_" + Guid.NewGuid());
                     using (File.Create(dummyPath, 1, FileOptions.DeleteOnClose)) { }
                     isWritable = true;
@@ -1221,9 +1226,9 @@ namespace Infrastructure.Services
             try
             {
                 HttpResponseMessage response = await _httpClient.GetAsync(apiUrl, cancellationToken);
-                response.EnsureSuccessStatusCode();
+                _ = response.EnsureSuccessStatusCode();
 
-                var adviceData = await response.Content.ReadFromJsonAsync<AdviceSlipResponse>(cancellationToken: cancellationToken);
+                AdviceSlipResponse? adviceData = await response.Content.ReadFromJsonAsync<AdviceSlipResponse>(cancellationToken: cancellationToken);
                 string? apiAdvice = adviceData?.slip?.advice?.Trim();
 
                 if (!string.IsNullOrWhiteSpace(apiAdvice))
@@ -1279,7 +1284,7 @@ namespace Infrastructure.Services
                 {
                     _logger.LogInformation("Message successfully enhanced by AI for Peer {PeerId}. Parsing as MarkdownV1...", peerIdForLog);
                     // Always parse Gemini output as MarkdownV1
-                    var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
+                    (string? parsedText, MessageEntity[]? parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(enhancedMessage);
                     return (parsedText, parsedEntities.Length > 0 ? parsedEntities : null);
                 }
                 else
@@ -1350,9 +1355,20 @@ namespace Infrastructure.Services
             // =========================================================================
             // === STAGE 1: VALIDATION & PREPARATION
             // =========================================================================
-            if (_client is null) throw new InvalidOperationException("Telegram API client is not initialized.");
-            if (peer is null) throw new ArgumentNullException(nameof(peer), "InputPeer cannot be null.");
-            if (string.IsNullOrEmpty(message) && media is null) throw new ArgumentException("Either message or media must be provided.");
+            if (_client is null)
+            {
+                throw new InvalidOperationException("Telegram API client is not initialized.");
+            }
+
+            if (peer is null)
+            {
+                throw new ArgumentNullException(nameof(peer), "InputPeer cannot be null.");
+            }
+
+            if (string.IsNullOrEmpty(message) && media is null)
+            {
+                throw new ArgumentException("Either message or media must be provided.");
+            }
 
             long peerIdForLog = GetPeerIdForLog(peer);
             _logger.LogDebug("Initiating SendMessageAsync for Peer {PeerId}. Media: {HasMedia}", peerIdForLog, media != null);
@@ -1374,7 +1390,7 @@ namespace Infrastructure.Services
             {
                 try
                 {
-                    var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(message);
+                    (string? parsedText, MessageEntity[]? parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(message);
                     if (parsedEntities.Length > 0)
                     {
                         _logger.LogInformation("Successfully parsed markdown for Peer {PeerId}, found {Count} entities.", peerIdForLog, parsedEntities.Length);
@@ -1394,22 +1410,22 @@ namespace Infrastructure.Services
                 try
                 {
                     // Use Hangfire background job for AI enhancement
-                    var jobId = await _geminiService.EnhanceMessageAsync(message, cancellationToken);
-                    
+                    string? jobId = await _geminiService.EnhanceMessageAsync(message, cancellationToken);
+
                     if (!string.IsNullOrWhiteSpace(jobId) && !jobId.StartsWith("Job enqueued"))
                     {
                         // If we got a direct result (not a job ID), use it immediately
                         _logger.LogInformation("Message/caption successfully enhanced by AI for Peer {PeerId}.", peerIdForLog);
-                        var (parsedText, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(jobId);
+                        (string? parsedText, MessageEntity[]? parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(jobId);
                         message = parsedText;
                         entitiesArray = parsedEntities.Length > 0 ? parsedEntities : null;
                     }
                     else if (!string.IsNullOrWhiteSpace(jobId))
                     {
                         // Extract job ID from the response
-                        var actualJobId = jobId.Replace("Job enqueued successfully. JobId: ", "");
+                        string actualJobId = jobId.Replace("Job enqueued successfully. JobId: ", "");
                         _logger.LogInformation("AI enhancement job enqueued for Peer {PeerId}. JobId: {JobId}", peerIdForLog, actualJobId);
-                        
+
                         // For now, proceed with original message and let the enhancement happen in background
                         // In a more sophisticated implementation, you might want to wait for the result
                         // or implement a callback mechanism
@@ -1432,7 +1448,7 @@ namespace Infrastructure.Services
 
             if (string.IsNullOrEmpty(message) || message.Length <= charLimit)
             {
-                messageParts = new List<string> { message ?? string.Empty };
+                messageParts = [message ?? string.Empty];
             }
             else
             {
@@ -1447,13 +1463,13 @@ namespace Infrastructure.Services
                 _logger.LogInformation("Message split into {PartCount} parts.", messageParts.Count);
             }
 
-            var result = await SendInPartsAsync(peer, messageParts, media, replyToMsgId, replyMarkup, entitiesArray,
+            UpdatesBase result = await SendInPartsAsync(peer, messageParts, media, replyToMsgId, replyMarkup, entitiesArray,
                 noWebpage, background, clearDraft, schedule_date, cancellationToken);
 
             // =========================================================================
             // === STAGE 3: MARK AS SENT ON SUCCESS (NEW)
             // =========================================================================
-            _memoryCache.Set(messageCacheKey, true, TimeSpan.FromHours(1));
+            _ = _memoryCache.Set(messageCacheKey, true, TimeSpan.FromHours(1));
             _logger.LogInformation("Successfully dispatched message to Peer {PeerId}. Idempotency key set.", peerIdForLog);
             // =========================================================================
             return result;
@@ -1504,20 +1520,15 @@ namespace Infrastructure.Services
                     if (isFirstPart)
                     {
                         _logger.LogDebug("Sending part 1/{TotalParts} to peer {PeerId}. Media: {HasMedia}", messageParts.Count, peerIdForLog, media != null);
-                        if (media is null) // Text-only message
-                        {
-                            currentUpdate = await _resiliencePipeline.ExecuteAsync(
+                        currentUpdate = media is null
+                            ? await _resiliencePipeline.ExecuteAsync(
                                 async token => await _client!.Messages_SendMessage(peer, currentPart, random_id, reply_to: inputReplyTo, reply_markup: isLastPart ? replyMarkup : null, entities: entities, no_webpage: noWebpage, background: background, clear_draft: clearDraft, schedule_date: schedule_date).ConfigureAwait(false),
                                 cancellationToken
-                            ).ConfigureAwait(false);
-                        }
-                        else // Media with caption
-                        {
-                            currentUpdate = await _resiliencePipeline.ExecuteAsync(
+                            ).ConfigureAwait(false)
+                            : await _resiliencePipeline.ExecuteAsync(
                                 async token => await _client!.Messages_SendMedia(peer, media, currentPart, random_id, reply_to: inputReplyTo, reply_markup: isLastPart ? replyMarkup : null, entities: entities, background: background, clear_draft: clearDraft, schedule_date: schedule_date).ConfigureAwait(false),
                                 cancellationToken
                             ).ConfigureAwait(false);
-                        }
                     }
                     // Subsequent parts are always text-only replies.
                     else
@@ -1577,70 +1588,73 @@ namespace Infrastructure.Services
             }
 
             // Use a more efficient StringBuilder for string concatenation
-            var keyBuilder = new StringBuilder(256); // Pre-allocate reasonable capacity
-            
+            StringBuilder keyBuilder = new(256); // Pre-allocate reasonable capacity
+
             // Process media items with comprehensive type support
-            var mediaIdentifiers = new List<string>(media.Count); // Pre-allocate list capacity
-            
-            foreach (var m in media)
+            List<string> mediaIdentifiers = new(media.Count); // Pre-allocate list capacity
+
+            foreach (InputMedia m in media)
             {
-                if (m == null) continue;
-                
+                if (m == null)
+                {
+                    continue;
+                }
+
                 string identifier = m switch
                 {
                     // Uploaded Media - Use file name for uniqueness (WTelegram doesn't expose file size)
                     TL.InputMediaUploadedPhoto up => $"UPLOAD_PHOTO:{up.file.Name}",
                     TL.InputMediaUploadedDocument ud => $"UPLOAD_DOC:{ud.file.Name}_{ud.mime_type}",
-                    
+
                     // Existing Telegram Media - Use ID, access hash, and file reference
-                    TL.InputMediaPhoto p when p.id is TL.InputPhoto ip => 
+                    TL.InputMediaPhoto p when p.id is TL.InputPhoto ip =>
                         $"EXISTING_PHOTO:{ip.id}_{ip.access_hash}_{Convert.ToBase64String(ip.file_reference)}",
-                    TL.InputMediaDocument d when d.id is TL.InputDocument idoc => 
+                    TL.InputMediaDocument d when d.id is TL.InputDocument idoc =>
                         $"EXISTING_DOC:{idoc.id}_{idoc.access_hash}_{Convert.ToBase64String(idoc.file_reference)}",
-                    
+
                     // Contact Media
                     TL.InputMediaContact contact => $"CONTACT:{contact.phone_number}_{contact.first_name}_{contact.last_name}",
-                    
+
                     // Game Media
                     TL.InputMediaGame game => $"GAME:{game.id}",
-                    
+
                     // Poll Media
                     TL.InputMediaPoll poll => $"POLL:{poll.poll.question}_{poll.poll.answers.Length}",
-                   
-                    
+
+
                     // WebPage Media
                     TL.InputMediaWebPage webPage => $"WEBPAGE:{webPage.url}",
-         
-                    
+
+
                     // Unknown or unsupported types
                     _ => $"UNKNOWN_MEDIA:{m.GetType().Name}_{m.GetHashCode()}"
                 };
-                
+
                 mediaIdentifiers.Add(identifier);
             }
-            
+
             // Sort identifiers for deterministic ordering (regardless of input order)
             mediaIdentifiers.Sort(StringComparer.Ordinal);
-            
+
             // Build the combined string efficiently
-            keyBuilder.AppendJoin("|", mediaIdentifiers);
-            
+            _ = keyBuilder.AppendJoin("|", mediaIdentifiers);
+
             // Add caption information with normalization
-            var normalizedCaption = NormalizeCaption(initialCaption);
-            keyBuilder.Append("|CAPTION:");
-            keyBuilder.Append(normalizedCaption);
-            
+            string normalizedCaption = NormalizeCaption(initialCaption);
+            _ = keyBuilder.Append("|CAPTION:");
+            _ = keyBuilder.Append(normalizedCaption);
+
             // Add media count for additional uniqueness
-            keyBuilder.Append("|COUNT:");
-            keyBuilder.Append(media.Count);
-            
+            _ = keyBuilder.Append("|COUNT:");
+            _ = keyBuilder.Append(media.Count);
+
             // Generate a more robust hash using multiple algorithms for collision resistance
-            var combinedString = keyBuilder.ToString();
-            var finalHash = GenerateRobustHash(combinedString);
-            
+            string combinedString = keyBuilder.ToString();
+            string finalHash = GenerateRobustHash(combinedString);
+
             return $"AlbumSent-{finalHash}";
         }
-        
+
         /// <summary>
         /// Normalizes caption text for consistent hashing by removing extra whitespace and normalizing line endings.
         /// </summary>
@@ -1649,8 +1663,10 @@ namespace Infrastructure.Services
         private static string NormalizeCaption(string? caption)
         {
             if (string.IsNullOrWhiteSpace(caption))
+            {
                 return "NULL";
-                
+            }
+
             // Normalize whitespace and line endings
             return caption
                 .Replace("\r\n", "\n")  // Normalize line endings
@@ -1658,7 +1674,7 @@ namespace Infrastructure.Services
                 .Trim()                 // Remove leading/trailing whitespace
                 .Replace("\n", "\\n");  // Escape newlines for consistent representation
         }
-        
+
         /// <summary>
         /// Generates a robust hash using multiple algorithms to minimize collision probability.
         /// </summary>
@@ -1667,26 +1683,26 @@ namespace Infrastructure.Services
         private static string GenerateRobustHash(string input)
         {
             // Use SHA256 as primary hash
-            using var sha256 = System.Security.Cryptography.SHA256.Create();
-            var hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
-            
+            using SHA256 sha256 = System.Security.Cryptography.SHA256.Create();
+            byte[] hashBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
+
             // For additional collision resistance, we can combine with a simpler hash
             // This is especially useful for large media collections
-            var combinedHash = new byte[hashBytes.Length + 4];
+            byte[] combinedHash = new byte[hashBytes.Length + 4];
             Array.Copy(hashBytes, 0, combinedHash, 0, hashBytes.Length);
-            
+
             // Add a simple checksum as additional entropy
-            var checksum = CalculateSimpleChecksum(input);
-            var checksumBytes = BitConverter.GetBytes(checksum);
+            uint checksum = CalculateSimpleChecksum(input);
+            byte[] checksumBytes = BitConverter.GetBytes(checksum);
             Array.Copy(checksumBytes, 0, combinedHash, hashBytes.Length, 4);
-            
+
             // Return a shorter but still unique hash
             return Convert.ToBase64String(combinedHash)
                 .Replace("+", "-")  // URL-safe characters
                 .Replace("/", "_")
                 .Replace("=", "");  // Remove padding for shorter keys
         }
-        
+
         /// <summary>
         /// Calculates a simple checksum for additional hash entropy.
         /// </summary>
@@ -1697,7 +1713,7 @@ namespace Infrastructure.Services
             uint checksum = 0;
             foreach (char c in input)
             {
-                checksum = ((checksum << 5) + checksum) + c; // Simple rolling hash
+                checksum = (checksum << 5) + checksum + c; // Simple rolling hash
             }
             return checksum;
         }
@@ -1727,7 +1743,7 @@ namespace Infrastructure.Services
             }
 
             long peerIdForLog = GetPeerIdForLog(peer);
-            var debugReport = new StringBuilder($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**\n");
+            StringBuilder debugReport = new($"🕵️‍♂️ **Album Send Trace: Peer `{peerIdForLog}`**\n");
 
             // === NEW: CAPTION EXTRACTION FROM MEDIA =================================
             // If no album caption is provided, we cannot extract from TL.InputMedia objects
@@ -1735,15 +1751,15 @@ namespace Infrastructure.Services
             // through the albumCaption parameter from the forwarding context.
             string? extractedCaption = albumCaption;
             TL.MessageEntity[]? extractedEntities = albumEntities;
-            
+
             if (string.IsNullOrWhiteSpace(extractedCaption))
             {
-                debugReport.AppendLine("**Caption Status:** ⚠️ No album caption provided.");
-                debugReport.AppendLine("**Note:** Captions should be passed via albumCaption parameter from forwarding context.");
+                _ = debugReport.AppendLine("**Caption Status:** ⚠️ No album caption provided.");
+                _ = debugReport.AppendLine("**Note:** Captions should be passed via albumCaption parameter from forwarding context.");
             }
             else
             {
-                debugReport.AppendLine($"**Caption Status:** ✅ Using provided album caption: `{TruncateString(extractedCaption, 50)}`");
+                _ = debugReport.AppendLine($"**Caption Status:** ✅ Using provided album caption: `{TruncateString(extractedCaption, 50)}`");
             }
             // =========================================================================
 
@@ -1756,72 +1772,67 @@ namespace Infrastructure.Services
                 await _notifToAdmin.SendNotificationAsync($"✅ **Duplicate Album Skipped**\nPeer: `{peerIdForLog}`\nCache Key: `{albumCacheKey}`", CancellationToken.None);
                 return; // EXIT EARLY - This prevents all duplicate work and sends.
             }
-            debugReport.AppendLine($"**Cache Key:** `{albumCacheKey}` (MISS)");
+            _ = debugReport.AppendLine($"**Cache Key:** `{albumCacheKey}` (MISS)");
             // =========================================================================
 
             try
             {
                 // === STAGE 1: AI ENHANCEMENT ============
-                debugReport.AppendLine("\n---");
-                debugReport.AppendLine("**1. AI Caption Enhancement:**");
+                _ = debugReport.AppendLine("\n---");
+                _ = debugReport.AppendLine("**1. AI Caption Enhancement:**");
 
                 // Call the GeminiService for text-only enhancement using the extracted caption
                 string? enhancedCaption = null;
-                var (currentCaption, currentEntities) = (extractedCaption, extractedEntities); // Default to extracted
-                
+                (string? currentCaption, MessageEntity[]? currentEntities) = (extractedCaption, extractedEntities); // Default to extracted
+
                 try
                 {
                     enhancedCaption = await _geminiService.EnhanceMessageAsync(extractedCaption, cancellationToken);
-                    
+
                     if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
                     {
                         // If we got a direct result (not a job ID), use it immediately
-                        debugReport.AppendLine($"   - ✅ AI service returned enhanced caption.");
+                        _ = debugReport.AppendLine($"   - ✅ AI service returned enhanced caption.");
                         (currentCaption, currentEntities) = FormatFinalMessage(enhancedCaption, null, debugReport); // Format the AI response
                     }
                     else if (!string.IsNullOrWhiteSpace(enhancedCaption))
                     {
                         // Extract job ID from the response
-                        var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
-                        debugReport.AppendLine($"   - 🔄 AI enhancement job enqueued. JobId: {actualJobId}");
+                        string actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
+                        _ = debugReport.AppendLine($"   - 🔄 AI enhancement job enqueued. JobId: {actualJobId}");
                         // For now, proceed with original caption and let the enhancement happen in background
                         (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
                     }
                     else
                     {
                         // AI service returned no enhancement
-                        if (string.IsNullOrWhiteSpace(extractedCaption))
-                        {
-                            debugReport.AppendLine($"   - 🚫 AI service returned no enhancement and original caption was empty (possibly due to DropMediaCaptions rule).");
-                        }
-                        else
-                        {
-                            debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
-                        }
+                        _ = string.IsNullOrWhiteSpace(extractedCaption)
+                            ? debugReport.AppendLine($"   - 🚫 AI service returned no enhancement and original caption was empty (possibly due to DropMediaCaptions rule).")
+                            : debugReport.AppendLine($"   - 🚫 AI service returned no enhancement. Using original caption.");
                         (currentCaption, currentEntities) = FormatFinalMessage(extractedCaption, extractedEntities, debugReport); // Format the original
                     }
                 }
                 catch (Exception aiEx)
                 {
                     // CRITICAL: If AI enhancement fails, fall back to original caption
-                    debugReport.AppendLine($"   - ❌ AI enhancement failed: {aiEx.Message}");
-                    debugReport.AppendLine($"   - 🔄 Falling back to original caption without enhancement.");
+                    _ = debugReport.AppendLine($"   - ❌ AI enhancement failed: {aiEx.Message}");
+                    _ = debugReport.AppendLine($"   - 🔄 Falling back to original caption without enhancement.");
                     _logger.LogWarning(aiEx, "AI enhancement failed for Peer {PeerId}, falling back to original caption", peerIdForLog);
-                    
+
                     // Use the original extracted caption and entities
                     (currentCaption, currentEntities) = (extractedCaption, extractedEntities);
                 }
 
                 // === STAGE 2: DISPATCH ===================================================
-                debugReport.AppendLine("\n---");
-                debugReport.AppendLine($"📤 **Final State to Send:**");
-                debugReport.AppendLine($"**Caption:** `{(string.IsNullOrWhiteSpace(currentCaption) ? "(empty)" : TruncateString(currentCaption, 100))}`");
-                debugReport.AppendLine($"**Entities:** `{currentEntities?.Length ?? 0}`");
+                _ = debugReport.AppendLine("\n---");
+                _ = debugReport.AppendLine($"📤 **Final State to Send:**");
+                _ = debugReport.AppendLine($"**Caption:** `{(string.IsNullOrWhiteSpace(currentCaption) ? "(empty)" : TruncateString(currentCaption, 100))}`");
+                _ = debugReport.AppendLine($"**Entities:** `{currentEntities?.Length ?? 0}`");
 
                 string lockKey = $"send_media_group_peer_{peer.GetType().Name}_{peerIdForLog}";
                 using (await AsyncLock.LockAsync(lockKey).ConfigureAwait(false))
                 {
-                    await _resiliencePipeline.ExecuteAsync(async (ctx, ct) =>
+                    _ = await _resiliencePipeline.ExecuteAsync(async (ctx, ct) =>
                         await _client!.SendAlbumAsync(
                             peer: peer,
                             medias: media,
@@ -1837,15 +1848,15 @@ namespace Infrastructure.Services
 
                 // === NEW: MARK AS SENT ON SUCCESS =======================================
                 // If the code reaches here, the send was successful.
-                _memoryCache.Set(albumCacheKey, true, TimeSpan.FromHours(1));
-                debugReport.AppendLine($"\n✅ **Dispatch Success & Cached:** Media group sent. Key `{albumCacheKey}` is now cached.");
+                _ = _memoryCache.Set(albumCacheKey, true, TimeSpan.FromHours(1));
+                _ = debugReport.AppendLine($"\n✅ **Dispatch Success & Cached:** Media group sent. Key `{albumCacheKey}` is now cached.");
                 _logger.LogInformation("Successfully dispatched media group to Peer {PeerId}. Lock released and idempotency key set.", peerIdForLog);
                 // =========================================================================
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "A critical error occurred during the SendMediaGroupAsync operation for Peer {PeerId}.", peerIdForLog);
-                debugReport.AppendLine($"\n❌ **FATAL ERROR:** {ex.Message}");
+                _ = debugReport.AppendLine($"\n❌ **FATAL ERROR:** {ex.Message}");
                 throw; // Re-throw so the caller knows it failed.
             }
             finally
@@ -1860,15 +1871,15 @@ namespace Infrastructure.Services
           string? initialCaption, TL.MessageEntity[]? initialEntities,
           ICollection<TL.InputMedia> media, StringBuilder debugReport)
         {
-            debugReport.AppendLine($"**Initial Param Caption:** `{(string.IsNullOrWhiteSpace(initialCaption) ? "(empty)" : "Set")}`");
+            _ = debugReport.AppendLine($"**Initial Param Caption:** `{(string.IsNullOrWhiteSpace(initialCaption) ? "(empty)" : "Set")}`");
             if (!string.IsNullOrWhiteSpace(initialCaption))
             {
-                debugReport.AppendLine("**1. Caption Recovery:** ✅ Using parameter caption.");
+                _ = debugReport.AppendLine("**1. Caption Recovery:** ✅ Using parameter caption.");
                 return (initialCaption, initialEntities);
             }
 
             // This is no longer a critical error. It's a valid path for AI generation.
-            debugReport.AppendLine("**1. Caption Recovery:** ⚠️ No parameter caption provided. Proceeding to AI stage for generation from media content.");
+            _ = debugReport.AppendLine("**1. Caption Recovery:** ⚠️ No parameter caption provided. Proceeding to AI stage for generation from media content.");
             return (string.Empty, null);
         }
 
@@ -1883,37 +1894,37 @@ namespace Infrastructure.Services
             StringBuilder debugReport, CancellationToken cancellationToken)
         {
             // The AI stage can now run even with an empty initial caption.
-            debugReport.AppendLine($"**3. AI Enhancement:** Initiating with caption length: `{currentCaption?.Length ?? 0}`.");
+            _ = debugReport.AppendLine($"**3. AI Enhancement:** Initiating with caption length: `{currentCaption?.Length ?? 0}`.");
 
             try
             {
                 // If we have no initial text, there's nothing for the AI to do.
                 if (string.IsNullOrWhiteSpace(currentCaption))
                 {
-                    debugReport.AppendLine("   - AI Skipped: 🚫 No text available for enhancement.");
+                    _ = debugReport.AppendLine("   - AI Skipped: 🚫 No text available for enhancement.");
                     return null;
                 }
 
-                debugReport.AppendLine($"   - AI Input Type: `Text-only enhancement`");
+                _ = debugReport.AppendLine($"   - AI Input Type: `Text-only enhancement`");
                 string? enhancedCaption = await _geminiService.EnhanceMessageAsync(currentCaption, cancellationToken);
 
                 if (!string.IsNullOrWhiteSpace(enhancedCaption) && !enhancedCaption.StartsWith("Job enqueued"))
                 {
                     // If we got a direct result (not a job ID), use it immediately
-                    debugReport.AppendLine($"   - Gemini Response: Received caption of length `{enhancedCaption.Length}`.");
+                    _ = debugReport.AppendLine($"   - Gemini Response: Received caption of length `{enhancedCaption.Length}`.");
                     return (enhancedCaption, null); // Return raw enhanced caption; formatting happens later.
                 }
                 else if (!string.IsNullOrWhiteSpace(enhancedCaption))
                 {
                     // Extract job ID from the response
-                    var actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
-                    debugReport.AppendLine($"   - 🔄 Gemini job enqueued. JobId: {actualJobId}");
+                    string actualJobId = enhancedCaption.Replace("Job enqueued successfully. JobId: ", "");
+                    _ = debugReport.AppendLine($"   - 🔄 Gemini job enqueued. JobId: {actualJobId}");
                     // For now, return null to indicate no enhancement available immediately
                     return null;
                 }
                 else
                 {
-                    debugReport.AppendLine("   - Gemini Response: Received empty or null caption.");
+                    _ = debugReport.AppendLine("   - Gemini Response: Received empty or null caption.");
                     return null;
                 }
             }
@@ -1921,7 +1932,7 @@ namespace Infrastructure.Services
             {
                 // This will correctly catch an OperationCanceledException if the token is triggered during the await.
                 _logger.LogError(ex, "An exception occurred within the AI enhancement stage.");
-                debugReport.AppendLine($"   - 💥 AI Stage Exception: `{ex.Message}`.");
+                _ = debugReport.AppendLine($"   - 💥 AI Stage Exception: `{ex.Message}`.");
                 return null; // Signal failure
             }
         }
@@ -1931,7 +1942,7 @@ namespace Infrastructure.Services
         {
             if (string.IsNullOrWhiteSpace(caption))
             {
-                debugReport.AppendLine("**4. Formatting:** 🚫 Skipped (caption is empty).");
+                _ = debugReport.AppendLine("**4. Formatting:** 🚫 Skipped (caption is empty).");
                 return (string.Empty, null);
             }
 
@@ -1940,18 +1951,18 @@ namespace Infrastructure.Services
                 // Only parse if no entities exist, as AI or pre-processing might have already created them.
                 if (entities is null || entities.Length == 0)
                 {
-                    var (parsedCaption, parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(caption);
-                    debugReport.AppendLine($"**4. Formatting:** ✅ Markdown parsed ({parsedEntities.Length} entities found).");
+                    (string? parsedCaption, MessageEntity[]? parsedEntities) = _markdownParserService.ParseMarkdownToTelegramEntities(caption);
+                    _ = debugReport.AppendLine($"**4. Formatting:** ✅ Markdown parsed ({parsedEntities.Length} entities found).");
                     return (parsedCaption, parsedEntities.Length > 0 ? parsedEntities : null);
                 }
 
-                debugReport.AppendLine($"**4. Formatting:** ✅ Using pre-existing entities ({entities?.Length ?? 0}).");
+                _ = debugReport.AppendLine($"**4. Formatting:** ✅ Using pre-existing entities ({entities?.Length ?? 0}).");
                 return (caption, entities);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to parse final markdown.");
-                debugReport.AppendLine($"**4. Formatting:** ⚠️ Markdown parse failed: `{ex.Message}`.");
+                _ = debugReport.AppendLine($"**4. Formatting:** ⚠️ Markdown parse failed: `{ex.Message}`.");
                 return (caption, null); // Return raw caption on failure
             }
         }
@@ -2548,29 +2559,35 @@ namespace Infrastructure.Services
         private async Task<string?> CheckGeminiJobResultAsync(string jobId, bool waitForCompletion = false, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(jobId))
+            {
                 return null;
+            }
 
-            var waitTime = maxWaitTime ?? TimeSpan.FromSeconds(30);
-            var startTime = DateTime.UtcNow;
+            TimeSpan waitTime = maxWaitTime ?? TimeSpan.FromSeconds(30);
+            DateTime startTime = DateTime.UtcNow;
 
             while (DateTime.UtcNow - startTime < waitTime)
             {
                 try
                 {
-                    var result = await _geminiService.GetJobResultAsync(jobId, cancellationToken);
-                    
+                    string? result = await _geminiService.GetJobResultAsync(jobId, cancellationToken);
+
                     if (result == "JOB_RUNNING")
                     {
                         if (!waitForCompletion)
+                        {
                             return null;
-                        
+                        }
+
                         await Task.Delay(1000, cancellationToken); // Wait 1 second before checking again
                         continue;
                     }
-                    
+
                     if (result == "JOB_NOT_FOUND")
+                    {
                         return null;
-                    
+                    }
+
                     // Job completed (success or failure)
                     return result;
                 }
@@ -2578,8 +2595,10 @@ namespace Infrastructure.Services
                 {
                     _logger.LogWarning(ex, "Failed to check Gemini job result for JobId: {JobId}", jobId);
                     if (!waitForCompletion)
+                    {
                         return null;
-                    
+                    }
+
                     await Task.Delay(1000, cancellationToken);
                 }
             }
@@ -2620,40 +2639,34 @@ namespace Infrastructure.Services
             bool clearDraft,
             DateTime? schedule_date)
         {
-            var keyBuilder = new StringBuilder(256);
-            keyBuilder.Append($"Peer:{peer?.GetType().Name}:{GetPeerIdForCache(peer)}|");
-            keyBuilder.Append($"Msg:{NormalizeCaption(message)}|");
+            StringBuilder keyBuilder = new(256);
+            _ = keyBuilder.Append($"Peer:{peer?.GetType().Name}:{GetPeerIdForCache(peer)}|");
+            _ = keyBuilder.Append($"Msg:{NormalizeCaption(message)}|");
             if (media != null)
             {
-                keyBuilder.Append($"Media:{media.GetType().Name}:{media.GetHashCode()}|");
+                _ = keyBuilder.Append($"Media:{media.GetType().Name}:{media.GetHashCode()}|");
             }
             if (entities != null)
             {
-                foreach (var entity in entities)
+                foreach (MessageEntity entity in entities)
                 {
-                    keyBuilder.Append($"Entity:{entity.GetType().Name}:{entity.GetHashCode()}|");
+                    _ = keyBuilder.Append($"Entity:{entity.GetType().Name}:{entity.GetHashCode()}|");
                 }
             }
-            keyBuilder.Append($"ReplyTo:{replyToMsgId}|Markup:{replyMarkup?.GetType().Name}:{replyMarkup?.GetHashCode()}|");
-            keyBuilder.Append($"NoWebpage:{noWebpage}|Background:{background}|ClearDraft:{clearDraft}|Schedule:{schedule_date?.ToString("O")}");
+            _ = keyBuilder.Append($"ReplyTo:{replyToMsgId}|Markup:{replyMarkup?.GetType().Name}:{replyMarkup?.GetHashCode()}|");
+            _ = keyBuilder.Append($"NoWebpage:{noWebpage}|Background:{background}|ClearDraft:{clearDraft}|Schedule:{schedule_date?.ToString("O")}");
             // Use robust hash for collision resistance
-            var combinedString = keyBuilder.ToString();
-            var finalHash = GenerateRobustHash(combinedString);
+            string combinedString = keyBuilder.ToString();
+            string finalHash = GenerateRobustHash(combinedString);
             return $"MsgSent-{finalHash}";
         }
 
         // Helper for peer ID extraction for cache key
         private static long GetPeerIdForCache(InputPeer? peer)
         {
-            if (peer is InputPeerUser ipu)
-                return ipu.user_id;
-            if (peer is InputPeerChat ipc)
-                return ipc.chat_id;
-            if (peer is InputPeerChannel ipch)
-                return ipch.channel_id;
-            if (peer is InputPeerSelf)
-                return -1;
-            return 0;
+            return peer is InputPeerUser ipu
+                ? ipu.user_id
+                : peer is InputPeerChat ipc ? ipc.chat_id : peer is InputPeerChannel ipch ? ipch.channel_id : peer is InputPeerSelf ? -1 : 0;
         }
     }
     public static class TelegramMessageHelper
@@ -2661,13 +2674,15 @@ namespace Infrastructure.Services
         public const int TextMessageMaxLength = 4086;
         public const int CaptionMaxLength = 1014;
 
-      public static List<string> ChunkMessage(string text, int limit)
+        public static List<string> ChunkMessage(string text, int limit)
         {
             if (string.IsNullOrEmpty(text) || text.Length <= limit)
-                return new List<string> { text ?? string.Empty };
+            {
+                return [text ?? string.Empty];
+            }
 
-            var chunks = new List<string>();
-            var remainingText = text.Trim();
+            List<string> chunks = [];
+            string remainingText = text.Trim();
 
             while (remainingText.Length > 0)
             {
@@ -2682,10 +2697,10 @@ namespace Infrastructure.Services
                 int splitIndex = FindBestSplitIndex(remainingText, limit);
 
                 // Add the chunk to the list.
-                chunks.Add(remainingText.Substring(0, splitIndex).TrimEnd());
+                chunks.Add(remainingText[..splitIndex].TrimEnd());
 
                 // Update the remaining text.
-                remainingText = remainingText.Substring(splitIndex).TrimStart();
+                remainingText = remainingText[splitIndex..].TrimStart();
             }
 
             return chunks;

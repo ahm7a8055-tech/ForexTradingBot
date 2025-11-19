@@ -1,5 +1,3 @@
-using System;
-
 namespace Shared.Security
 {
     /// <summary>
@@ -102,4 +100,4 @@ namespace Shared.Security
         }
         #endregion
     }
-} 
+}

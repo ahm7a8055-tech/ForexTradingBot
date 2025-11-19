@@ -1,7 +1,7 @@
 ﻿// File: Domain/Features/Forwarding/ValueObjects/MessageFilterOptions.cs
 using System.Text.RegularExpressions;
 
-namespace Domain.Features.Fowarding.ValueObjects
+namespace Domain.Features.Forwarding.ValueObjects
 {
     /// <summary>
     /// A value object that encapsulates a set of criteria for filtering messages.

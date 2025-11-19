@@ -67,7 +67,7 @@ namespace TelegramPanel.Infrastructure.Services
             TL.MessageEntity[]? tlMessageEntities = null;
             if (currentTelegramBotEntities != null && currentTelegramBotEntities.Any())
             {
-                List<TL.MessageEntity> convertedEntities = new();
+                List<TL.MessageEntity> convertedEntities = [];
                 foreach (Telegram.Bot.Types.MessageEntity entity in currentTelegramBotEntities)
                 {
                     TL.MessageEntity? tlEntity = ConvertTelegramBotEntityToTLEntity(entity, currentMessageContent);

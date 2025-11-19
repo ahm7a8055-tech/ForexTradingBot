@@ -71,8 +71,8 @@ namespace TelegramPanel.Infrastructure
                 _logger.LogCritical(ex, "Failed to get bot info (GetMeAsync). Bot token might be invalid, network issues, or Telegram API is down. Bot service will not start.");
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -156,8 +156,8 @@ namespace TelegramPanel.Infrastructure
                         _settings.WebhookAddress, ex.Message);
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -217,8 +217,8 @@ namespace TelegramPanel.Infrastructure
                     _logger.LogCritical(ex, "CRITICAL: Failed to start polling for bot {BotUsername}. The bot may not receive updates via polling.", me.Username);
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -321,23 +321,23 @@ namespace TelegramPanel.Infrastructure
 
             // Start the activity (trace span).
             // NEW: Start the activity before adding tags.
-            activity?.Start();
+            _ = (activity?.Start());
 
             // Add common tags for tracing context. These tags are visible in distributed tracing systems (like Jaeger, Zipkin).
-            activity?.SetTag("app.update.id", update.Id);
-            activity?.SetTag("app.update.type", update.Type.ToString());
+            _ = (activity?.SetTag("app.update.id", update.Id));
+            _ = (activity?.SetTag("app.update.type", update.Type.ToString()));
 
             // Extract user ID and add it as a tag if available.
             // We already have userId, so we just use it.
-            activity?.SetTag("app.telegram.user.id", userId.Value);
+            _ = (activity?.SetTag("app.telegram.user.id", userId.Value));
             // NEW: Add a tag to confirm the request was allowed by the rate limiter.
-            activity?.SetTag("app.rate_limit.status", "allowed");
+            _ = (activity?.SetTag("app.rate_limit.status", "allowed"));
 
             // Extract chat ID and add it as a tag if available.
             long? chatId = update.Message?.Chat?.Id ?? update.CallbackQuery?.Message?.Chat?.Id;
             if (chatId.HasValue)
             {
-                activity?.SetTag("app.telegram.chat.id", chatId.Value);
+                _ = (activity?.SetTag("app.telegram.chat.id", chatId.Value));
             }
 
             // Log a snippet of message text for context, but only if it's a message update.
@@ -347,7 +347,7 @@ namespace TelegramPanel.Infrastructure
                 messageTextSnippet = update.Message.Text.Length > 50
                     ? update.Message.Text[..50] + "..."
                     : update.Message.Text;
-                activity?.SetTag("app.message.text.snippet", messageTextSnippet);
+                _ = (activity?.SetTag("app.message.text.snippet", messageTextSnippet));
             }
 
             // --- 3. Structured Logging Context ---
@@ -379,28 +379,28 @@ namespace TelegramPanel.Infrastructure
 
                     _logger.LogTrace("Update successfully enqueued to the processing channel.");
                     // NEW: Explicitly set the activity status to OK on success.
-                    activity?.SetStatus(ActivityStatusCode.Ok, "Update enqueued successfully");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Ok, "Update enqueued successfully"));
                 }
                 catch (OperationCanceledException oce) when (cancellationToken.IsCancellationRequested)
                 {
                     // Expected during graceful shutdown. Log as Information.
                     _logger.LogInformation(oce, "Enqueueing update was canceled due to polling cancellation request.");
                     // NEW: Set activity status for cancellation.
-                    activity?.SetStatus(ActivityStatusCode.Ok, "Operation Canceled");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Ok, "Operation Canceled"));
                 }
                 catch (ChannelClosedException cce)
                 {
                     // Critical error: Channel is closed, cannot enqueue. Application shutdown likely.
                     _logger.LogError(cce, "CRITICAL: Failed to enqueue update because the channel is closed. Application might be shutting down or in a faulty state.");
                     // Mark the activity as failed if the channel write fails critically.
-                    activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Error, "Channel closed during enqueue"));
                 }
                 catch (Exception ex)
                 {
                     // Catch-all for any other unexpected errors during the enqueue operation.
                     _logger.LogError(ex, "An unexpected error occurred while enqueueing update from polling to the processing channel.");
                     // Mark the activity as failed.
-                    activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}");
+                    _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Enqueue failed: {ex.GetType().Name}"));
                 }
                 finally
                 {
@@ -488,8 +488,8 @@ namespace TelegramPanel.Infrastructure
                     _logger.LogError(exception, "{LogMessage}", logMessage);
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -510,8 +510,8 @@ namespace TelegramPanel.Infrastructure
                     _logger.LogCritical("CRITICAL: Unauthorized (401) error detected. Stopping polling to prevent further issues.");
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -543,8 +543,8 @@ namespace TelegramPanel.Infrastructure
                 _ = (activity?.SetStatus(ActivityStatusCode.Error, $"Handler failed: {handlerEx.GetType().Name}"));
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,

@@ -1,6 +1,4 @@
-﻿using System.Collections.Generic;
-
-namespace Application.DTOs.Diagnostics
+﻿namespace Application.DTOs.Diagnostics
 {
     #region ConnectivityStatusDto
     /// <summary>
@@ -60,7 +58,7 @@ namespace Application.DTOs.Diagnostics
         /// Gets or sets a list of general informational messages, warnings, or other diagnostic details.
         /// </summary>
         /// <example>["Configuration loaded successfully.", "Cache service is responsive."]</example>
-        public List<string> Messages { get; set; } = new();
+        public List<string> Messages { get; set; } = [];
         #endregion
 
         #endregion

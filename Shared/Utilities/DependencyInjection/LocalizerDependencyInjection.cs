@@ -1,5 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using Shared.Utilities;
 
 namespace Shared.Utilities.DependencyInjection
 {
@@ -9,9 +8,9 @@ namespace Shared.Utilities.DependencyInjection
         public static IServiceCollection AddProLocalization(this IServiceCollection services)
         {
             // Register the localization service as singleton
-            services.AddSingleton<ILocalizationService, LocalizationService>();
+            _ = services.AddSingleton<ILocalizationService, LocalizationService>();
             return services;
         }
     }
     #endregion
-} 
+}

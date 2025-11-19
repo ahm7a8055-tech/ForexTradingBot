@@ -1,6 +1,5 @@
 using Application.Common.Interfaces;
 using Microsoft.AspNetCore.DataProtection;
-using System;
 
 namespace Infrastructure.Security
 {

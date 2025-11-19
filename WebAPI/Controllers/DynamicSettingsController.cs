@@ -1,14 +1,7 @@
 using Application.Common.Interfaces;
 using Application.DTOs.Admin; // For DynamicSettingDto if used directly, or just rely on IDynamicSetting
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using System.Threading;
 
 namespace WebAPI.Controllers
 {
@@ -40,9 +33,9 @@ namespace WebAPI.Controllers
             _logger.LogInformation("Attempting to retrieve all dynamic settings for admin UI.");
             try
             {
-                var settings = await _dynamicConfigService.GetAllSettingsAsync(cancellationToken);
+                IEnumerable<IDynamicSetting> settings = await _dynamicConfigService.GetAllSettingsAsync(cancellationToken);
                 // Convert to concrete DTO if necessary for serialization, though IEnumerable<IDynamicSetting> should work if DynamicSettingDto implements it.
-                var settingsDto = settings.Select(s => new DynamicSettingDto(
+                List<DynamicSettingDto> settingsDto = settings.Select(s => new DynamicSettingDto(
                     s.Key,
                     s.Value, // Raw value from service (might be encrypted if from DB)
                     s.DisplayValue, // Masked/display value from service
@@ -65,7 +58,7 @@ namespace WebAPI.Controllers
         public class UpdateSettingsRequest
         {
             // Allows client to send only the settings they want to change
-            public Dictionary<string, string?> SettingsToUpdate { get; set; } = new Dictionary<string, string?>();
+            public Dictionary<string, string?> SettingsToUpdate { get; set; } = [];
         }
 
         /// <summary>

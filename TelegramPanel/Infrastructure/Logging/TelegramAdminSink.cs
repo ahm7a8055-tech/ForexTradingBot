@@ -7,9 +7,8 @@ using Serilog.Core;
 using Serilog.Events;
 using System.Text;
 using Telegram.Bot;
-using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types;
-using System.Collections.Concurrent;
+using Telegram.Bot.Types.Enums;
 
 namespace TelegramPanel.Infrastructure.Logging
 {
@@ -35,7 +34,7 @@ namespace TelegramPanel.Infrastructure.Logging
             _botToken = _configuration["TelegramPanel:BotToken"] ?? string.Empty;
             _adminChatIds = _configuration.GetSection("TelegramPanel:AdminUserIds").Get<List<long>>() ?? [];
 
-            var dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
+            string? dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
             _messageBuilder = new TelegramMessageBuilder(dashboardUrl);
             _botClient = new TelegramBotClient(_botToken);
 
@@ -57,10 +56,14 @@ namespace TelegramPanel.Infrastructure.Logging
         public void Emit(LogEvent logEvent)
         {
             if (string.IsNullOrEmpty(_botToken) || !_adminChatIds.Any())
+            {
                 return;
+            }
 
             if (_sinkState.ShouldThrottle(logEvent, out int occurrenceCount))
+            {
                 return;
+            }
 
             _ = Task.Run(() => SendNotificationAsync(logEvent, occurrenceCount));
         }
@@ -69,14 +72,14 @@ namespace TelegramPanel.Infrastructure.Logging
         {
             try
             {
-                var (messageText, keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
-                var exceptionAttachment = BuildExceptionAttachment(logEvent);
+                (string? messageText, Telegram.Bot.Types.ReplyMarkups.ReplyMarkup? keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
+                InputFileStream? exceptionAttachment = BuildExceptionAttachment(logEvent);
 
-                foreach (var adminId in _adminChatIds)
+                foreach (long adminId in _adminChatIds)
                 {
                     await _retryPolicy.ExecuteAsync(async () =>
                     {
-                        await _botClient.SendMessage(
+                        _ = await _botClient.SendMessage(
                             chatId: adminId,
                             text: messageText,
                             parseMode: ParseMode.Markdown,
@@ -100,7 +103,7 @@ namespace TelegramPanel.Infrastructure.Logging
             }
             catch (Exception ex)
             {
-                var errorMessage = $"[SINK ERROR] {DateTime.UtcNow:O} - Failed to send log: {ex}";
+                string errorMessage = $"[SINK ERROR] {DateTime.UtcNow:O} - Failed to send log: {ex}";
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine(errorMessage);
                 Console.ResetColor();
@@ -112,22 +115,26 @@ namespace TelegramPanel.Infrastructure.Logging
         private InputFileStream? BuildExceptionAttachment(LogEvent logEvent)
         {
             if (logEvent.Exception is null)
+            {
                 return null;
+            }
 
-            var sb = new StringBuilder();
-            sb.AppendLine("--- 🗂️ ULTIMATE DEBUG ATTACHMENT ---");
-            sb.AppendLine($"Timestamp (UTC): {logEvent.Timestamp:O}");
-            sb.AppendLine(new string('=', 50));
-            sb.AppendLine("--- LOG PROPERTIES ---");
+            StringBuilder sb = new();
+            _ = sb.AppendLine("--- 🗂️ ULTIMATE DEBUG ATTACHMENT ---");
+            _ = sb.AppendLine($"Timestamp (UTC): {logEvent.Timestamp:O}");
+            _ = sb.AppendLine(new string('=', 50));
+            _ = sb.AppendLine("--- LOG PROPERTIES ---");
 
-            foreach (var prop in logEvent.Properties)
-                sb.AppendLine($"🔹 {prop.Key}: {prop.Value}");
+            foreach (KeyValuePair<string, LogEventPropertyValue> prop in logEvent.Properties)
+            {
+                _ = sb.AppendLine($"🔹 {prop.Key}: {prop.Value}");
+            }
 
-            sb.AppendLine(new string('=', 50));
-            sb.AppendLine("--- EXCEPTION TRACE ---");
-            sb.AppendLine(logEvent.Exception.ToString());
+            _ = sb.AppendLine(new string('=', 50));
+            _ = sb.AppendLine("--- EXCEPTION TRACE ---");
+            _ = sb.AppendLine(logEvent.Exception.ToString());
 
-            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            byte[] bytes = Encoding.UTF8.GetBytes(sb.ToString());
             return new InputFileStream(new MemoryStream(bytes), $"Exception_{logEvent.Timestamp:yyyyMMdd_HHmmss}.txt");
         }
     }

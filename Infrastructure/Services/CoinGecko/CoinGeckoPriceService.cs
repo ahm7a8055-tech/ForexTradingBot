@@ -1,8 +1,8 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Application.Interfaces;
+using Microsoft.Extensions.Logging;
 using System.Net.Http.Json; // NuGet: System.Net.Http.Json
-using TelegramPanel.Application.Interfaces;
 
-namespace TelegramPanel.Infrastructure.Services
+namespace Infrastructure.Services.CoinGecko
 {
     public class CoinGeckoPriceService : ICryptoPriceService
     {
@@ -22,7 +22,7 @@ namespace TelegramPanel.Infrastructure.Services
         {
             if (cryptoCoinGeckoIds == null || !cryptoCoinGeckoIds.Any())
             {
-                return new Dictionary<string, decimal>();
+                return [];
             }
 
             string idsParam = string.Join(",", cryptoCoinGeckoIds);
@@ -33,7 +33,7 @@ namespace TelegramPanel.Infrastructure.Services
                 _logger.LogInformation("Fetching crypto prices from CoinGecko for IDs: {CryptoIds}", idsParam);
 
                 // The API response is nested, e.g., {"bitcoin": {"usd": 65000}, "tether": {"usd": 1.00}}
-                var response = await _httpClient.GetFromJsonAsync<Dictionary<string, Dictionary<string, decimal>>>(requestUri);
+                Dictionary<string, Dictionary<string, decimal>>? response = await _httpClient.GetFromJsonAsync<Dictionary<string, Dictionary<string, decimal>>>(requestUri);
 
                 if (response == null)
                 {
@@ -42,7 +42,7 @@ namespace TelegramPanel.Infrastructure.Services
                 }
 
                 // We flatten the dictionary for easier consumption by our application
-                var prices = response
+                Dictionary<string, decimal> prices = response
                     .Where(p => p.Value != null && p.Value.ContainsKey(vsCurrency))
                     .ToDictionary(p => p.Key, p => p.Value[vsCurrency]);
 

@@ -1,5 +1,4 @@
-﻿using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 
 namespace Application.DTOs.Telegram
 {
@@ -34,7 +33,7 @@ namespace Application.DTOs.Telegram
         /// Users with these IDs can access restricted commands and features of the bot.
         /// </summary>
         /// <example>[123456789, 987654321]</example>
-        public List<long> AdminUserIds { get; set; } = new();
+        public List<long> AdminUserIds { get; set; } = [];
         #endregion
 
         #region Operational Settings

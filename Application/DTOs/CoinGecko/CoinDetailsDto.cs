@@ -1,5 +1,4 @@
 ﻿// File: Application/DTOs/CoinGecko/CoinDetailsDto.cs
-using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace Application.DTOs.CoinGecko

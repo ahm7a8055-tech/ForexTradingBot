@@ -1,8 +1,11 @@
 ﻿// File: TelegramPanel/Application/CommandHandlers/MenuCallbackQueryHandler.cs
 #region Usings
+using Application.DTOs;
+using Application.DTOs.CryptoPay;
 using Application.Interfaces;
 using AutoMapper;
 using Microsoft.Extensions.Logging;
+using Shared.Results;
 using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
@@ -310,13 +313,13 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
             }
 
             // --- 3. Get Live Crypto Price ---
-            if (!CryptoAssetToCoinGeckoId.TryGetValue(selectedCryptoAsset, out var coinGeckoId))
+            if (!CryptoAssetToCoinGeckoId.TryGetValue(selectedCryptoAsset, out string? coinGeckoId))
             {
                 await _messageSender.SendTextMessageAsync(chatId, $"Error: The cryptocurrency '{selectedCryptoAsset}' is not supported.", cancellationToken: cancellationToken);
                 return;
             }
 
-            var prices = await _cryptoPriceService.GetPricesAsync(new[] { coinGeckoId }, "usd");
+            Dictionary<string, decimal>? prices = await _cryptoPriceService.GetPricesAsync(new[] { coinGeckoId }, "usd");
             if (prices == null || !prices.TryGetValue(coinGeckoId, out decimal liveCryptoPrice) || liveCryptoPrice <= 0)
             {
                 await _messageSender.SendTextMessageAsync(chatId, $"⚠️ Sorry, we couldn't fetch the live price for {selectedCryptoAsset}. Please try again in a moment.", cancellationToken: cancellationToken);
@@ -329,7 +332,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 usdPrice, selectedCryptoAsset, liveCryptoPrice, finalCryptoAmount, selectedCryptoAsset);
 
             // --- 5. Call the Payment Service with the dynamic amount ---
-            var userDto = await _userService.GetUserByTelegramIdAsync(telegramUserId.ToString(), cancellationToken);
+            UserDto? userDto = await _userService.GetUserByTelegramIdAsync(telegramUserId.ToString(), cancellationToken);
             if (userDto == null)
             {
                 await _messageSender.SendTextMessageAsync(chatId, "Error: Your user profile could not be found.", cancellationToken: cancellationToken);
@@ -337,7 +340,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
             }
 
             // ✅ CALLING THE NEW, CORRECTED METHOD
-            var invoiceResult = await _paymentService.CreateCryptoPaymentInvoiceAsync(
+            Result<CryptoPayInvoiceDto> invoiceResult = await _paymentService.CreateCryptoPaymentInvoiceAsync(
                 userDto.Id,
                 selectedPlanId,
                 selectedCryptoAsset,
@@ -348,7 +351,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
             // --- 6. Display Result to User (same as before) ---
             if (invoiceResult.Succeeded && invoiceResult.Data != null)
             {
-                var invoice = invoiceResult.Data;
+                CryptoPayInvoiceDto invoice = invoiceResult.Data;
                 string paymentMessage = $"✅ Your payment invoice for {TelegramMessageFormatter.Bold(finalCryptoAmount.ToString("F8") + " " + selectedCryptoAsset, escapePlainText: false)} has been created!\n\n" +
                                      // ... rest of the success message
                                      $"Please use the button below or copy the link to complete your payment.\n\n" +
@@ -359,7 +362,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                     new[] { InlineKeyboardButton.WithCallbackData("⬅️ Back to Main Menu", BackToMainMenuGeneral) }
                 );
 
-                await _botClient.SendMessage(chatId, paymentMessage, ParseMode.Markdown, replyMarkup: paymentLinkKeyboard, cancellationToken: cancellationToken);
+                _ = await _botClient.SendMessage(chatId, paymentMessage, ParseMode.Markdown, replyMarkup: paymentLinkKeyboard, cancellationToken: cancellationToken);
                 // You can now delete the "Please wait" message
                 await _botClient.DeleteMessage(chatId, messageIdToEdit, cancellationToken);
             }
@@ -368,7 +371,7 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 string failureMessage = $"⚠️ Sorry, we couldn't create your payment invoice for {selectedCryptoAsset}.\n" +
                                      $"Details: {string.Join("; ", invoiceResult.Errors)}\n\n" +
                                      "Please try a different payment method or contact support.";
-                await _botClient.EditMessageText(chatId, messageIdToEdit, failureMessage, cancellationToken: cancellationToken);
+                _ = await _botClient.EditMessageText(chatId, messageIdToEdit, failureMessage, cancellationToken: cancellationToken);
                 // Optionally, show the plans again after a delay or with a button
             }
         }
@@ -379,12 +382,23 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         // Helper method to format crypto prices
         private string FormatCryptoPrices(decimal usdAmount, decimal btcPrice, decimal usdtPrice, decimal tonPrice)
         {
-            var priceBuilder = new StringBuilder();
-            priceBuilder.Append($"💰 Your Investment: {TelegramMessageFormatter.Bold($"${usdAmount:F2} USD", escapePlainText: false)}");
+            StringBuilder priceBuilder = new();
+            _ = priceBuilder.Append($"💰 Your Investment: {TelegramMessageFormatter.Bold($"${usdAmount:F2} USD", escapePlainText: false)}");
 
-            if (usdtPrice > 0) priceBuilder.Append($"\n    ~ {usdAmount / usdtPrice:F2} USDT");
-            if (tonPrice > 0) priceBuilder.Append($" | ~ {usdAmount / tonPrice:F2} TON");
-            if (btcPrice > 0) priceBuilder.Append($" | ~ {usdAmount / btcPrice:F6} BTC");
+            if (usdtPrice > 0)
+            {
+                _ = priceBuilder.Append($"\n    ~ {usdAmount / usdtPrice:F2} USDT");
+            }
+
+            if (tonPrice > 0)
+            {
+                _ = priceBuilder.Append($" | ~ {usdAmount / tonPrice:F2} TON");
+            }
+
+            if (btcPrice > 0)
+            {
+                _ = priceBuilder.Append($" | ~ {usdAmount / btcPrice:F6} BTC");
+            }
 
             return priceBuilder.ToString();
         }
@@ -393,11 +407,11 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
         {
             _logger.LogInformation("Showing visually enhanced subscription plans to ChatID {ChatId}.", chatId);
 
-            var planTextBuilder = new StringBuilder();
-            planTextBuilder.AppendLine(TelegramMessageFormatter.Bold("🚀 Ready to Transform Your Trading? 🚀", escapePlainText: false));
-            planTextBuilder.AppendLine("Unlock a new level of market intelligence and profitability with our carefully crafted plans.");
-            planTextBuilder.AppendLine("Join a community driven by success!");
-            planTextBuilder.AppendLine();
+            StringBuilder planTextBuilder = new();
+            _ = planTextBuilder.AppendLine(TelegramMessageFormatter.Bold("🚀 Ready to Transform Your Trading? 🚀", escapePlainText: false));
+            _ = planTextBuilder.AppendLine("Unlock a new level of market intelligence and profitability with our carefully crafted plans.");
+            _ = planTextBuilder.AppendLine("Join a community driven by success!");
+            _ = planTextBuilder.AppendLine();
 
             // --- Plan 1: Premium Plan ---
             string premiumPlanDisplay =
@@ -428,20 +442,19 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 "    • 💰 **Unlock ~10% Savings:** Lock in the best value by choosing our 90-day plan!"; // Stronger saving message
 
             string planSelectionPrompt = "Select the plan that propels your trading journey:";
-
-            // Fetch live prices to make the display dynamic
-            decimal btcPrice = 0, usdtPrice = 0, tonPrice = 0;
             bool pricesFetched = false;
 
             try
             {
-                var prices = await _cryptoPriceService.GetPricesAsync(CryptoAssetToCoinGeckoId.Values, "usd");
+                Dictionary<string, decimal>? prices = await _cryptoPriceService.GetPricesAsync(CryptoAssetToCoinGeckoId.Values, "usd");
 
                 if (prices != null && prices.Any())
                 {
-                    prices.TryGetValue(CryptoAssetToCoinGeckoId["BTC"], out btcPrice);
-                    prices.TryGetValue(CryptoAssetToCoinGeckoId["USDT"], out usdtPrice);
-                    prices.TryGetValue(CryptoAssetToCoinGeckoId["TON"], out tonPrice);
+
+                    // Fetch live prices to make the display dynamic
+                    _ = prices.TryGetValue(CryptoAssetToCoinGeckoId["BTC"], out decimal btcPrice);
+                    _ = prices.TryGetValue(CryptoAssetToCoinGeckoId["USDT"], out decimal usdtPrice);
+                    _ = prices.TryGetValue(CryptoAssetToCoinGeckoId["TON"], out decimal tonPrice);
                     pricesFetched = true;
 
                     _logger.LogInformation("Live prices: BTC=${BtcPrice}, USDT=${UsdtPrice}, TON=${TonPrice}", btcPrice, usdtPrice, tonPrice);
@@ -488,11 +501,11 @@ namespace TelegramPanel.Application.CommandHandlers.MainMenu
                 // Default text will be used automatically in case of any exception.
             }
 
-            planTextBuilder.AppendLine(premiumPlanDisplay);
-            planTextBuilder.AppendLine();
-            planTextBuilder.AppendLine(bestPlanDisplay);
-            planTextBuilder.AppendLine();
-            planTextBuilder.Append(TelegramMessageFormatter.Bold(planSelectionPrompt, escapePlainText: false));
+            _ = planTextBuilder.AppendLine(premiumPlanDisplay);
+            _ = planTextBuilder.AppendLine();
+            _ = planTextBuilder.AppendLine(bestPlanDisplay);
+            _ = planTextBuilder.AppendLine();
+            _ = planTextBuilder.Append(TelegramMessageFormatter.Bold(planSelectionPrompt, escapePlainText: false));
 
             // Construct the inline keyboard
             InlineKeyboardMarkup? plansKeyboard = MarkupBuilder.CreateInlineKeyboard(

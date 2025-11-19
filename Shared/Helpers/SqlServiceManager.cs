@@ -1,16 +1,12 @@
 ﻿// File: Shared/Helpers/ServiceManagerHelper.cs
 
 #region Usings
-using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Management;
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.ServiceProcess;
-using System.Threading.Tasks;
 #endregion
 
 namespace Shared.Helpers
@@ -56,11 +52,14 @@ namespace Shared.Helpers
         private static void EnsureSqlServicesRunning()
         {
             WriteInfo("\n--- Checking SQL Services ---");
-            var allSystemServices = ServiceController.GetServices().ToDictionary(s => s.ServiceName, StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, ServiceController> allSystemServices = ServiceController.GetServices().ToDictionary(s => s.ServiceName, StringComparer.OrdinalIgnoreCase);
 
-            Parallel.ForEach(SqlServices, serviceName =>
+            _ = Parallel.ForEach(SqlServices, serviceName =>
             {
-                if (!allSystemServices.TryGetValue(serviceName, out var service)) return;
+                if (!allSystemServices.TryGetValue(serviceName, out ServiceController? service))
+                {
+                    return;
+                }
 
                 try
                 {
@@ -107,7 +106,7 @@ namespace Shared.Helpers
                 }
 
                 // If path is correct, check status.
-                using var service = new ServiceController(MemuraiServiceName);
+                using ServiceController service = new(MemuraiServiceName);
                 service.Refresh();
 
                 switch (service.Status)
@@ -147,7 +146,7 @@ namespace Shared.Helpers
 
             try
             {
-                using var service = new ServiceController(MemuraiServiceName);
+                using ServiceController service = new(MemuraiServiceName);
                 if (service.CanStop && service.Status == ServiceControllerStatus.Running)
                 {
                     StopService(MemuraiServiceName);
@@ -166,13 +165,19 @@ namespace Shared.Helpers
             try
             {
                 string query = $"SELECT PathName FROM Win32_Service WHERE Name = '{MemuraiServiceName}'";
-                using var searcher = new ManagementObjectSearcher(query);
+                using ManagementObjectSearcher searcher = new(query);
                 ManagementObject? managementObject = searcher.Get().Cast<ManagementObject>().FirstOrDefault();
 
-                if (managementObject == null) return false;
+                if (managementObject == null)
+                {
+                    return false;
+                }
 
                 string? pathName = managementObject["PathName"]?.ToString();
-                if (string.IsNullOrEmpty(pathName)) return false;
+                if (string.IsNullOrEmpty(pathName))
+                {
+                    return false;
+                }
 
                 string? executableDirectory = Path.GetDirectoryName(pathName.Trim('"'));
                 return !string.IsNullOrEmpty(executableDirectory) &&
@@ -192,16 +197,19 @@ namespace Shared.Helpers
             WriteWarning("Administrator privileges are required. Attempting to relaunch with elevation...");
             try
             {
-                var exeName = Environment.ProcessPath;
-                if (string.IsNullOrEmpty(exeName)) throw new InvalidOperationException("Could not determine application path.");
+                string? exeName = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(exeName))
+                {
+                    throw new InvalidOperationException("Could not determine application path.");
+                }
 
-                var startInfo = new ProcessStartInfo(exeName)
+                ProcessStartInfo startInfo = new(exeName)
                 {
                     Arguments = AdminRelaunchArgument,
                     Verb = "runas",
                     UseShellExecute = true
                 };
-                Process.Start(startInfo);
+                _ = Process.Start(startInfo);
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
@@ -214,12 +222,14 @@ namespace Shared.Helpers
             return false; // Signal to the caller that the process is exiting.
         }
 
-        private static bool ServiceExists(string serviceName) =>
-            ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
+        private static bool ServiceExists(string serviceName)
+        {
+            return ServiceController.GetServices().Any(s => s.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
+        }
 
         private static void StartService(string serviceName)
         {
-            using var service = new ServiceController(serviceName);
+            using ServiceController service = new(serviceName);
             service.Start();
             service.WaitForStatus(ServiceControllerStatus.Running, ServiceTimeout);
             WriteSuccess($"[SUCCESS] Service '{serviceName}' started.");
@@ -227,7 +237,7 @@ namespace Shared.Helpers
 
         private static void StopService(string serviceName)
         {
-            using var service = new ServiceController(serviceName);
+            using ServiceController service = new(serviceName);
             if (service.CanStop)
             {
                 service.Stop();
@@ -236,15 +246,33 @@ namespace Shared.Helpers
             }
         }
 
-        private static bool IsAdministrator() =>
-            new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+        private static bool IsAdministrator()
+        {
+            return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+        }
         #endregion
 
         #region --- Console Logging Helpers ---
-        private static void WriteSuccess(string message) => WriteInColor(message, ConsoleColor.Green);
-        private static void WriteInfo(string message) => WriteInColor(message, ConsoleColor.White);
-        private static void WriteWarning(string message) => WriteInColor(message, ConsoleColor.Yellow);
-        private static void WriteError(string message) => WriteInColor(message, ConsoleColor.Red);
+        private static void WriteSuccess(string message)
+        {
+            WriteInColor(message, ConsoleColor.Green);
+        }
+
+        private static void WriteInfo(string message)
+        {
+            WriteInColor(message, ConsoleColor.White);
+        }
+
+        private static void WriteWarning(string message)
+        {
+            WriteInColor(message, ConsoleColor.Yellow);
+        }
+
+        private static void WriteError(string message)
+        {
+            WriteInColor(message, ConsoleColor.Red);
+        }
+
         private static void WriteInColor(string message, ConsoleColor color)
         {
             Console.ForegroundColor = color;

@@ -1,7 +1,6 @@
 ﻿// File: TelegramPanel/Infrastructure/TelegramMessageSender.cs
 using Application.Common.Interfaces;
 using Application.Interfaces;
-using Domain.Entities;
 using Hangfire;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -537,8 +536,8 @@ namespace TelegramPanel.Infrastructure
                     // Background error log
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -560,8 +559,8 @@ namespace TelegramPanel.Infrastructure
                     // Background error log
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,
@@ -732,12 +731,12 @@ namespace TelegramPanel.Infrastructure
             _logger.LogDebug("Sending photo. ChatID: {ChatId}, Photo: {PhotoIdOrUrl}, Caption: {Caption}", chatId, photoUrlOrFileId, sanitizedLogCaption);
 
             // --- NEW: Check if the photoUrlOrFileId is a direct image URL ---
-            if (Uri.TryCreate(photoUrlOrFileId, UriKind.Absolute, out var uri) && (uri.Scheme == "http" || uri.Scheme == "https"))
+            if (Uri.TryCreate(photoUrlOrFileId, UriKind.Absolute, out Uri? uri) && (uri.Scheme == "http" || uri.Scheme == "https"))
             {
                 try
                 {
-                    using var httpClient = new HttpClient();
-                    using var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, uri), cancellationToken);
+                    using HttpClient httpClient = new();
+                    using HttpResponseMessage response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, uri), cancellationToken);
                     if (!response.IsSuccessStatusCode)
                     {
                         _logger.LogError("Image URL check failed: {Url} returned status {StatusCode}", photoUrlOrFileId, response.StatusCode);

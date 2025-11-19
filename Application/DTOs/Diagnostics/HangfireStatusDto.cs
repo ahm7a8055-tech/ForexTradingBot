@@ -1,5 +1,4 @@
-﻿using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 
 namespace Application.DTOs.Diagnostics
 {
@@ -62,19 +61,19 @@ namespace Application.DTOs.Diagnostics
         /// A server is a process that fetches and executes jobs.
         /// </summary>
         /// <example>["MYSERVER:12345"]</example>
-        public List<string> Servers { get; set; } = new();
+        public List<string> Servers { get; set; } = [];
         #endregion
 
         #region Detailed Components
         /// <summary>
         /// Gets or sets a list of all known job queues and their current status.
         /// </summary>
-        public List<HangfireQueueDto> Queues { get; set; } = new();
+        public List<HangfireQueueDto> Queues { get; set; } = [];
 
         /// <summary>
         /// Gets or sets a list of all configured recurring jobs and their status.
         /// </summary>
-        public List<HangfireRecurringJobDto> RecurringJobs { get; set; } = new();
+        public List<HangfireRecurringJobDto> RecurringJobs { get; set; } = [];
         #endregion
 
         #endregion

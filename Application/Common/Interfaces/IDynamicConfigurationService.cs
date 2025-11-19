@@ -1,7 +1,3 @@
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using System.Threading;
-
 namespace Application.Common.Interfaces
 {
     public interface IDynamicSetting

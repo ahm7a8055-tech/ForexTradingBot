@@ -1,4 +1,4 @@
-﻿namespace TelegramPanel.Application.Interfaces
+﻿namespace Application.Interfaces
 {
     /// <summary>
     /// Defines a service for fetching cryptocurrency prices.

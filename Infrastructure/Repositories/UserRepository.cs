@@ -11,18 +11,17 @@ using Infrastructure.Data;
 using Infrastructure.Persistence.Configurations;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration; // To access connection strings
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging; // For logging
 using Polly; // For resilience policies
 using Polly.Retry; // For retry policies
 using Polly.Timeout; // For custom RepositoryException
-using Shared.Extensions;
 using System.Data; // Common Ado.Net interfaces like IDbConnection, IDbTransaction
 using System.Data.Common; // For DbException (base class for database exceptions)
 using System.Linq.Expressions;
 using System.Text;
 using System.Text.Json; // Still included, but will throw NotSupportedException
 using System.Text.Json.Serialization; // Added for IntToBoolJsonConverter
-using Microsoft.Extensions.DependencyInjection;
 #endregion
 
 // --- Add IntToBoolJsonConverter for local use ---
@@ -30,16 +29,9 @@ public class IntToBoolJsonConverter : JsonConverter<bool>
 {
     public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        if (reader.TokenType == JsonTokenType.Number)
-        {
-            return reader.GetInt32() != 0;
-        }
-        if (reader.TokenType == JsonTokenType.True)
-        {
-            return true;
-        }
-
-        return reader.TokenType == JsonTokenType.False ? false : throw new JsonException();
+        return reader.TokenType == JsonTokenType.Number
+            ? reader.GetInt32() != 0
+            : reader.TokenType == JsonTokenType.True || (reader.TokenType == JsonTokenType.False ? false : throw new JsonException());
     }
 
     public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
@@ -66,12 +58,9 @@ public class FlexibleDateTimeJsonConverter : System.Text.Json.Serialization.Json
         if (reader.TokenType == JsonTokenType.String)
         {
             string? str = reader.GetString();
-            if (DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out DateTime dt))
-            {
-                return dt;
-            }
-
-            return DateTime.TryParse(str, out dt) ? dt : throw new JsonException($"Could not parse DateTime: {str}");
+            return DateTime.TryParseExact(str, Formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out DateTime dt)
+                ? dt
+                : DateTime.TryParse(str, out dt) ? dt : throw new JsonException($"Could not parse DateTime: {str}");
         }
         return reader.GetDateTime();
     }
@@ -479,7 +468,7 @@ namespace Infrastructure.Repositories
 
                     // --- UPGRADE: Use a dictionary for robust multi-mapping ---
                     // This prevents issues if a user has multiple subscriptions or preferences, ensuring each user appears only once.
-                    Dictionary<Guid, User> userMap = new();
+                    Dictionary<Guid, User> userMap = [];
 
                     // The DTOs are defined in the repository, this mapping assumes their existence.
                     _ = await connection.QueryAsync<UserDbDto, TokenWalletDbDto, SubscriptionDbDto, UserSignalPreferenceDbDto, User>(
@@ -538,8 +527,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -687,8 +676,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -710,8 +699,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -764,7 +753,7 @@ namespace Infrastructure.Repositories
                     UserWithRelatedDataDto? userDto = await connection.QueryFirstOrDefaultAsync<UserWithRelatedDataDto>(
                         new CommandDefinition(sql, new { TelegramId = telegramId }, cancellationToken: ct));
 
-                    return userDto == null ? null : userDto.ToDomainEntity(_logger);
+                    return userDto?.ToDomainEntity(_logger);
                 }, cancellationToken);
             }
             catch (Exception ex)
@@ -773,8 +762,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -810,7 +799,7 @@ namespace Infrastructure.Repositories
 
             // --- Sanitize Email for Logging ---
             // SECURITY: Sanitize email before logging to prevent exposure of private information
-            var sanitizedEmail = _logSanitizer.Sanitize(email);
+            string sanitizedEmail = _logSanitizer.Sanitize(email);
 
             // --- Log Operation Details ---
             // Log the sanitized email being searched at a trace level for detailed operational diagnostics.
@@ -855,8 +844,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -923,8 +912,8 @@ namespace Infrastructure.Repositories
             // Background error log
             _ = Task.Run(async () =>
             {
-                using var scope = _serviceProvider.CreateScope();
-                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                using IServiceScope scope = _serviceProvider.CreateScope();
+                IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                 await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                 {
                     Timestamp = DateTime.UtcNow,
@@ -1070,8 +1059,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1251,8 +1240,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1275,8 +1264,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1390,8 +1379,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1414,8 +1403,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1482,7 +1471,7 @@ namespace Infrastructure.Repositories
 
             // --- Sanitize Email for Logging ---
             // SECURITY: Sanitize email before logging to prevent exposure of private information
-            var sanitizedEmail = _logSanitizer.Sanitize(email);
+            string sanitizedEmail = _logSanitizer.Sanitize(email);
 
             // --- Log Operation Details ---
             // Log a generic message indicating the operation without exposing sensitive data.
@@ -1530,8 +1519,8 @@ namespace Infrastructure.Repositories
                 // Background error log (external monitoring) - redact sensitive data
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1569,7 +1558,7 @@ namespace Infrastructure.Repositories
 
             // --- Sanitize Telegram ID for Logging ---
             // SECURITY: Sanitize Telegram ID before logging to prevent exposure of private information
-            var sanitizedTelegramId = _logSanitizer.Sanitize(telegramId);
+            string sanitizedTelegramId = _logSanitizer.Sanitize(telegramId);
 
             // --- Log Operation Details ---
             // Log the sanitized Telegram ID being checked at a trace level for detailed operational diagnostics.
@@ -1617,8 +1606,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1768,8 +1757,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1791,8 +1780,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -1814,8 +1803,8 @@ namespace Infrastructure.Repositories
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,

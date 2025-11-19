@@ -1,7 +1,9 @@
 ﻿using Application.Common.Interfaces;
+using Application.Common.Interfaces.Admin;
 using Application.Common.Models;
 using Domain.Entities;
 using Hangfire;
+using Hangfire.Storage.Monitoring;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -9,6 +11,7 @@ using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
 using Polly.Timeout;
+using Polly.Wrap;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
@@ -31,7 +34,7 @@ namespace Application.Services
         #region State Management (In-Class Strategy)
         // Static state to be shared across all instances of this service.
         private static readonly ConcurrentDictionary<int, AiApiConfiguration> _configs = new();
-        private static List<int> _orderedConfigIds = new();
+        private static List<int> _orderedConfigIds = [];
         private static readonly SemaphoreSlim _configLock = new(1, 1);
         private const string CONFIG_REFRESH_LOCK_KEY = "GeminiService_ConfigRefreshLock";
         private static readonly TimeSpan CONFIG_CACHE_DURATION = TimeSpan.FromMinutes(5);
@@ -95,7 +98,7 @@ Enhanced message:";
                 .WaitAndRetryAsync(2, attempt => TimeSpan.FromMilliseconds(200 * attempt),
                     onRetry: (resp, ts, attempt, ctx) =>
                     {
-                        var configId = ctx.GetValueOrDefault("ConfigId", "N/A");
+                        object configId = ctx.GetValueOrDefault("ConfigId", "N/A");
                         _logger.LogWarning(
                             "[Polly] Retrying call for ConfigId {ConfigId}. Attempt {Attempt}. Delay {Delay}ms. Reason: {Reason}",
                             configId, attempt, ts.TotalMilliseconds, resp.Exception?.Message ?? resp.Result.StatusCode.ToString());
@@ -107,10 +110,10 @@ Enhanced message:";
             // First, try to get an immediate result
             try
             {
-                var result = await AttemptImmediateEnhancementAsync(text, apiKeyName, ct);
+                string? result = await AttemptImmediateEnhancementAsync(text, apiKeyName, ct);
                 if (!string.IsNullOrWhiteSpace(result))
                 {
-                    _logger.LogInformation("Message enhanced immediately. Text length: {TextLength} -> {ResultLength}", 
+                    _logger.LogInformation("Message enhanced immediately. Text length: {TextLength} -> {ResultLength}",
                         text?.Length ?? 0, result?.Length ?? 0);
                     return result;
                 }
@@ -121,8 +124,8 @@ Enhanced message:";
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -139,15 +142,15 @@ Enhanced message:";
             }
 
             // Fallback to background job if immediate enhancement fails
-            var jobId = Guid.NewGuid().ToString("N");
-            
+            string jobId = Guid.NewGuid().ToString("N");
+
             // Enqueue the job and return immediately
-            var jobIdResult = BackgroundJob.Enqueue(() => 
+            string jobIdResult = BackgroundJob.Enqueue(() =>
                 ProcessEnhanceMessageJobAsync(text, jobId, apiKeyName, ct));
-            
-            _logger.LogInformation("EnhanceMessage job enqueued. JobId: {JobId}, HangfireJobId: {HangfireJobId}", 
+
+            _logger.LogInformation("EnhanceMessage job enqueued. JobId: {JobId}, HangfireJobId: {HangfireJobId}",
                 jobId, jobIdResult);
-            
+
             // Return a placeholder response - in real implementation, you might want to return the job ID
             // and have the client poll for results or use SignalR for real-time updates
             return $"Job enqueued successfully. JobId: {jobId}";
@@ -160,14 +163,14 @@ Enhanced message:";
             string? apiKeyName = null)
         {
             // For the overload with images, we'll also use Hangfire
-            var jobId = Guid.NewGuid().ToString("N");
-            
-            var jobIdResult = BackgroundJob.Enqueue(() => 
+            string jobId = Guid.NewGuid().ToString("N");
+
+            string jobIdResult = BackgroundJob.Enqueue(() =>
                 ProcessEnhanceMessageJobAsync(text, jobId, apiKeyName, ct));
-            
-            _logger.LogInformation("EnhanceMessage job enqueued (with images). JobId: {JobId}, HangfireJobId: {HangfireJobId}", 
+
+            _logger.LogInformation("EnhanceMessage job enqueued (with images). JobId: {JobId}, HangfireJobId: {HangfireJobId}",
                 jobId, jobIdResult);
-            
+
             return $"Job enqueued successfully. JobId: {jobId}";
         }
 
@@ -181,7 +184,7 @@ Enhanced message:";
                 return null;
             }
 
-            var adminLogger = new AdminLogger("ImmediateEnhancement", Guid.NewGuid().ToString("N"));
+            AdminLogger adminLogger = new("ImmediateEnhancement", Guid.NewGuid().ToString("N"));
 
             try
             {
@@ -199,7 +202,7 @@ Enhanced message:";
                 int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
                 for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    var config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
+                    AiApiConfiguration? config = await GetNextActiveConfigAsync(apiKeyName, adminLogger, ct);
                     if (config == null)
                     {
                         adminLogger.Failure("No available API configurations found. Halting.", null, "CONFIG");
@@ -209,19 +212,19 @@ Enhanced message:";
                     adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
 
                     // CHANGE 1: Receive the full ResilientResponse object instead of deconstructing.
-                    var response = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+                    ResilientResponse<string> response = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
 
                     // CHANGE 2: Check for success using the 'Success' property.
                     if (response.Success && !string.IsNullOrWhiteSpace(response.Data))
                     {
                         adminLogger.Success($"Successfully received response from Config ID {config.Id}.", config.Id, "API_CALL");
-                        _cache.Set(contentCacheKey, response.Data, TimeSpan.FromHours(1));
+                        _ = _cache.Set(contentCacheKey, response.Data, TimeSpan.FromHours(1));
                         return response.Data; // Return the successful result.
                     }
 
                     // --- Failure Handling ---
                     // Log the detailed error from our structured response.
-                    var reason = response.Error?.Reason ?? "An unknown error occurred";
+                    string reason = response.Error?.Reason ?? "An unknown error occurred";
                     adminLogger.Failure($"Config ID {config.Id} failed. Reason: {reason}", config.Id, "ROTATION");
 
                     // This key failed, so put it on cooldown and move it to the back of the queue.
@@ -249,8 +252,8 @@ Enhanced message:";
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -275,12 +278,12 @@ Enhanced message:";
         [AutomaticRetry(Attempts = 2, OnAttemptsExceeded = AttemptsExceededAction.Delete)] // Let Hangfire retry on exceptions
         public async Task ProcessEnhanceMessageJobAsync(string text, string idempotencyKey, string jobId, CancellationToken ct)
         {
-            var adminLogger = new AdminLogger("EnhanceMessageJob", jobId);
+            AdminLogger adminLogger = new("EnhanceMessageJob", jobId);
             adminLogger.Info($"🚀 Hangfire job started. IdempotencyKey: {idempotencyKey}", null, "HANGFIRE_JOB");
 
             // ✅ Behavior Rule 1: Lock with Timeout
             // The lock is acquired to prevent concurrent processing for the same idempotency key.
-            var requestLock = _requestLocks.GetOrAdd(idempotencyKey, _ => new SemaphoreSlim(1, 1));
+            SemaphoreSlim requestLock = _requestLocks.GetOrAdd(idempotencyKey, _ => new SemaphoreSlim(1, 1));
 
             // Use a timeout for acquiring the lock itself, to prevent jobs from getting stuck indefinitely.
             bool lockAcquired = await requestLock.WaitAsync(TimeSpan.FromSeconds(60), ct);
@@ -306,19 +309,19 @@ Enhanced message:";
                 }
 
                 // Execute the core logic for enhancement.
-                var response = await ExecuteResilientEnhancementAsync(text, adminLogger, ct);
+                ResilientResponse<string> response = await ExecuteResilientEnhancementAsync(text, adminLogger, ct);
 
                 // ✅ Behavior Rule 2: Telemetry + Metrics
                 // The response object itself contains all necessary telemetry data.
                 // Sanitize jobId to prevent log forging
-                var sanitizedJobId = jobId.Replace("\n", "").Replace("\r", "");
+                string sanitizedJobId = jobId.Replace("\n", "").Replace("\r", "");
                 _logger.LogInformation(
                     "Job {JobId} completed with Type: {ResponseType}. Success: {IsSuccess}. Reason: {Reason}",
                     sanitizedJobId, response.Type, response.Success, response.Error?.Reason ?? "N/A"
                 );
 
                 // Cache the final response, regardless of success or failure, to prevent re-computation for non-retryable errors.
-                _cache.Set(idempotencyKey, response, TimeSpan.FromHours(1));
+                _ = _cache.Set(idempotencyKey, response, TimeSpan.FromHours(1));
 
                 // Now, act based on the response type to guide the Hangfire system.
                 switch (response.Type)
@@ -343,7 +346,7 @@ Enhanced message:";
             }
             finally
             {
-                requestLock.Release();
+                _ = requestLock.Release();
                 await NotifyAdminAsync(adminLogger.Render(), ct);
             }
         }
@@ -362,7 +365,7 @@ Enhanced message:";
             int maxAttempts = _configs.Count > 0 ? _configs.Count : 1;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                var config = await GetNextActiveConfigAsync(null, adminLogger, ct);
+                AiApiConfiguration? config = await GetNextActiveConfigAsync(null, adminLogger, ct);
 
                 // ✅ Behavior Rule 3: Fallback Action (Part 1)
                 // If we run out of configs to try.
@@ -375,7 +378,7 @@ Enhanced message:";
                 adminLogger.Info($"Attempt {attempt}/{maxAttempts}: Using Config ID {config.Id} (Model: {config.ModelName})", config.Id, "API_CALL");
 
                 // Attempt the API call for the selected configuration.
-                var response = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
+                ResilientResponse<string> response = await AttemptApiCallAsync(config, text, null, adminLogger, ct);
 
                 // If the call was successful, we're done.
                 if (response.Success)
@@ -423,7 +426,7 @@ Enhanced message:";
                 return GeminiErrors.ResourceExhausted<string>();
             }
 
-            var circuitBreaker = GetOrCreateCircuitBreaker(cfg.Id, adminLogger);
+            AsyncCircuitBreakerPolicy<HttpResponseMessage> circuitBreaker = GetOrCreateCircuitBreaker(cfg.Id, adminLogger);
             if (circuitBreaker.CircuitState == CircuitState.Open)
             {
                 adminLogger.Info($"Circuit breaker is open for Config ID {cfg.Id}. Skipping.", cfg.Id, "CIRCUIT_BREAKER");
@@ -431,16 +434,16 @@ Enhanced message:";
             }
 
             // Policy setup remains the same
-            var policyWrap = Policy.WrapAsync(_timeoutPolicy, circuitBreaker, _retryPolicy);
-            var pollyCtx = new Context($"GeminiCall-{cfg.Id}", new Dictionary<string, object> { { "ConfigId", cfg.Id.ToString() } });
+            AsyncPolicyWrap<HttpResponseMessage> policyWrap = Policy.WrapAsync(_timeoutPolicy, circuitBreaker, _retryPolicy);
+            Context pollyCtx = new($"GeminiCall-{cfg.Id}", new Dictionary<string, object> { { "ConfigId", cfg.Id.ToString() } });
 
             try
             {
-                var request = BuildRequest(cfg.PromptTemplate ?? DEFAULT_PROMPT_TEMPLATE, text);
-                var uri = $"https://gemini-proxy.opcelon.workers.dev/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
+                GeminiRequest request = BuildRequest(cfg.PromptTemplate ?? DEFAULT_PROMPT_TEMPLATE, text);
+                string uri = $"https://gemini-proxy.opcelon.workers.dev/v1beta/models/{cfg.ModelName}:generateContent?key={cfg.ApiKey}";
 
 
-                var sw = Stopwatch.StartNew();
+                Stopwatch sw = Stopwatch.StartNew();
                 HttpResponseMessage response = await policyWrap.ExecuteAsync(ctx => _httpClient.PostAsJsonAsync(uri, request, _jsonOpts, ct), pollyCtx);
                 sw.Stop();
 
@@ -449,18 +452,18 @@ Enhanced message:";
                 // --- SUCCESS PATH ---
                 if (response.IsSuccessStatusCode)
                 {
-                    var geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
+                    GeminiResponse? geminiResponse = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
 
                     // Check for safety blocks or recitation issues which appear in a successful response body.
                     if (geminiResponse?.Candidates == null || !geminiResponse.Candidates.Any())
                     {
-                        var finishReason = geminiResponse?.PromptFeedback?.BlockReason ?? "UNKNOWN";
+                        string finishReason = geminiResponse?.PromptFeedback?.BlockReason ?? "UNKNOWN";
                         adminLogger.Failure($"API returned success status but content was blocked. Reason: {finishReason}", cfg.Id, "SAFETY_BLOCK");
                         // Safety blocks are non-retryable for this specific prompt.
                         return ResilientResponse<string>.CreateNonRetryableError(400, $"Content blocked due to safety settings. Reason: {finishReason}", "SAFETY_SETTINGS");
                     }
 
-                    var responseText = geminiResponse.Candidates.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
+                    string? responseText = geminiResponse.Candidates.FirstOrDefault()?.Content?.parts?.FirstOrDefault()?.Text?.Trim();
                     if (!string.IsNullOrWhiteSpace(responseText))
                     {
                         return ResilientResponse<string>.CreateSuccess(responseText);
@@ -472,7 +475,7 @@ Enhanced message:";
                 }
 
                 // --- ERROR PATH ---
-                var errorContent = await response.Content.ReadAsStringAsync(ct);
+                string errorContent = await response.Content.ReadAsStringAsync(ct);
                 GeminiErrorResponse? geminiError = null;
                 try
                 {
@@ -488,7 +491,10 @@ Enhanced message:";
                 {
                     case HttpStatusCode.BadRequest: // 400
                         if (geminiError?.Error?.Status == "FAILED_PRECONDITION")
+                        {
                             return GeminiErrors.FailedPrecondition<string>();
+                        }
+
                         return GeminiErrors.InvalidArgument<string>(geminiError?.Error?.Message ?? errorContent);
 
                     case HttpStatusCode.Forbidden: // 403
@@ -512,14 +518,9 @@ Enhanced message:";
                     default:
                         // Fallback for unexpected status codes
                         adminLogger.Failure($"Unhandled HTTP status code: {(int)response.StatusCode}. Raw content: {errorContent.Truncate(150)}", cfg.Id, "UNHANDLED_ERROR");
-                        if ((int)response.StatusCode >= 500)
-                        {
-                            return ResilientResponse<string>.CreateRetryableError((int)response.StatusCode, $"Unhandled Server Error: {response.ReasonPhrase}", "UNKNOWN_SERVER_ERROR");
-                        }
-                        else
-                        {
-                            return ResilientResponse<string>.CreateNonRetryableError((int)response.StatusCode, $"Unhandled Client Error: {response.ReasonPhrase}", "UNKNOWN_CLIENT_ERROR");
-                        }
+                        return (int)response.StatusCode >= 500
+                            ? ResilientResponse<string>.CreateRetryableError((int)response.StatusCode, $"Unhandled Server Error: {response.ReasonPhrase}", "UNKNOWN_SERVER_ERROR")
+                            : ResilientResponse<string>.CreateNonRetryableError((int)response.StatusCode, $"Unhandled Client Error: {response.ReasonPhrase}", "UNKNOWN_CLIENT_ERROR");
                 }
             }
             // --- EXCEPTION PATH ---
@@ -546,8 +547,8 @@ Enhanced message:";
                 // Unexpected errors are safer to be classified as non-retryable to avoid poison messages.
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -577,15 +578,10 @@ Enhanced message:";
             {
                 return result;
             }
-            
+
             // If not in cache, check if job is still running
-            var jobState = JobStorage.Current.GetMonitoringApi().JobDetails(jobId);
-            if (jobState != null)
-            {
-                return "JOB_RUNNING";
-            }
-            
-            return "JOB_NOT_FOUND";
+            JobDetailsDto jobState = JobStorage.Current.GetMonitoringApi().JobDetails(jobId);
+            return jobState != null ? "JOB_RUNNING" : "JOB_NOT_FOUND";
         }
 
         /// <summary>
@@ -593,19 +589,19 @@ Enhanced message:";
         /// </summary>
         public async Task<List<string>> EnhanceMessagesBatchAsync(List<string> texts, CancellationToken ct, string? apiKeyName = null)
         {
-            var jobIds = new List<string>();
-            
-            foreach (var text in texts)
+            List<string> jobIds = [];
+
+            foreach (string text in texts)
             {
-                var jobId = Guid.NewGuid().ToString("N");
-                var hangfireJobId = BackgroundJob.Enqueue(() => 
+                string jobId = Guid.NewGuid().ToString("N");
+                string hangfireJobId = BackgroundJob.Enqueue(() =>
                     ProcessEnhanceMessageJobAsync(text, jobId, apiKeyName, ct));
-                
+
                 jobIds.Add(jobId);
-                _logger.LogInformation("Batch job enqueued. Text: {TextLength} chars, JobId: {JobId}", 
+                _logger.LogInformation("Batch job enqueued. Text: {TextLength} chars, JobId: {JobId}",
                     text?.Length ?? 0, jobId);
             }
-            
+
             return jobIds;
         }
 
@@ -621,25 +617,28 @@ Enhanced message:";
                 // Find the first ID in our ordered list that is not on cooldown.
                 // NOTE: Filtering by 'apiKeyName' was removed because the property 'KeyName' does not exist on your AiApiConfiguration entity.
                 // If you add this property to your entity, you can re-enable the commented-out filter.
-                var configId = _orderedConfigIds.FirstOrDefault(id =>
+                int configId = _orderedConfigIds.FirstOrDefault(id =>
                 {
-                    if (!_configs.TryGetValue(id, out var conf)) return false;
+                    if (!_configs.TryGetValue(id, out AiApiConfiguration? conf))
+                    {
+                        return false;
+                    }
                     //bool nameMatch = string.IsNullOrEmpty(apiKeyName) || conf.KeyName == apiKeyName; // <-- This line requires 'KeyName' property
                     bool onCooldown = _cache.TryGetValue(GetCooldownCacheKey(id), out _);
                     return !onCooldown; // && nameMatch;
                 });
 
-                return configId != 0 && _configs.TryGetValue(configId, out var config) ? config : null;
+                return configId != 0 && _configs.TryGetValue(configId, out AiApiConfiguration? config) ? config : null;
             }
             finally
             {
-                _configLock.Release();
+                _ = _configLock.Release();
             }
         }
 
         private async Task ReportFailureAndRotateAsync(int failedConfigId)
         {
-            _cache.Set(GetCooldownCacheKey(failedConfigId), true, CONFIG_FAILURE_COOLDOWN);
+            _ = _cache.Set(GetCooldownCacheKey(failedConfigId), true, CONFIG_FAILURE_COOLDOWN);
 
             await _configLock.WaitAsync();
             try
@@ -651,7 +650,7 @@ Enhanced message:";
             }
             finally
             {
-                _configLock.Release();
+                _ = _configLock.Release();
             }
         }
 
@@ -662,42 +661,45 @@ Enhanced message:";
                 await _configLock.WaitAsync(ct);
                 try
                 {
-                    if (_cache.TryGetValue(CONFIG_REFRESH_LOCK_KEY, out _)) return;
+                    if (_cache.TryGetValue(CONFIG_REFRESH_LOCK_KEY, out _))
+                    {
+                        return;
+                    }
 
                     adminLogger.Info("Config cache expired. Refreshing configurations from database.", null, "CONFIG_REFRESH");
 
-                    await using var scope = _serviceProvider.CreateAsyncScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
-                    var allDbConfigs = await repo.GetAllByProviderAndStatusAsync("Gemini", true, ct);
+                    await using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
+                    IAiApiConfigurationRepository repo = scope.ServiceProvider.GetRequiredService<IAiApiConfigurationRepository>();
+                    IEnumerable<AiApiConfiguration> allDbConfigs = await repo.GetAllByProviderAndStatusAsync("Gemini", true, ct);
 
-                    var freshConfigs = allDbConfigs
+                    List<AiApiConfiguration> freshConfigs = allDbConfigs
                         .Where(c => !string.IsNullOrWhiteSpace(c.ApiKey) && !string.IsNullOrWhiteSpace(c.ModelName))
                         .ToList();
 
                     _configs.Clear();
-                    foreach (var cfg in freshConfigs)
+                    foreach (AiApiConfiguration? cfg in freshConfigs)
                     {
                         _configs[cfg.Id] = cfg;
                     }
 
-                    var newOrder = _orderedConfigIds.Intersect(_configs.Keys).ToList();
-                    var addedKeys = _configs.Keys.Except(newOrder).ToList();
+                    List<int> newOrder = _orderedConfigIds.Intersect(_configs.Keys).ToList();
+                    List<int> addedKeys = _configs.Keys.Except(newOrder).ToList();
                     newOrder.AddRange(addedKeys);
                     _orderedConfigIds = newOrder;
 
                     adminLogger.Info($"Refresh complete. Found {_configs.Count} active configs. Order: [{string.Join(",", _orderedConfigIds)}]", null, "CONFIG_REFRESH");
-                    _cache.Set(CONFIG_REFRESH_LOCK_KEY, true, CONFIG_CACHE_DURATION);
+                    _ = _cache.Set(CONFIG_REFRESH_LOCK_KEY, true, CONFIG_CACHE_DURATION);
                 }
                 finally
                 {
-                    _configLock.Release();
+                    _ = _configLock.Release();
                 }
             }
         }
 
         private AsyncCircuitBreakerPolicy<HttpResponseMessage> GetOrCreateCircuitBreaker(int configId, AdminLogger adminLogger)
         {
-            var key = $"GeminiConfig_{configId}";
+            string key = $"GeminiConfig_{configId}";
             return _circuitBreakers.GetOrAdd(key, _ =>
             {
                 adminLogger.Info($"Creating new circuit breaker for Config ID {configId}.", configId, "CIRCUIT_BREAKER");
@@ -716,61 +718,76 @@ Enhanced message:";
 
         private bool CheckAndIncrementQuota(string model, string? text)
         {
-            var now = DateTime.UtcNow;
-            var minuteKey = $"quota_rpm_{model}_{now:yyyyMMddHHmm}";
-            var dayKey = $"quota_rpd_{model}_{now:yyyyMMdd}";
-            var tokenKey = $"quota_tpm_{model}_{now:yyyyMMddHHmm}";
+            DateTime now = DateTime.UtcNow;
+            string minuteKey = $"quota_rpm_{model}_{now:yyyyMMddHHmm}";
+            string dayKey = $"quota_rpd_{model}_{now:yyyyMMdd}";
+            string tokenKey = $"quota_tpm_{model}_{now:yyyyMMddHHmm}";
 
             // Check RPM
-            var currentRpm = _cache.GetOrCreate(minuteKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
-            if (currentRpm >= FREE_RPM) return false;
-            _cache.Set(minuteKey, currentRpm + 1, TimeSpan.FromMinutes(1));
+            int currentRpm = _cache.GetOrCreate(minuteKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
+            if (currentRpm >= FREE_RPM)
+            {
+                return false;
+            }
+
+            _ = _cache.Set(minuteKey, currentRpm + 1, TimeSpan.FromMinutes(1));
 
             // Check RPD
-            var currentRpd = _cache.GetOrCreate(dayKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(1); return 0; });
-            if (currentRpd >= FREE_RPD) return false;
-            _cache.Set(dayKey, currentRpd + 1, TimeSpan.FromDays(1));
+            int currentRpd = _cache.GetOrCreate(dayKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(1); return 0; });
+            if (currentRpd >= FREE_RPD)
+            {
+                return false;
+            }
+
+            _ = _cache.Set(dayKey, currentRpd + 1, TimeSpan.FromDays(1));
 
             // Check TPM (rough estimate: 1 token ≈ 4 characters)
-            var estimatedTokens = (text?.Length ?? 0) / 4;
-            var currentTpm = _cache.GetOrCreate(tokenKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
-            if (currentTpm + estimatedTokens > FREE_TPM) return false;
-            _cache.Set(tokenKey, currentTpm + estimatedTokens, TimeSpan.FromMinutes(1));
+            int estimatedTokens = (text?.Length ?? 0) / 4;
+            int currentTpm = _cache.GetOrCreate(tokenKey, entry => { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1); return 0; });
+            if (currentTpm + estimatedTokens > FREE_TPM)
+            {
+                return false;
+            }
+
+            _ = _cache.Set(tokenKey, currentTpm + estimatedTokens, TimeSpan.FromMinutes(1));
 
             return true;
         }
 
         private static string GenerateContentCacheKey(string? text, ICollection<byte[]>? images)
         {
-            var content = new StringBuilder();
+            StringBuilder content = new();
             if (!string.IsNullOrWhiteSpace(text))
             {
-                content.Append($"text:{text}");
+                _ = content.Append($"text:{text}");
             }
             if (images != null && images.Any())
             {
-                foreach (var img in images)
+                foreach (byte[] img in images)
                 {
-                    using var sha256 = SHA256.Create();
-                    var hash = sha256.ComputeHash(img);
-                    content.Append($"img:{Convert.ToBase64String(hash)}");
+                    using SHA256 sha256 = SHA256.Create();
+                    byte[] hash = sha256.ComputeHash(img);
+                    _ = content.Append($"img:{Convert.ToBase64String(hash)}");
                 }
             }
-            using var finalHash = SHA256.Create();
-            var finalBytes = finalHash.ComputeHash(Encoding.UTF8.GetBytes(content.ToString()));
+            using SHA256 finalHash = SHA256.Create();
+            byte[] finalBytes = finalHash.ComputeHash(Encoding.UTF8.GetBytes(content.ToString()));
             return $"gemini_content_{Convert.ToBase64String(finalBytes)}";
         }
 
 
         #endregion
 
-        private string GetCooldownCacheKey(int configId) => $"GeminiConfig_Cooldown_{configId}";
+        private string GetCooldownCacheKey(int configId)
+        {
+            return $"GeminiConfig_Cooldown_{configId}";
+        }
 
         private async Task NotifyAdminAsync(string message, CancellationToken ct)
         {
             try
             {
-                await using var scope = _serviceProvider.CreateAsyncScope();
+                await using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
                 var notificationService = scope.ServiceProvider.GetService<INotificationToAdminService>();
                 if (notificationService != null)
                 {
@@ -789,7 +806,7 @@ Enhanced message:";
 
         private GeminiRequest BuildRequest(string promptTemplate, string? text)
         {
-            var parts = new List<Part>();
+            List<Part> parts = [];
 
             string processedText;
             if (!string.IsNullOrWhiteSpace(text))
@@ -809,7 +826,7 @@ Enhanced message:";
             {
                 parts.Add(new Part(Text: processedText, InlineData: null));
             }
-            return new GeminiRequest(new List<Content> { new(parts) });
+            return new GeminiRequest([new(parts)]);
         }
 
         // Place these records within the GeminiService class or in a dedicated file like 'GeminiModels.cs'
@@ -929,14 +946,14 @@ Enhanced message:";
         {
             private readonly string _operationName;
             private readonly Stopwatch _totalStopwatch;
-            private readonly List<LogEntry> _entries = new();
+            private readonly List<LogEntry> _entries = [];
             private string? _finalStatus;
             private readonly DateTime _startTime;
             private int _successCount = 0;
             private int _failureCount = 0;
             private int _infoCount = 0;
             private int _warningCount = 0; // Added for warnings
-            private readonly Dictionary<int, int> _configUsageCount = new();
+            private readonly Dictionary<int, int> _configUsageCount = [];
 
             public string CorrelationId { get; }
 
@@ -949,12 +966,14 @@ Enhanced message:";
                 Info($"🚀 Operation '{_operationName}' Started", null, "START");
             }
 
-            public void Info(string message, int? configId = null, string? category = null) 
+            public void Info(string message, int? configId = null, string? category = null)
             {
                 _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "INFO", category));
                 _infoCount++;
                 if (configId.HasValue)
+                {
                     _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
+                }
             }
 
             public void Success(string message, int? configId = null, string? category = null)
@@ -962,7 +981,10 @@ Enhanced message:";
                 _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "SUCCESS", category));
                 _successCount++;
                 if (configId.HasValue)
+                {
                     _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
+                }
+
                 _finalStatus = "✅ SUCCESS";
             }
 
@@ -971,8 +993,11 @@ Enhanced message:";
                 _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "FAILURE", category));
                 _failureCount++;
                 if (configId.HasValue)
+                {
                     _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
-                if (_finalStatus == null) _finalStatus = "❌ FAILURE";
+                }
+
+                _finalStatus ??= "❌ FAILURE";
             }
 
             public void Warning(string message, int? configId = null, string? category = null)
@@ -980,115 +1005,117 @@ Enhanced message:";
                 _entries.Add(new LogEntry(message, _totalStopwatch.Elapsed, configId, "WARNING", category));
                 _warningCount++; // Increment warning count
                 if (configId.HasValue)
+                {
                     _configUsageCount[configId.Value] = _configUsageCount.GetValueOrDefault(configId.Value) + 1;
+                }
             }
 
             public string Render()
             {
                 _totalStopwatch.Stop();
-                var sb = new StringBuilder();
+                StringBuilder sb = new();
 
                 // Header with beautiful styling
-                sb.AppendLine("**🌟 GEMINI AI ENHANCEMENT REPORT**");
-                sb.AppendLine();
-                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                sb.AppendLine();
-                
+                _ = sb.AppendLine("**🌟 GEMINI AI ENHANCEMENT REPORT**");
+                _ = sb.AppendLine();
+                _ = sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                _ = sb.AppendLine();
+
                 // Operation Summary
-                sb.AppendLine($"**📝 Operation:** `{_operationName}`");
-                sb.AppendLine($"**🎯 Status:** {GetStatusWithColor(_finalStatus ?? "UNKNOWN")}");
-                sb.AppendLine($"**⏱️ Duration:** `{FormatDuration(_totalStopwatch.Elapsed)}`");
-                sb.AppendLine($"**🕒 Started:** `{_startTime:yyyy-MM-dd HH:mm:ss} UTC`");
-                sb.AppendLine($"**🕐 Ended:** `{DateTime.UtcNow:HH:mm:ss} UTC`");
-                sb.AppendLine($"**🔗 Correlation ID:** `{CorrelationId}`");
-                sb.AppendLine();
-                
+                _ = sb.AppendLine($"**📝 Operation:** `{_operationName}`");
+                _ = sb.AppendLine($"**🎯 Status:** {GetStatusWithColor(_finalStatus ?? "UNKNOWN")}");
+                _ = sb.AppendLine($"**⏱️ Duration:** `{FormatDuration(_totalStopwatch.Elapsed)}`");
+                _ = sb.AppendLine($"**🕒 Started:** `{_startTime:yyyy-MM-dd HH:mm:ss} UTC`");
+                _ = sb.AppendLine($"**🕐 Ended:** `{DateTime.UtcNow:HH:mm:ss} UTC`");
+                _ = sb.AppendLine($"**🔗 Correlation ID:** `{CorrelationId}`");
+                _ = sb.AppendLine();
+
                 // Performance Metrics
-                sb.AppendLine("**📊 PERFORMANCE METRICS**");
-                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                sb.AppendLine($"**Total Operations:** `{_entries.Count}`");
-                sb.AppendLine($"**Success Rate:** `{CalculateSuccessRate()}`");
-                sb.AppendLine($"**Average Response Time:** `{CalculateAverageResponseTime()}`");
-                sb.AppendLine($"**Configurations Used:** `{_configUsageCount.Count}`");
-                sb.AppendLine();
-                
+                _ = sb.AppendLine("**📊 PERFORMANCE METRICS**");
+                _ = sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                _ = sb.AppendLine($"**Total Operations:** `{_entries.Count}`");
+                _ = sb.AppendLine($"**Success Rate:** `{CalculateSuccessRate()}`");
+                _ = sb.AppendLine($"**Average Response Time:** `{CalculateAverageResponseTime()}`");
+                _ = sb.AppendLine($"**Configurations Used:** `{_configUsageCount.Count}`");
+                _ = sb.AppendLine();
+
                 // Configuration Usage
                 if (_configUsageCount.Any())
                 {
-                    sb.AppendLine("**⚙️ CONFIGURATION USAGE**");
-                    sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                    foreach (var kvp in _configUsageCount.OrderByDescending(x => x.Value))
+                    _ = sb.AppendLine("**⚙️ CONFIGURATION USAGE**");
+                    _ = sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    foreach (KeyValuePair<int, int> kvp in _configUsageCount.OrderByDescending(x => x.Value))
                     {
-                        sb.AppendLine($"• **Config {kvp.Key}:** `{kvp.Value} operations`");
+                        _ = sb.AppendLine($"• **Config {kvp.Key}:** `{kvp.Value} operations`");
                     }
-                    sb.AppendLine();
+                    _ = sb.AppendLine();
                 }
-                
+
                 // Detailed Trace
-                sb.AppendLine("**🔍 DETAILED TRACE**");
-                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                foreach (var group in _entries.GroupBy(e => e.Category ?? "GENERAL").OrderBy(g => g.Key))
+                _ = sb.AppendLine("**🔍 DETAILED TRACE**");
+                _ = sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                foreach (IGrouping<string, LogEntry>? group in _entries.GroupBy(e => e.Category ?? "GENERAL").OrderBy(g => g.Key))
                 {
                     if (group.Key != "GENERAL")
                     {
-                        sb.AppendLine($"**{GetCategoryIcon(group.Key)} {group.Key.ToUpper()}:**");
+                        _ = sb.AppendLine($"**{GetCategoryIcon(group.Key)} {group.Key.ToUpper()}:**");
                     }
-                    
-                    foreach (var entry in group)
+
+                    foreach (LogEntry? entry in group)
                     {
                         string icon = GetStatusIcon(entry.Status);
                         string configInfo = entry.ConfigId.HasValue ? $"`[C{entry.ConfigId}]`" : "";
                         string timestamp = $"`+{entry.Timestamp.TotalMilliseconds:F0}ms`";
                         string message = TruncateMessage(entry.Message, 80);
-                        
-                        sb.AppendLine($"  {icon} {timestamp} {configInfo} {message}");
+
+                        _ = sb.AppendLine($"  {icon} {timestamp} {configInfo} {message}");
                     }
-                    sb.AppendLine();
+                    _ = sb.AppendLine();
                 }
-                
+
                 // Final Analysis
-                sb.AppendLine("**📋 ANALYSIS & RECOMMENDATIONS**");
-                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                
+                _ = sb.AppendLine("**📋 ANALYSIS & RECOMMENDATIONS**");
+                _ = sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
                 if (_successCount > 0)
                 {
-                    var bestConfig = _configUsageCount.OrderByDescending(x => x.Value).FirstOrDefault();
-                    sb.AppendLine($"✅ **Success:** AI enhancement completed successfully");
-                    sb.AppendLine($"   • **Best Config:** `Config {bestConfig.Key}` ({bestConfig.Value} operations)");
-                    sb.AppendLine($"   • **Success Rate:** `{(_successCount * 100.0 / _entries.Count):F1}%`");
+                    KeyValuePair<int, int> bestConfig = _configUsageCount.OrderByDescending(x => x.Value).FirstOrDefault();
+                    _ = sb.AppendLine($"✅ **Success:** AI enhancement completed successfully");
+                    _ = sb.AppendLine($"   • **Best Config:** `Config {bestConfig.Key}` ({bestConfig.Value} operations)");
+                    _ = sb.AppendLine($"   • **Success Rate:** `{_successCount * 100.0 / _entries.Count:F1}%`");
                 }
                 else
                 {
-                    sb.AppendLine("❌ **Failure:** All configurations failed");
-                    sb.AppendLine("   • **Check:** API keys, quotas, network connectivity");
-                    sb.AppendLine("   • **Verify:** Gemini service configuration");
+                    _ = sb.AppendLine("❌ **Failure:** All configurations failed");
+                    _ = sb.AppendLine("   • **Check:** API keys, quotas, network connectivity");
+                    _ = sb.AppendLine("   • **Verify:** Gemini service configuration");
                 }
-                
+
                 if (_failureCount > 0)
                 {
-                    sb.AppendLine($"⚠️ **Failures Detected:** `{_failureCount} failures`");
-                    sb.AppendLine("   • **Review:** Configuration settings and API quotas");
-                    sb.AppendLine("   • **Check:** Network connectivity and service status");
+                    _ = sb.AppendLine($"⚠️ **Failures Detected:** `{_failureCount} failures`");
+                    _ = sb.AppendLine("   • **Review:** Configuration settings and API quotas");
+                    _ = sb.AppendLine("   • **Check:** Network connectivity and service status");
                 }
-                
+
                 if (_entries.Any(e => e.Status == "FAILURE" && e.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)))
                 {
-                    sb.AppendLine("⏱️ **Timeout Issues Detected:**");
-                    sb.AppendLine("   • **Consider:** Lowering timeout values");
-                    sb.AppendLine("   • **Check:** Network speed and API response times");
+                    _ = sb.AppendLine("⏱️ **Timeout Issues Detected:**");
+                    _ = sb.AppendLine("   • **Consider:** Lowering timeout values");
+                    _ = sb.AppendLine("   • **Check:** Network speed and API response times");
                 }
-                
+
                 if (_configUsageCount.Count > 1)
                 {
-                    sb.AppendLine("🔄 **Multiple Configs Used:**");
-                    sb.AppendLine("   • **Strategy:** Fallback configuration system active");
-                    sb.AppendLine("   • **Reliability:** Enhanced through config redundancy");
+                    _ = sb.AppendLine("🔄 **Multiple Configs Used:**");
+                    _ = sb.AppendLine("   • **Strategy:** Fallback configuration system active");
+                    _ = sb.AppendLine("   • **Reliability:** Enhanced through config redundancy");
                 }
-                
-                sb.AppendLine();
-                sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                sb.AppendLine("**📅 Report Generated:** " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC"));
-                
+
+                _ = sb.AppendLine();
+                _ = sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                _ = sb.AppendLine("**📅 Report Generated:** " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC"));
+
                 return sb.ToString();
             }
 
@@ -1116,7 +1143,7 @@ Enhanced message:";
                     _ => "➡️"
                 };
             }
-            
+
             private string GetCategoryIcon(string category)
             {
                 return category.ToUpper() switch
@@ -1134,29 +1161,34 @@ Enhanced message:";
             }
 
 
-         
+
 
             private string FormatDuration(TimeSpan duration)
             {
-                if (duration.TotalMilliseconds < 1000)
-                    return $"{duration.TotalMilliseconds:F0}ms";
-                else if (duration.TotalSeconds < 60)
-                    return $"{duration.TotalSeconds:F1}s";
-                else
-                    return $"{duration.TotalMinutes:F1}m {duration.Seconds}s";
+                return duration.TotalMilliseconds < 1000
+                    ? $"{duration.TotalMilliseconds:F0}ms"
+                    : duration.TotalSeconds < 60 ? $"{duration.TotalSeconds:F1}s" : $"{duration.TotalMinutes:F1}m {duration.Seconds}s";
             }
 
             private string CalculateSuccessRate()
             {
-                if (_entries.Count == 0) return "0%";
-                var successRate = (double)_successCount / _entries.Count * 100;
+                if (_entries.Count == 0)
+                {
+                    return "0%";
+                }
+
+                double successRate = (double)_successCount / _entries.Count * 100;
                 return $"{successRate:F1}% ({_successCount}/{_entries.Count})";
             }
 
             private string CalculateAverageResponseTime()
             {
-                if (_entries.Count == 0) return "0ms";
-                var avgTime = _entries.Average(e => e.Timestamp.TotalMilliseconds);
+                if (_entries.Count == 0)
+                {
+                    return "0ms";
+                }
+
+                double avgTime = _entries.Average(e => e.Timestamp.TotalMilliseconds);
                 return $"{avgTime:F0}ms";
             }
 

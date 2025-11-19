@@ -331,8 +331,8 @@ namespace Application.Features.Forwarding.Services
                 _logger.LogError(ex, "An unexpected error occurred during rule creation process for '{RuleName}'.", sanitizedRuleName);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -431,8 +431,8 @@ namespace Application.Features.Forwarding.Services
                 _logger.LogError(ex, "An unexpected error occurred during rule update process for '{RuleName}'.", rule.RuleName);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -524,8 +524,8 @@ namespace Application.Features.Forwarding.Services
                 _logger.LogError(ex, "An unexpected error occurred during rule deletion process for '{RuleName}'.", ruleName);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -620,8 +620,8 @@ namespace Application.Features.Forwarding.Services
                         originalMessageId, sourceChannelIdForMatching, rule.RuleName);
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,

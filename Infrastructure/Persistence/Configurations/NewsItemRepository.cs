@@ -690,7 +690,7 @@ namespace Infrastructure.Persistence.Configurations
                     using NpgsqlConnection connection = CreateConnection();
                     await connection.OpenAsync(ct);
 
-                    List<string> whereClauses = new();
+                    List<string> whereClauses = [];
                     DynamicParameters parameters = new();
 
                     // --- CORRECTED: Date, VIP, and Identifier Quoting ---
@@ -706,7 +706,7 @@ namespace Infrastructure.Persistence.Configurations
                     List<string>? keywordList = keywords?.Select(k => k.Trim()).Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
                     if (keywordList != null && keywordList.Any())
                     {
-                        List<string> keywordConditions = new();
+                        List<string> keywordConditions = [];
                         for (int i = 0; i < keywordList.Count; i++)
                         {
                             string keyword = keywordList[i];
@@ -754,7 +754,7 @@ namespace Infrastructure.Persistence.Configurations
                     parameters.Add("Offset", (pageNumber - 1) * pageSize);
                     parameters.Add("PageSize", pageSize);
 
-                    Dictionary<Guid, NewsItem> newsItemsMap = new();
+                    Dictionary<Guid, NewsItem> newsItemsMap = [];
                     _ = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct),
                         (newsItemDto, rssSourceDto, signalCategoryDto) =>
@@ -1162,7 +1162,7 @@ namespace Infrastructure.Persistence.Configurations
                     await connection.OpenAsync(ct);
 
                     // Using a dictionary to handle potential duplicates from LEFT JOINs is a robust pattern.
-                    Dictionary<Guid, NewsItem> newsItemsMap = new();
+                    Dictionary<Guid, NewsItem> newsItemsMap = [];
 
                     IEnumerable<NewsItem> items = await connection.QueryAsync<NewsItemDbDto, RssSourceMapDto, SignalCategoryMapDto, NewsItem>(
                         new CommandDefinition(sql, parameters, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct),

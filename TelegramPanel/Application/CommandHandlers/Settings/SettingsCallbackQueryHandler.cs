@@ -210,8 +210,8 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -234,8 +234,8 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -490,7 +490,7 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
             {
                 HashSet<Guid> currentSavedPreferences = (await _userPrefsRepository.GetPreferencesByUserIdAsync(userEntity.Id, cancellationToken))
                                               .Select(p => p.CategoryId).ToHashSet();
-                tempSelectedCategories = new HashSet<Guid>(currentSavedPreferences);
+                tempSelectedCategories = [.. currentSavedPreferences];
                 conversationState.StateData[tempSelectedCategoriesKey] = tempSelectedCategories;
                 await _userConversationStateService.SetAsync(telegramUserId, conversationState, cancellationToken);
             }
@@ -798,17 +798,17 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
                         $"{ToggleNotificationPrefix}{NotificationTypeGeneral}"
                     )
                 ],
-                isVipUser ? ([
+                isVipUser ? [
                     InlineKeyboardButton.WithCallbackData(
                         $"{(userEntity.EnableVipSignalNotifications ? "✅" : "⬜")} ✨ VIP Signal Alerts",
                         $"{ToggleNotificationPrefix}{NotificationTypeVipSignal}"
                     )
-                ]) : ([
+                ] : [
                     InlineKeyboardButton.WithCallbackData(
                         "💎 Enable VIP Signal Alerts (Upgrade Required)",
                         MenuCommandHandler.SubscribeCallbackData
                     )
-                ]),
+                ],
                 [
                     InlineKeyboardButton.WithCallbackData(
                         $"{(userEntity.EnableRssNewsNotifications ? "✅" : "⬜")} RSS News Updates",
@@ -1311,8 +1311,8 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,

@@ -1,4 +1,4 @@
-﻿namespace Application.Common.Interfaces
+﻿namespace Application.Common.Interfaces.Admin
 {
     /// <summary>
     /// Defines a service for sending important notifications to the system administrator.

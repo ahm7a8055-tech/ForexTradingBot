@@ -29,7 +29,7 @@ namespace TelegramPanel.Infrastructure.Logging
         /// <inheritdoc />
         public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
         {
-            var (method, filePath, lineNumber) = FindActualCaller();
+            (MethodBase? method, string? filePath, int lineNumber) = FindActualCaller();
 
             if (method is not null)
             {
@@ -42,40 +42,53 @@ namespace TelegramPanel.Infrastructure.Logging
         private (MethodBase? method, string? filePath, int lineNumber) FindActualCaller()
         {
             StackTrace trace = new(true);
-            foreach (var frame in trace.GetFrames() ?? Array.Empty<StackFrame>())
+            foreach (StackFrame frame in trace.GetFrames() ?? Array.Empty<StackFrame>())
             {
                 MethodBase? method = frame.GetMethod();
                 if (method?.DeclaringType == null)
+                {
                     continue;
+                }
 
                 string ns = method.DeclaringType.Namespace ?? string.Empty;
                 string typeName = method.DeclaringType.FullName ?? string.Empty;
                 string assemblyName = method.DeclaringType.Assembly.GetName().Name ?? string.Empty;
 
                 // Skip excluded namespaces
-                if (_excludedNamespaces.Any(prefix => ns.StartsWith(prefix)))
+                if (_excludedNamespaces.Any(ns.StartsWith))
+                {
                     continue;
+                }
                 // Skip known logging and infrastructure types
                 if (typeName.Contains("CustomCallerEnricher") ||
                     typeName.Contains("Serilog") ||
                     typeName.Contains("Microsoft.Extensions.Logging") ||
                     typeName.Contains("System.Runtime") ||
                     typeName.Contains("System.Threading"))
+                {
                     continue;
+                }
                 // Skip known logging and infrastructure assemblies
                 if (assemblyName.StartsWith("Serilog") ||
                     assemblyName.StartsWith("Microsoft.") ||
                     assemblyName.StartsWith("System."))
+                {
                     continue;
+                }
                 // Skip compiler-generated/async state machine frames
                 if (typeName.Contains("<") || typeName.Contains(">") || method.Name == "MoveNext")
+                {
                     continue;
+                }
 
                 // Found relevant frame
                 int line = frame.GetFileLineNumber();
                 string? file = frame.GetFileName();
                 if (line == 0)
+                {
                     line = frame.GetILOffset();
+                }
+
                 return (method, file, line);
             }
             // Fallback: no suitable frame found

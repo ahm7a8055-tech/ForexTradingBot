@@ -332,8 +332,8 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
                 _logger.LogError(ex, "An unexpected error occurred while trying to launch the 'unknown update' handler for Update ID {UpdateId}.", update.Id);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -413,8 +413,8 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
                 _logger.LogError(ex, "An unhandled exception occurred in the 'RespondToUnknownUpdateAndForgetAsync' background task for ChatId {ChatId}.", chatId);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -447,8 +447,8 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
                 exception.Message);
             _ = Task.Run(async () =>
             {
-                using var scope = _serviceProvider.CreateScope();
-                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                using IServiceScope scope = _serviceProvider.CreateScope();
+                IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                 await repo.AddAsync(new ProMonitoringLog
                 {
                     Timestamp = DateTime.UtcNow,
@@ -505,8 +505,8 @@ namespace TelegramPanel.Infrastructure // یا Application اگر در آن لا
                         exception.GetType().Name); // Include original exception type for context.
                     _ = Task.Run(async () =>
                     {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                        using IServiceScope scope = _serviceProvider.CreateScope();
+                        IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                         await repo.AddAsync(new ProMonitoringLog
                         {
                             Timestamp = DateTime.UtcNow,

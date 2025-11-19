@@ -162,8 +162,8 @@ namespace Infrastructure.Services
                     EnableRaisingEvents = true
                 };
 
-                var serverReadyTcs = new TaskCompletionSource<bool>();
-                var outputLines = new List<string>();
+                TaskCompletionSource<bool> serverReadyTcs = new();
+                List<string> outputLines = [];
 
                 _redisProcess.OutputDataReceived += (sender, args) =>
                 {
@@ -173,7 +173,7 @@ namespace Infrastructure.Services
                         _logger.LogDebug("Redis output: {Output}", args.Data);
                         if (args.Data.Contains("Ready to accept connections"))
                         {
-                            serverReadyTcs.TrySetResult(true);
+                            _ = serverReadyTcs.TrySetResult(true);
                         }
                     }
                 };
@@ -187,7 +187,7 @@ namespace Infrastructure.Services
                     }
                 };
 
-                _redisProcess.Start();
+                _ = _redisProcess.Start();
                 _redisProcess.BeginOutputReadLine();
                 _redisProcess.BeginErrorReadLine();
 

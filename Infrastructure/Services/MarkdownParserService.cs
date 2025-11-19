@@ -22,7 +22,7 @@ namespace Infrastructure.Services
         public MarkdownParserService(ILogger<MarkdownParserService> logger)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            
+
             // Configure Markdig pipeline for Telegram-compatible markdown parsing
             _pipeline = new MarkdownPipelineBuilder()
                 .UseAdvancedExtensions()
@@ -46,19 +46,19 @@ namespace Infrastructure.Services
                 _logger.LogDebug("Parsing markdown text of length {Length} to Telegram entities", markdownText.Length);
 
                 // Parse the markdown document - use fully qualified name to avoid ambiguity
-                var document = Markdig.Markdown.Parse(markdownText, _pipeline);
-                
-                var plainText = new StringBuilder();
-                var entities = new List<MessageEntity>();
-                var currentOffset = 0;
+                MarkdownDocument document = Markdig.Markdown.Parse(markdownText, _pipeline);
+
+                StringBuilder plainText = new();
+                List<MessageEntity> entities = [];
+                int currentOffset = 0;
 
                 // Process the document and extract entities
                 ProcessMarkdownDocument(document, plainText, entities, ref currentOffset);
 
-                var resultText = plainText.ToString();
-                var resultEntities = entities.ToArray();
+                string resultText = plainText.ToString();
+                MessageEntity[] resultEntities = entities.ToArray();
 
-                _logger.LogDebug("Successfully parsed markdown. Plain text length: {PlainTextLength}, Entities count: {EntitiesCount}", 
+                _logger.LogDebug("Successfully parsed markdown. Plain text length: {PlainTextLength}, Entities count: {EntitiesCount}",
                     resultText.Length, resultEntities.Length);
 
                 return (resultText, resultEntities);
@@ -79,17 +79,17 @@ namespace Infrastructure.Services
         {
             Console.WriteLine("Telegram Markdown V1 Parser Test");
             Console.WriteLine("================================\n");
-            
+
             // Create a simple logger for demonstration
-            using var loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder =>
+            using ILoggerFactory loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder =>
                 builder.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Debug));
-            var logger = loggerFactory.CreateLogger<MarkdownParserService>();
-            
+            ILogger<MarkdownParserService> logger = loggerFactory.CreateLogger<MarkdownParserService>();
+
             // Run the demonstration
             DemonstrateMarkdownParsing(logger);
-            
+
             Console.WriteLine("\nPress any key to exit...");
-            Console.ReadKey();
+            _ = Console.ReadKey();
         }
 
         /// <summary>
@@ -99,26 +99,26 @@ namespace Infrastructure.Services
         /// <param name="logger">Optional logger for output</param>
         public static void DemonstrateMarkdownParsing(ILogger<MarkdownParserService>? logger = null)
         {
-            var testService = new MarkdownParserService(logger ?? new Microsoft.Extensions.Logging.Abstractions.NullLogger<MarkdownParserService>());
-            
+            MarkdownParserService testService = new(logger ?? new Microsoft.Extensions.Logging.Abstractions.NullLogger<MarkdownParserService>());
+
             Console.WriteLine("=== Telegram Markdown V1 Parsing Demonstration ===\n");
-            
-            var testCases = testService.TestMarkdownParsing();
-            
-            foreach (var testCase in testCases)
+
+            Dictionary<string, (string plainText, MessageEntity[] entities)> testCases = testService.TestMarkdownParsing();
+
+            foreach (KeyValuePair<string, (string plainText, MessageEntity[] entities)> testCase in testCases)
             {
                 Console.WriteLine($"Test Case: {testCase.Key}");
                 Console.WriteLine($"Plain Text: {testCase.Value.plainText}");
                 Console.WriteLine($"Entities Count: {testCase.Value.entities.Length}");
-                
+
                 if (testCase.Value.entities.Length > 0)
                 {
                     Console.WriteLine("Entities:");
-                    foreach (var entity in testCase.Value.entities)
+                    foreach (MessageEntity entity in testCase.Value.entities)
                     {
-                        var entityType = entity.GetType().Name.Replace("MessageEntity", "");
+                        string entityType = entity.GetType().Name.Replace("MessageEntity", "");
                         Console.WriteLine($"  - {entityType}: Offset={entity.Offset}, Length={entity.Length}");
-                        
+
                         if (entity is MessageEntityTextUrl textUrl)
                         {
                             Console.WriteLine($"    URL: {textUrl.url}");
@@ -129,14 +129,14 @@ namespace Infrastructure.Services
                         }
                     }
                 }
-                
+
                 Console.WriteLine(new string('-', 50));
             }
-            
+
             // Test specific markdown scenarios
             Console.WriteLine("\n=== Specific Markdown Scenarios ===\n");
-            
-            var scenarios = new[]
+
+            (string, string)[] scenarios = new[]
             {
                 ("Bold Text", "**This is bold text**"),
                 ("Italic Text", "*This is italic text*"),
@@ -146,10 +146,10 @@ namespace Infrastructure.Services
                 ("Header", "# Main Header\nThis is content"),
                 ("Mixed", "# Welcome\nThis is **bold** and *italic* with `code` and [link](https://example.com)")
             };
-            
-            foreach (var (name, markdown) in scenarios)
+
+            foreach ((string? name, string? markdown) in scenarios)
             {
-                var (plainText, entities) = testService.ParseMarkdownToTelegramEntities(markdown);
+                (string? plainText, MessageEntity[]? entities) = testService.ParseMarkdownToTelegramEntities(markdown);
                 Console.WriteLine($"{name}:");
                 Console.WriteLine($"  Input: {markdown}");
                 Console.WriteLine($"  Output: {plainText}");
@@ -165,41 +165,41 @@ namespace Infrastructure.Services
         /// <returns>A dictionary containing test cases and their results</returns>
         public Dictionary<string, (string plainText, MessageEntity[] entities)> TestMarkdownParsing()
         {
-            var testCases = new Dictionary<string, (string plainText, MessageEntity[] entities)>
+            Dictionary<string, (string plainText, MessageEntity[] entities)> testCases = new()
             {
                 // Test case 1: Basic bold and italic
                 ["Basic Formatting"] = ParseMarkdownToTelegramEntities("**Bold text** and *italic text*"),
-                
+
                 // Test case 2: Headers
                 ["Headers"] = ParseMarkdownToTelegramEntities("# Main Header\n## Sub Header\n### Small Header"),
-                
+
                 // Test case 3: Code blocks
                 ["Code Blocks"] = ParseMarkdownToTelegramEntities("```csharp\nvar message = \"Hello World\";\n```"),
-                
+
                 // Test case 4: Inline code
                 ["Inline Code"] = ParseMarkdownToTelegramEntities("Use the `SendMessageAsync` method to send messages."),
-                
+
                 // Test case 5: Links
                 ["Links"] = ParseMarkdownToTelegramEntities("[Visit our website](https://example.com)"),
-                
+
                 // Test case 6: Mixed content
                 ["Mixed Content"] = ParseMarkdownToTelegramEntities("# Welcome\nThis is **bold** and *italic* text with `code` and [links](https://telegram.org)."),
-                
+
                 // Test case 7: Lists
                 ["Lists"] = ParseMarkdownToTelegramEntities("- Item 1\n- **Bold Item 2**\n- *Italic Item 3*"),
-                
+
                 // Test case 8: No markdown
                 ["Plain Text"] = ParseMarkdownToTelegramEntities("This is just plain text without any markdown formatting."),
-                
+
                 // Test case 9: Complex nested formatting
                 ["Nested Formatting"] = ParseMarkdownToTelegramEntities("**Bold with *italic inside* and `code`**"),
-                
+
                 // Test case 10: Empty string
                 ["Empty String"] = ParseMarkdownToTelegramEntities("")
             };
 
             _logger.LogInformation("Markdown parsing test completed. Processed {TestCount} test cases.", testCases.Count);
-            
+
             return testCases;
         }
 
@@ -208,7 +208,7 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessMarkdownDocument(MarkdownDocument document, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            foreach (var block in document)
+            foreach (Block block in document)
             {
                 ProcessBlock(block, plainText, entities, ref currentOffset);
             }
@@ -251,9 +251,9 @@ namespace Infrastructure.Services
             {
                 ProcessInline(paragraph.Inline, plainText, entities, ref currentOffset);
             }
-            
+
             // Add newline after paragraph
-            plainText.AppendLine();
+            _ = plainText.AppendLine();
             currentOffset += Environment.NewLine.Length;
         }
 
@@ -265,22 +265,22 @@ namespace Infrastructure.Services
             if (heading.Inline != null)
             {
                 // Add bold formatting for headings
-                var startOffset = currentOffset;
+                int startOffset = currentOffset;
                 ProcessInline(heading.Inline, plainText, entities, ref currentOffset);
-                var endOffset = currentOffset;
-                
+                int endOffset = currentOffset;
+
                 if (endOffset > startOffset)
                 {
-                    entities.Add(new MessageEntityBold 
-                    { 
-                        Offset = startOffset, 
-                        Length = endOffset - startOffset 
+                    entities.Add(new MessageEntityBold
+                    {
+                        Offset = startOffset,
+                        Length = endOffset - startOffset
                     });
                 }
             }
-            
+
             // Add newline after heading
-            plainText.AppendLine();
+            _ = plainText.AppendLine();
             currentOffset += Environment.NewLine.Length;
         }
 
@@ -289,32 +289,32 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessCodeBlock(FencedCodeBlock codeBlock, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            var startOffset = currentOffset;
-            var codeText = codeBlock.Lines.ToString();
-            
+            int startOffset = currentOffset;
+            string codeText = codeBlock.Lines.ToString();
+
             // Add language identifier if present
             if (!string.IsNullOrEmpty(codeBlock.Info))
             {
-                plainText.AppendLine(codeBlock.Info);
+                _ = plainText.AppendLine(codeBlock.Info);
                 currentOffset += codeBlock.Info.Length + Environment.NewLine.Length;
             }
-            
-            plainText.Append(codeText);
+
+            _ = plainText.Append(codeText);
             currentOffset += codeText.Length;
-            
-            var endOffset = currentOffset;
-            
+
+            int endOffset = currentOffset;
+
             if (endOffset > startOffset)
             {
-                entities.Add(new MessageEntityPre 
-                { 
-                    Offset = startOffset, 
+                entities.Add(new MessageEntityPre
+                {
+                    Offset = startOffset,
                     Length = endOffset - startOffset,
                     language = codeBlock.Info ?? string.Empty
                 });
             }
-            
-            plainText.AppendLine();
+
+            _ = plainText.AppendLine();
             currentOffset += Environment.NewLine.Length;
         }
 
@@ -323,16 +323,16 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessListBlock(ListBlock listBlock, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            foreach (var item in listBlock)
+            foreach (Block item in listBlock)
             {
                 if (item is ListItemBlock listItem)
                 {
                     // Add bullet point
-                    plainText.Append("• ");
+                    _ = plainText.Append("• ");
                     currentOffset += 2;
-                    
+
                     // Process all children of the list item
-                    foreach (var child in listItem)
+                    foreach (Block child in listItem)
                     {
                         if (child is ParagraphBlock paragraph)
                         {
@@ -346,8 +346,8 @@ namespace Infrastructure.Services
                             ProcessBlock(block, plainText, entities, ref currentOffset);
                         }
                     }
-                    
-                    plainText.AppendLine();
+
+                    _ = plainText.AppendLine();
                     currentOffset += Environment.NewLine.Length;
                 }
             }
@@ -358,14 +358,14 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessQuoteBlock(QuoteBlock quoteBlock, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            foreach (var item in quoteBlock)
+            foreach (Block item in quoteBlock)
             {
                 if (item is ParagraphBlock paragraph)
                 {
                     // Add quote prefix
-                    plainText.Append("> ");
+                    _ = plainText.Append("> ");
                     currentOffset += 2;
-                    
+
                     ProcessParagraph(paragraph, plainText, entities, ref currentOffset);
                 }
             }
@@ -376,7 +376,7 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessInline(ContainerInline container, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            foreach (var inline in container)
+            foreach (Inline inline in container)
             {
                 ProcessInlineElement(inline, plainText, entities, ref currentOffset);
             }
@@ -390,8 +390,8 @@ namespace Infrastructure.Services
             switch (inline)
             {
                 case LiteralInline literal:
-                    var text = literal.Content.ToString();
-                    plainText.Append(text);
+                    string text = literal.Content.ToString();
+                    _ = plainText.Append(text);
                     currentOffset += text.Length;
                     break;
 
@@ -408,7 +408,7 @@ namespace Infrastructure.Services
                     break;
 
                 case LineBreakInline:
-                    plainText.AppendLine();
+                    _ = plainText.AppendLine();
                     currentOffset += Environment.NewLine.Length;
                     break;
 
@@ -420,8 +420,8 @@ namespace Infrastructure.Services
                     // For other inline types, try to extract text content
                     if (inline is LiteralInline literalInline)
                     {
-                        var content = literalInline.Content.ToString();
-                        plainText.Append(content);
+                        string content = literalInline.Content.ToString();
+                        _ = plainText.Append(content);
                         currentOffset += content.Length;
                     }
                     break;
@@ -433,37 +433,37 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessEmphasis(EmphasisInline emphasis, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            var startOffset = currentOffset;
-            
+            int startOffset = currentOffset;
+
             // Process the content inside emphasis
-            foreach (var child in emphasis)
+            foreach (Inline child in emphasis)
             {
                 ProcessInlineElement(child, plainText, entities, ref currentOffset);
             }
-            
-            var endOffset = currentOffset;
-            
+
+            int endOffset = currentOffset;
+
             if (endOffset > startOffset)
             {
                 // Determine if it's bold or italic based on delimiter count
-                var delimiterCount = emphasis.DelimiterCount;
-                
+                int delimiterCount = emphasis.DelimiterCount;
+
                 if (delimiterCount >= 2)
                 {
                     // Bold
-                    entities.Add(new MessageEntityBold 
-                    { 
-                        Offset = startOffset, 
-                        Length = endOffset - startOffset 
+                    entities.Add(new MessageEntityBold
+                    {
+                        Offset = startOffset,
+                        Length = endOffset - startOffset
                     });
                 }
                 else
                 {
                     // Italic
-                    entities.Add(new MessageEntityItalic 
-                    { 
-                        Offset = startOffset, 
-                        Length = endOffset - startOffset 
+                    entities.Add(new MessageEntityItalic
+                    {
+                        Offset = startOffset,
+                        Length = endOffset - startOffset
                     });
                 }
             }
@@ -474,20 +474,20 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessInlineCode(CodeInline code, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            var startOffset = currentOffset;
-            var codeText = code.Content.ToString();
-            
-            plainText.Append(codeText);
+            int startOffset = currentOffset;
+            string codeText = code.Content.ToString();
+
+            _ = plainText.Append(codeText);
             currentOffset += codeText.Length;
-            
-            var endOffset = currentOffset;
-            
+
+            int endOffset = currentOffset;
+
             if (endOffset > startOffset)
             {
-                entities.Add(new MessageEntityCode 
-                { 
-                    Offset = startOffset, 
-                    Length = endOffset - startOffset 
+                entities.Add(new MessageEntityCode
+                {
+                    Offset = startOffset,
+                    Length = endOffset - startOffset
                 });
             }
         }
@@ -497,21 +497,21 @@ namespace Infrastructure.Services
         /// </summary>
         private void ProcessLink(LinkInline link, StringBuilder plainText, List<MessageEntity> entities, ref int currentOffset)
         {
-            var startOffset = currentOffset;
-            
+            int startOffset = currentOffset;
+
             // Process the content inside the link
-            foreach (var child in link)
+            foreach (Inline child in link)
             {
                 ProcessInlineElement(child, plainText, entities, ref currentOffset);
             }
-            
-            var endOffset = currentOffset;
-            
+
+            int endOffset = currentOffset;
+
             if (endOffset > startOffset && !string.IsNullOrEmpty(link.Url))
             {
-                entities.Add(new MessageEntityTextUrl 
-                { 
-                    Offset = startOffset, 
+                entities.Add(new MessageEntityTextUrl
+                {
+                    Offset = startOffset,
                     Length = endOffset - startOffset,
                     url = link.Url
                 });
@@ -526,17 +526,19 @@ namespace Infrastructure.Services
         public string EscapeMarkdownV1(string text)
         {
             if (string.IsNullOrEmpty(text))
+            {
                 return string.Empty;
+            }
 
             // Characters that need to be escaped in Telegram Markdown V1
-            var specialChars = new[] { '_', '*', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!' };
-            
-            var result = text;
-            foreach (var ch in specialChars)
+            char[] specialChars = new[] { '_', '*', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!' };
+
+            string result = text;
+            foreach (char ch in specialChars)
             {
                 result = result.Replace(ch.ToString(), "\\" + ch);
             }
-            
+
             return result;
         }
 
@@ -549,10 +551,12 @@ namespace Infrastructure.Services
         public (string plainText, MessageEntity[] entities) ParseSimpleMarkdown(string text)
         {
             if (string.IsNullOrEmpty(text))
+            {
                 return (string.Empty, Array.Empty<MessageEntity>());
+            }
 
-            var entities = new List<MessageEntity>();
-            var plainText = new StringBuilder();
+            List<MessageEntity> entities = [];
+            _ = new StringBuilder();
 
             // Regex patterns for different markdown elements
             var patterns = new[]
@@ -567,18 +571,18 @@ namespace Infrastructure.Services
                 new { Pattern = @"\[(.*?)\]\((.*?)\)", EntityType = "link" }
             };
 
-            var processedText = text;
-            var offsetAdjustment = 0;
+            string processedText = text;
+            int offsetAdjustment = 0;
 
             foreach (var pattern in patterns)
             {
-                var matches = Regex.Matches(processedText, pattern.Pattern, RegexOptions.Singleline);
-                
+                MatchCollection matches = Regex.Matches(processedText, pattern.Pattern, RegexOptions.Singleline);
+
                 foreach (Match match in matches.Reverse()) // Process in reverse to maintain offsets
                 {
-                    var startOffset = match.Index + offsetAdjustment;
-                    var content = match.Groups[1].Value;
-                    var length = content.Length;
+                    int startOffset = match.Index + offsetAdjustment;
+                    string content = match.Groups[1].Value;
+                    int length = content.Length;
 
                     // Replace the markdown with plain text
                     processedText = processedText.Remove(match.Index, match.Length).Insert(match.Index, content);
@@ -590,9 +594,9 @@ namespace Infrastructure.Services
                         "bold" => new MessageEntityBold { Offset = startOffset, Length = length },
                         "italic" => new MessageEntityItalic { Offset = startOffset, Length = length },
                         "code" => new MessageEntityCode { Offset = startOffset, Length = length },
-                        "link" => new MessageEntityTextUrl 
-                        { 
-                            Offset = startOffset, 
+                        "link" => new MessageEntityTextUrl
+                        {
+                            Offset = startOffset,
                             Length = length,
                             url = match.Groups[2].Value
                         },
@@ -609,4 +613,4 @@ namespace Infrastructure.Services
             return (processedText, entities.ToArray());
         }
     }
-} 
+}

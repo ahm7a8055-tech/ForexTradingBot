@@ -1,11 +1,10 @@
-﻿using System.Diagnostics;
-using System.IO.Compression;
-using System.Net.Http;
-using System.Runtime.InteropServices;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
 
-namespace Infrastructure.Services;
+namespace Infrastructure.ExternalServices;
 
 public interface IExternalDependencyManager
 {
@@ -45,15 +44,21 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
     public async Task<bool> EnsureDependenciesReadyAsync(IConfigurationBuilder config)
     {
         _logger.LogInformation("--- Initializing Self-Contained Dependencies ---");
-        Directory.CreateDirectory(_baseDir);
+        _ = Directory.CreateDirectory(_baseDir);
 
-        var postgresConnectionString = await EnsurePostgresAsync();
-        if (string.IsNullOrEmpty(postgresConnectionString)) return false;
+        string? postgresConnectionString = await EnsurePostgresAsync();
+        if (string.IsNullOrEmpty(postgresConnectionString))
+        {
+            return false;
+        }
 
-        var redisConnectionString = await EnsureRedisAsync();
-        if (string.IsNullOrEmpty(redisConnectionString)) return false;
+        string? redisConnectionString = await EnsureRedisAsync();
+        if (string.IsNullOrEmpty(redisConnectionString))
+        {
+            return false;
+        }
 
-        config.AddInMemoryCollection(new Dictionary<string, string?>
+        _ = config.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["DatabaseSettings:DatabaseProvider"] = "postgres",
             ["ConnectionStrings:DefaultConnection"] = postgresConnectionString,
@@ -69,11 +74,14 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
     private async Task<string?> EnsurePostgresAsync()
     {
         _logger.LogInformation("--- Checking PostgreSQL Status ---");
-        var pgCtlPath = GetPostgresToolPath("pg_ctl");
+        string pgCtlPath = GetPostgresToolPath("pg_ctl");
 
         if (!File.Exists(pgCtlPath))
         {
-            if (!await DownloadAndExtractPostgresAsync()) return null;
+            if (!await DownloadAndExtractPostgresAsync())
+            {
+                return null;
+            }
         }
         else
         {
@@ -92,42 +100,52 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
             _logger.LogInformation("Initializing new PostgreSQL data cluster at {DataDir}...", _pgDataDir);
             // Initialize with the system user as the superuser for bootstrapping
             string bootstrapUser = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? Environment.UserName : "postgres";
-            var (success, _) = await RunProcessAsync(pgCtlPath, $"initdb -D \"{_pgDataDir}\" -U {bootstrapUser}");
-            if (!success) return null;
+            (bool success, string _) = await RunProcessAsync(pgCtlPath, $"initdb -D \"{_pgDataDir}\" -U {bootstrapUser}");
+            if (!success)
+            {
+                return null;
+            }
 
             await File.AppendAllTextAsync(Path.Combine(_pgDataDir, "postgresql.conf"), $"\nport = {_pgPort}\n");
             // Allow local connections via password
             await File.AppendAllTextAsync(Path.Combine(_pgDataDir, "pg_hba.conf"), $"\nhost    all             all             127.0.0.1/32            scram-sha-256\nhost    all             all             ::1/128                 scram-sha-256\n");
         }
 
-        var (statusSuccess, statusOutput) = await RunProcessAsync(pgCtlPath, $"status -D \"{_pgDataDir}\"");
+        (bool statusSuccess, string? statusOutput) = await RunProcessAsync(pgCtlPath, $"status -D \"{_pgDataDir}\"");
         if (!statusSuccess || !statusOutput.Contains("server is running", StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation("Starting PostgreSQL server...");
             _postgresProcess = StartPersistentProcess(GetPostgresToolPath("postgres"), $"-D \"{_pgDataDir}\"");
-            if (_postgresProcess == null) return null;
+            if (_postgresProcess == null)
+            {
+                return null;
+            }
+
             await Task.Delay(4000);
         }
 
-        if (!await EnsureDatabaseAndUserExistAsync()) return null;
-
-        return $"Host=localhost;Port={_pgPort};Database={_pgDbName};Username={_pgUser};Password={_pgPassword}";
+        return !await EnsureDatabaseAndUserExistAsync()
+            ? null
+            : $"Host=localhost;Port={_pgPort};Database={_pgDbName};Username={_pgUser};Password={_pgPassword}";
     }
 
     private async Task<bool> EnsureDatabaseAndUserExistAsync()
     {
-        var psqlPath = GetPostgresToolPath("psql");
+        string psqlPath = GetPostgresToolPath("psql");
         string bootstrapUser = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? Environment.UserName : "postgres";
-        var adminConnStr = $"--host=localhost --port={_pgPort} --username={bootstrapUser} --dbname=postgres";
+        string adminConnStr = $"--host=localhost --port={_pgPort} --username={bootstrapUser} --dbname=postgres";
 
         // 1. Check if our app user exists
-        var (userExists, userOutput) = await RunProcessAsync(psqlPath, $"{adminConnStr} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='{_pgUser}'\"");
+        (bool userExists, string? userOutput) = await RunProcessAsync(psqlPath, $"{adminConnStr} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='{_pgUser}'\"");
         // Check if the command was successful AND the output is "1"
         if (!userExists || !userOutput.Trim().Equals("1"))
         {
             _logger.LogInformation("Application user '{User}' not found. Creating it...", _pgUser);
-            var (createUserSuccess, _) = await RunProcessAsync(psqlPath, $"{adminConnStr} -c \"CREATE ROLE {_pgUser} WITH LOGIN PASSWORD '{_pgPassword}';\"");
-            if (!createUserSuccess) return false;
+            (bool createUserSuccess, string _) = await RunProcessAsync(psqlPath, $"{adminConnStr} -c \"CREATE ROLE {_pgUser} WITH LOGIN PASSWORD '{_pgPassword}';\"");
+            if (!createUserSuccess)
+            {
+                return false;
+            }
         }
         else
         {
@@ -135,11 +153,15 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         }
 
         // 2. Check if our app database exists
-        var (dbExists, dbOutput) = await RunProcessAsync(psqlPath, $"{adminConnStr} -tAc \"SELECT 1 FROM pg_database WHERE datname='{_pgDbName}'\"");
+        (bool dbExists, string? dbOutput) = await RunProcessAsync(psqlPath, $"{adminConnStr} -tAc \"SELECT 1 FROM pg_database WHERE datname='{_pgDbName}'\"");
         if (!dbExists || !dbOutput.Trim().Equals("1"))
         {
             _logger.LogInformation("Database '{DbName}' not found. Creating it...", _pgDbName);
-            if (!(await RunProcessAsync(psqlPath, $"{adminConnStr} -c \"CREATE DATABASE {_pgDbName} OWNER {_pgUser}\"")).Success) return false;
+            if (!(await RunProcessAsync(psqlPath, $"{adminConnStr} -c \"CREATE DATABASE {_pgDbName} OWNER {_pgUser}\"")).Success)
+            {
+                return false;
+            }
+
             _logger.LogInformation("✅ Database created.");
         }
         else
@@ -166,32 +188,53 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         }
         else { return false; }
 
-        var archivePath = Path.Combine(_baseDir, "postgres_archive" + Path.GetExtension(url));
-        if (!await DownloadFileAsync("PostgreSQL", url, archivePath)) return false;
+        string archivePath = Path.Combine(_baseDir, "postgres_archive" + Path.GetExtension(url));
+        if (!await DownloadFileAsync("PostgreSQL", url, archivePath))
+        {
+            return false;
+        }
 
         Console.WriteLine("Extracting PostgreSQL...");
 
         if (archivePath.EndsWith(".zip"))
         {
-            var tempExtractDir = Path.Combine(_baseDir, "temp_pg_extract");
-            if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true);
-            Directory.CreateDirectory(tempExtractDir);
+            string tempExtractDir = Path.Combine(_baseDir, "temp_pg_extract");
+            if (Directory.Exists(tempExtractDir))
+            {
+                Directory.Delete(tempExtractDir, true);
+            }
+
+            _ = Directory.CreateDirectory(tempExtractDir);
 
             ZipFile.ExtractToDirectory(archivePath, tempExtractDir);
 
-            var sourceDir = Path.Combine(tempExtractDir, "pgsql");
-            if (!Directory.Exists(sourceDir)) return false;
+            string sourceDir = Path.Combine(tempExtractDir, "pgsql");
+            if (!Directory.Exists(sourceDir))
+            {
+                return false;
+            }
 
-            if (Directory.Exists(_pgDir)) Directory.Delete(_pgDir, true);
+            if (Directory.Exists(_pgDir))
+            {
+                Directory.Delete(_pgDir, true);
+            }
+
             Directory.Move(sourceDir, _pgDir);
             Directory.Delete(tempExtractDir, true);
         }
         else
         {
-            if (Directory.Exists(_pgDir)) Directory.Delete(_pgDir, true);
-            Directory.CreateDirectory(_pgDir);
-            var (success, _) = await RunProcessAsync("tar", $"-xzf \"{archivePath}\" -C \"{_pgDir}\" --strip-components=1");
-            if (!success) return false;
+            if (Directory.Exists(_pgDir))
+            {
+                Directory.Delete(_pgDir, true);
+            }
+
+            _ = Directory.CreateDirectory(_pgDir);
+            (bool success, string _) = await RunProcessAsync("tar", $"-xzf \"{archivePath}\" -C \"{_pgDir}\" --strip-components=1");
+            if (!success)
+            {
+                return false;
+            }
         }
 
         File.Delete(archivePath);
@@ -201,7 +244,7 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
 
     private string GetPostgresToolPath(string toolName)
     {
-        var exe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"{toolName}.exe" : toolName;
+        string exe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"{toolName}.exe" : toolName;
         return Path.Combine(_pgDir, "bin", exe);
     }
 
@@ -212,19 +255,26 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
     private async Task<string?> EnsureRedisAsync()
     {
         _logger.LogInformation("--- Checking Redis Status ---");
-        var redisServerPath = GetRedisToolPath("redis-server");
+        string redisServerPath = GetRedisToolPath("redis-server");
 
         if (!File.Exists(redisServerPath))
         {
-            if (!await DownloadAndExtractRedisAsync()) return null;
+            if (!await DownloadAndExtractRedisAsync())
+            {
+                return null;
+            }
         }
 
-        var (pingSuccess, _) = await RunProcessAsync(GetRedisToolPath("redis-cli"), $"-p {_redisPort} ping");
+        (bool pingSuccess, string _) = await RunProcessAsync(GetRedisToolPath("redis-cli"), $"-p {_redisPort} ping");
         if (!pingSuccess)
         {
             _logger.LogInformation("Starting Redis server...");
             _redisProcess = StartPersistentProcess(redisServerPath, $"--port {_redisPort}");
-            if (_redisProcess == null) return null;
+            if (_redisProcess == null)
+            {
+                return null;
+            }
+
             await Task.Delay(2000);
         }
 
@@ -237,10 +287,17 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             url = "https://github.com/microsoftarchive/redis/releases/download/win-3.0.504/Redis-x64-3.0.504.zip";
-            var zipPath = Path.Combine(_baseDir, "redis.zip");
-            if (!await DownloadFileAsync("Redis", url, zipPath)) return false;
+            string zipPath = Path.Combine(_baseDir, "redis.zip");
+            if (!await DownloadFileAsync("Redis", url, zipPath))
+            {
+                return false;
+            }
 
-            if (Directory.Exists(_redisDir)) Directory.Delete(_redisDir, true);
+            if (Directory.Exists(_redisDir))
+            {
+                Directory.Delete(_redisDir, true);
+            }
+
             Console.WriteLine("Extracting Redis...");
             ZipFile.ExtractToDirectory(zipPath, _redisDir);
             File.Delete(zipPath);
@@ -248,8 +305,12 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             _logger.LogInformation("Attempting to install Redis via apt-get...");
-            var (success, _) = await RunProcessAsync("sudo", "apt-get update && sudo apt-get install -y redis-server");
-            if (success) await RunProcessAsync("sudo", "systemctl enable --now redis-server");
+            (bool success, string _) = await RunProcessAsync("sudo", "apt-get update && sudo apt-get install -y redis-server");
+            if (success)
+            {
+                _ = await RunProcessAsync("sudo", "systemctl enable --now redis-server");
+            }
+
             return success;
         }
         else
@@ -264,7 +325,7 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
 
     private string GetRedisToolPath(string toolName)
     {
-        var exe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"{toolName}.exe" : toolName;
+        string exe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"{toolName}.exe" : toolName;
         return RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? toolName : Path.Combine(_redisDir, exe);
     }
 
@@ -278,14 +339,14 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         Console.WriteLine($"Downloading {name} (this may take a few minutes)...");
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using HttpRequestMessage request = new(HttpMethod.Get, url);
             request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36");
 
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
+            using HttpResponseMessage response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            _ = response.EnsureSuccessStatusCode();
 
-            using var stream = await response.Content.ReadAsStreamAsync();
-            using var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using Stream stream = await response.Content.ReadAsStreamAsync();
+            using FileStream fileStream = new(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
             await stream.CopyToAsync(fileStream);
 
             _logger.LogInformation("Download of {Name} complete.", name);
@@ -310,7 +371,7 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
 
     private Process? StartPersistentProcess(string command, string args)
     {
-        var process = new Process
+        Process process = new()
         {
             StartInfo = new ProcessStartInfo(command, args)
             {
@@ -322,7 +383,7 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         };
         try
         {
-            process.Start();
+            _ = process.Start();
             _logger.LogInformation("Started persistent process {ProcessId}: {Command} {Args}", process.Id, command, args);
             return process;
         }
@@ -335,7 +396,7 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
 
     private async Task<(bool Success, string Output)> RunProcessAsync(string command, string args)
     {
-        var process = new Process
+        Process process = new()
         {
             StartInfo = new ProcessStartInfo(command, args)
             {
@@ -346,7 +407,7 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
             }
         };
 
-        process.Start();
+        _ = process.Start();
         string output = await process.StandardOutput.ReadToEndAsync();
         string error = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
@@ -368,10 +429,13 @@ public class ExternalDependencyManager : IExternalDependencyManager, IAsyncDispo
         _logger.LogInformation("Disposing ExternalDependencyManager and shutting down services...");
         if (_postgresProcess != null && !_postgresProcess.HasExited)
         {
-            var pgCtlPath = GetPostgresToolPath("pg_ctl");
+            string pgCtlPath = GetPostgresToolPath("pg_ctl");
             _logger.LogInformation("Stopping PostgreSQL server...");
-            await RunProcessAsync(pgCtlPath, $"stop -D \"{_pgDataDir}\" -m fast");
-            if (!_postgresProcess.HasExited) _postgresProcess.Kill(true);
+            _ = await RunProcessAsync(pgCtlPath, $"stop -D \"{_pgDataDir}\" -m fast");
+            if (!_postgresProcess.HasExited)
+            {
+                _postgresProcess.Kill(true);
+            }
         }
         if (_redisProcess != null && !_redisProcess.HasExited)
         {

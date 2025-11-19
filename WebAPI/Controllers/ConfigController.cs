@@ -1,11 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using Npgsql;
+using Shared.Security; // For SecureExceptionSanitizer
 using StackExchange.Redis;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
-using Shared.Security; // For SecureExceptionSanitizer
 
 namespace WebAPI.Controllers
 {
@@ -23,7 +22,7 @@ namespace WebAPI.Controllers
             IConfiguration configuration,
             ILogger<ConfigController> logger,
             IHttpClientFactory httpClientFactory)
-            // IDiagnosticsService diagnosticsService) // Option
+        // IDiagnosticsService diagnosticsService) // Option
         {
             _configuration = configuration;
             _logger = logger;
@@ -40,39 +39,41 @@ namespace WebAPI.Controllers
         private static string RedactSensitiveData(string? sensitiveData)
         {
             if (string.IsNullOrWhiteSpace(sensitiveData))
+            {
                 return "[EMPTY_DATA]";
+            }
 
             try
             {
-                var redacted = sensitiveData;
+                string redacted = sensitiveData;
 
                 // Apply the same redaction patterns as ExceptionSanitizer
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"(?:password|pwd)\s*=\s*[^;\s]+", "[PASSWORD_REDACTED]", 
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"(?:password|pwd)\s*=\s*[^;\s]+", "[PASSWORD_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "[USERNAME_REDACTED]", 
+
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"(?:user\s*id|uid|username)\s*=\s*[^;\s]+", "[USERNAME_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"(?:server|host|data\s*source)\s*=\s*[^;\s]+", "[SERVER_REDACTED]", 
+
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"(?:server|host|data\s*source)\s*=\s*[^;\s]+", "[SERVER_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"(?:database|initial\s*catalog)\s*=\s*[^;\s]+", "[DATABASE_REDACTED]", 
+
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"(?:database|initial\s*catalog)\s*=\s*[^;\s]+", "[DATABASE_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"(?:token|secret)\s*=\s*[a-zA-Z0-9\-_]{20,}", "[TOKEN_REDACTED]", 
+
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"(?:token|secret)\s*=\s*[a-zA-Z0-9\-_]{20,}", "[TOKEN_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"[0-9]+:[a-zA-Z0-9\-_]{35}", "[BOT_TOKEN_REDACTED]", 
+
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"[0-9]+:[a-zA-Z0-9\-_]{35}", "[BOT_TOKEN_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                redacted = System.Text.RegularExpressions.Regex.Replace(redacted, 
-                    @"[a-zA-Z0-9\-_]{20,}", "[API_KEY_REDACTED]", 
+
+                redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+                    @"[a-zA-Z0-9\-_]{20,}", "[API_KEY_REDACTED]",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Ensure encryption is applied after redaction
@@ -89,11 +90,15 @@ namespace WebAPI.Controllers
         // Utility method to encrypt data using ProtectedData
         private static string EncryptData(string data)
         {
-            if (string.IsNullOrEmpty(data)) return string.Empty;
+            if (string.IsNullOrEmpty(data))
+            {
+                return string.Empty;
+            }
+
             try
             {
-                var bytes = System.Text.Encoding.UTF8.GetBytes(data);
-                var encrypted = System.Security.Cryptography.ProtectedData.Protect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(data);
+                byte[] encrypted = System.Security.Cryptography.ProtectedData.Protect(bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
                 return System.Convert.ToBase64String(encrypted);
             }
             catch
@@ -119,9 +124,6 @@ namespace WebAPI.Controllers
         /// <summary>
         /// Creates a secure error response that doesn't expose sensitive information.
         /// </summary>
-        /// <param name="statusCode">HTTP status code</param>
-        /// <param name="userMessage">User-friendly message</param>
-        /// <param name="internalErrorId">Optional internal error ID for tracking</param>
         /// <returns>Secure error response</returns>
         #endregion
 
@@ -172,12 +174,14 @@ namespace WebAPI.Controllers
         private string? ValidateDatabaseConnectionString(string? connectionString)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
+            {
                 return null;
+            }
 
             try
             {
                 // Use NpgsqlConnectionStringBuilder to parse and validate the connection string.
-                var builder = new NpgsqlConnectionStringBuilder(connectionString);
+                NpgsqlConnectionStringBuilder builder = new(connectionString);
 
                 if (string.IsNullOrWhiteSpace(builder.Host))
                 {
@@ -203,15 +207,15 @@ namespace WebAPI.Controllers
             }
             catch (ArgumentException ex) // Catch specific exceptions from the builder
             {
-                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
-                var encryptedInput = RedactSensitiveData(connectionString);
+                string encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                string encryptedInput = RedactSensitiveData(connectionString);
                 _logger.LogError("Database connection string validation failed due to invalid format. Input: {EncryptedInput}. Details: {EncryptedException}", encryptedInput, encryptedException);
                 return null;
             }
             catch (Exception ex)
             {
-                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
-                var encryptedInput = RedactSensitiveData(connectionString);
+                string encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                string encryptedInput = RedactSensitiveData(connectionString);
                 _logger.LogError("Database connection string validation failed. Input: {EncryptedInput}. Details: {EncryptedException}", encryptedInput, encryptedException);
                 return null;
             }
@@ -225,12 +229,14 @@ namespace WebAPI.Controllers
         private string? ValidateRedisConnectionString(string? connectionString)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
+            {
                 return null;
+            }
 
             try
             {
                 // Use ConfigurationOptions.Parse to validate the Redis connection string format.
-                var options = ConfigurationOptions.Parse(connectionString);
+                ConfigurationOptions options = ConfigurationOptions.Parse(connectionString);
 
                 if (options.EndPoints.Count == 0)
                 {
@@ -244,8 +250,8 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
-                var encryptedInput = RedactSensitiveData(connectionString);
+                string encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                string encryptedInput = RedactSensitiveData(connectionString);
                 _logger.LogError("Redis connection string validation failed. Input: {EncryptedInput}. Details: {EncryptedException}", encryptedInput, encryptedException);
                 return null;
             }
@@ -263,13 +269,13 @@ namespace WebAPI.Controllers
                 return BadRequest(ModelState);
             }
 
-            var response = new TestConfigResponseModel();
+            TestConfigResponseModel response = new();
 
             // Test Database Connection
             try
             {
                 // SECURITY: Validate and sanitize the connection string before use
-                var validatedDbConn = ValidateDatabaseConnectionString(model.DbConn);
+                string? validatedDbConn = ValidateDatabaseConnectionString(model.DbConn);
                 if (validatedDbConn == null)
                 {
                     response.DatabaseStatus = "Error";
@@ -279,7 +285,7 @@ namespace WebAPI.Controllers
                 else
                 {
                     _logger.LogInformation("Testing validated database connection.");
-                    await using var connection = new NpgsqlConnection(validatedDbConn);
+                    await using NpgsqlConnection connection = new(validatedDbConn);
                     await connection.OpenAsync();
                     await connection.CloseAsync();
                     response.DatabaseStatus = "OK";
@@ -288,8 +294,8 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
-                var errorId = Guid.NewGuid().ToString("N")[..8];
+                string encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                string errorId = Guid.NewGuid().ToString("N")[..8];
                 _logger.LogError("Database connection test failed. ErrorId: {ErrorId}. Details: {EncryptedException}", errorId, encryptedException);
                 response.DatabaseStatus = "Error";
                 response.DatabaseError = "Database connection failed. Please check your connection string and network connectivity.";
@@ -301,7 +307,7 @@ namespace WebAPI.Controllers
                 try
                 {
                     // SECURITY: Validate and sanitize the connection string before use
-                    var validatedRedisConn = ValidateRedisConnectionString(model.RedisConn);
+                    string? validatedRedisConn = ValidateRedisConnectionString(model.RedisConn);
                     if (validatedRedisConn == null)
                     {
                         response.RedisStatus = "Error";
@@ -311,10 +317,10 @@ namespace WebAPI.Controllers
                     else
                     {
                         _logger.LogInformation("Testing validated Redis connection.");
-                        var redis = await ConnectionMultiplexer.ConnectAsync(validatedRedisConn);
+                        ConnectionMultiplexer redis = await ConnectionMultiplexer.ConnectAsync(validatedRedisConn);
                         if (redis.IsConnected)
                         {
-                            await redis.GetDatabase().PingAsync();
+                            _ = await redis.GetDatabase().PingAsync();
                             response.RedisStatus = "OK";
                             _logger.LogInformation("Redis connection test successful.");
                         }
@@ -329,8 +335,8 @@ namespace WebAPI.Controllers
                 }
                 catch (Exception ex)
                 {
-                    var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
-                    var errorId = Guid.NewGuid().ToString("N")[..8];
+                    string encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                    string errorId = Guid.NewGuid().ToString("N")[..8];
                     _logger.LogError("Redis connection test failed. ErrorId: {ErrorId}. Details: {EncryptedException}", errorId, encryptedException);
                     response.RedisStatus = "Error";
                     response.RedisError = "Redis connection failed. Please check your connection string and network connectivity.";
@@ -354,27 +360,27 @@ namespace WebAPI.Controllers
                 else
                 {
                     _logger.LogInformation("Testing Telegram Bot Token.");
-                    var client = _httpClientFactory.CreateClient();
-                    var telegramApiResponse = await client.GetAsync($"https://api.telegram.org/bot{model.BotToken}/getMe");
+                    HttpClient client = _httpClientFactory.CreateClient();
+                    HttpResponseMessage telegramApiResponse = await client.GetAsync($"https://api.telegram.org/bot{model.BotToken}/getMe");
 
                     if (telegramApiResponse.IsSuccessStatusCode)
                     {
-                        var content = await telegramApiResponse.Content.ReadAsStringAsync();
-                        var jsonDoc = JsonDocument.Parse(content);
-                        if (jsonDoc.RootElement.TryGetProperty("result", out var resultElement) &&
-                            resultElement.TryGetProperty("username", out var usernameElement))
+                        string content = await telegramApiResponse.Content.ReadAsStringAsync();
+                        JsonDocument jsonDoc = JsonDocument.Parse(content);
+                        if (jsonDoc.RootElement.TryGetProperty("result", out JsonElement resultElement) &&
+                            resultElement.TryGetProperty("username", out JsonElement usernameElement))
                         {
                             response.BotUsername = usernameElement.GetString();
                         }
                         response.TelegramStatus = "OK";
-                        var encryptedBotUsername = EncryptData(response.BotUsername);
+                        string encryptedBotUsername = EncryptData(response.BotUsername);
                         _logger.LogInformation("Telegram Bot Token test successful. Bot Username: {EncryptedBotUsername}", encryptedBotUsername);
                     }
                     else
                     {
-                        var errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
-                        var encryptedErrorContent = EncryptData(errorContent);
-                        var errorId = Guid.NewGuid().ToString("N")[..8];
+                        string errorContent = await telegramApiResponse.Content.ReadAsStringAsync();
+                        string encryptedErrorContent = EncryptData(errorContent);
+                        string errorId = Guid.NewGuid().ToString("N")[..8];
                         _logger.LogWarning("Telegram Bot Token test failed. Status: {StatusCode}, Response: {EncryptedErrorContent}, ErrorId: {ErrorId}",
                             telegramApiResponse.StatusCode, encryptedErrorContent, errorId);
                         response.TelegramStatus = "Error";
@@ -384,8 +390,8 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                var encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
-                var errorId = Guid.NewGuid().ToString("N")[..8];
+                string encryptedException = SecureExceptionSanitizer.SanitizeForDatabase(ex);
+                string errorId = Guid.NewGuid().ToString("N")[..8];
                 _logger.LogError("Telegram Bot Token test failed. ErrorId: {ErrorId}. Details: {EncryptedException}", errorId, encryptedException);
                 response.TelegramStatus = "Error";
                 response.TelegramError = "Telegram bot token test failed. Please check your token and network connectivity.";
@@ -405,13 +411,13 @@ namespace WebAPI.Controllers
             }
 
             // SECURITY: Validate all connection strings before any processing
-            var validatedDbConn = ValidateDatabaseConnectionString(model.DbConn);
-            var validatedRedisConn = ValidateRedisConnectionString(model.RedisConn);
+            string? validatedDbConn = ValidateDatabaseConnectionString(model.DbConn);
+            string? validatedRedisConn = ValidateRedisConnectionString(model.RedisConn);
 
             if (validatedDbConn == null)
             {
                 return CreateSecureErrorResponse(
-                    StatusCodes.Status400BadRequest, 
+                    StatusCodes.Status400BadRequest,
                     "Invalid database connection string format.");
             }
 
@@ -432,19 +438,20 @@ namespace WebAPI.Controllers
             //    potentially via a secure management API or a signaling mechanism (e.g., Azure App Configuration).
             //
             // This current logging is for demonstration purposes only for this project.
-            
+
             // SECURITY: Encrypt all sensitive configuration data before logging.
-            var encryptedBotToken = EncryptData(model.BotToken);
-            var encryptedDbConn = EncryptData(validatedDbConn);
-            var encryptedRedisConn = EncryptData(validatedRedisConn);
-            
+            string encryptedBotToken = EncryptData(model.BotToken);
+            string encryptedDbConn = EncryptData(validatedDbConn);
+            string encryptedRedisConn = EncryptData(validatedRedisConn);
+
             _logger.LogWarning("Received configuration to save (PLACEHOLDER - NOT SAVING TO APPSETTINGS.JSON):");
             _logger.LogWarning("BotToken: {EncryptedBotToken}", encryptedBotToken);
             _logger.LogWarning("DbConn: {EncryptedDbConn}", encryptedDbConn);
             _logger.LogWarning("RedisConn: {EncryptedRedisConn}", encryptedRedisConn);
 
             // SECURITY: Return a secure response without exposing sensitive information
-            return Ok(new { 
+            return Ok(new
+            {
                 Message = "Configuration received successfully. This is a placeholder implementation. In production, use secure configuration stores.",
                 Status = "Success",
                 Timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")

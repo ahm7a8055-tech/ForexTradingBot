@@ -44,7 +44,7 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
             ILogger<StartCommandHandler> logger,
             ITelegramMessageSender messageSender,
             IServiceScopeFactory scopeFactory,
-            ITelegramBotClient botClient, IAdviceService adviceService, 
+            ITelegramBotClient botClient, IAdviceService adviceService,
             IUserRepository userRepository, // <-- ADD THIS PARAMETER
             ITelegramStateMachine? stateMachine = null)
         {
@@ -62,10 +62,10 @@ namespace TelegramPanel.Application.CommandHandlers.Entry
         // --- FIX: Explicitly use Telegram.Bot.Types.Update ---
         public bool CanHandle(Update update)
         {
-            return update.Type == UpdateType.Message &&
-                update.Message?.Text?.Trim().Equals("/start", StringComparison.OrdinalIgnoreCase) == true
-|| update.Type == UpdateType.CallbackQuery &&
-                update.CallbackQuery?.Data == ShowMainMenuCallback;
+            return (update.Type == UpdateType.Message &&
+                update.Message?.Text?.Trim().Equals("/start", StringComparison.OrdinalIgnoreCase) == true)
+|| (update.Type == UpdateType.CallbackQuery &&
+                update.CallbackQuery?.Data == ShowMainMenuCallback);
         }
 
 

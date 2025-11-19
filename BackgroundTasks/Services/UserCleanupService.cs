@@ -4,12 +4,6 @@
 using Application.DTOs;
 using Application.Interfaces;
 using Hangfire;
-using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
@@ -61,8 +55,8 @@ namespace BackgroundTasks.Services
         [JobDisplayName("User Cleanup: Delete Blocked/Deleted Users")] // Kept original name
         public async Task CheckAndDeleteUnreachableUsersAsync() // Kept original name
         {
-            using var cts = new CancellationTokenSource();
-            var cancellationToken = cts.Token;
+            using CancellationTokenSource cts = new();
+            CancellationToken cancellationToken = cts.Token;
 
             _logger.LogInformation("Starting user cleanup job to find and delete unreachable users...");
 
@@ -84,21 +78,21 @@ namespace BackgroundTasks.Services
                 return;
             }
 
-            using var semaphore = new SemaphoreSlim(MAX_CONCURRENT_API_CALLS);
+            using SemaphoreSlim semaphore = new(MAX_CONCURRENT_API_CALLS);
 
             _logger.LogInformation("Processing {TotalUsersCount} users with a concurrency limit of {MaxConcurrentCalls}.",
                                    allUsers.Count, MAX_CONCURRENT_API_CALLS);
 
-            var processingTasks = allUsers.Select(user =>
+            List<Task<UserReachabilityStatus>> processingTasks = allUsers.Select(user =>
                 ProcessSingleUserAsync(user, cancellationToken, semaphore)
             ).ToList();
 
-            var results = await Task.WhenAll(processingTasks);
+            UserReachabilityStatus[] results = await Task.WhenAll(processingTasks);
 
             // Aggregate and log final results for observability.
             int reachableCount = results.Count(r => r == UserReachabilityStatus.Reachable);
             int deletedCount = results.Count(r => r == UserReachabilityStatus.UnreachableAndDeleted);
-            int skippedOrErrorCount = results.Count(r => r == UserReachabilityStatus.Skipped || r == UserReachabilityStatus.Error);
+            int skippedOrErrorCount = results.Count(r => r is UserReachabilityStatus.Skipped or UserReachabilityStatus.Error);
 
             _logger.LogInformation(
                 "User cleanup job finished. Results -> Reachable: {ReachableCount}, Deleted: {DeletedCount}, Skipped/Errors: {SkippedOrErrorCount}.",
@@ -116,7 +110,7 @@ namespace BackgroundTasks.Services
                 _logger.LogWarning("Skipping user with invalid data (null, empty Guid, or empty TelegramId). User ID: {UserId}", user?.Id);
                 return UserReachabilityStatus.Skipped;
             }
-            if (!long.TryParse(user.TelegramId, out var telegramUserId))
+            if (!long.TryParse(user.TelegramId, out long telegramUserId))
             {
                 _logger.LogWarning("Skipping user with invalid TelegramId format. User ID: {UserId}, TelegramId: {TelegramId}", user.Id, user.TelegramId);
                 return UserReachabilityStatus.Skipped;
@@ -168,7 +162,7 @@ namespace BackgroundTasks.Services
             finally
             {
                 // --- Step 4: Always Release the Semaphore ---
-                semaphore.Release();
+                _ = semaphore.Release();
             }
         }
 

@@ -1,5 +1,4 @@
-﻿using Application.Interfaces;
-using System;
+﻿using Application.Common.Interfaces;
 using System.Collections.Concurrent;
 
 namespace Infrastructure.Services
@@ -225,14 +224,17 @@ namespace Infrastructure.Services
         /// <returns>A formatted string of space-separated hashtags.</returns>
         public string GetRandomHashtags(int count = 3)
         {
-            if (count <= 0) return string.Empty;
+            if (count <= 0)
+            {
+                return string.Empty;
+            }
 
-            var selectedHashtags = new List<string>(count);
+            List<string> selectedHashtags = new(count);
 
             for (int i = 0; i < count; i++)
             {
                 // Attempt to get the next hashtag from the queue.
-                if (!_hashtagQueue.TryDequeue(out var hashtag))
+                if (!_hashtagQueue.TryDequeue(out string? hashtag))
                 {
                     // If the queue is empty, we need to refill it.
                     // We lock here to ensure only one thread performs the refill.
@@ -269,7 +271,7 @@ namespace Infrastructure.Services
             }
 
             // Use an efficient, in-place shuffle for better performance and memory usage.
-            var shuffledArray = AllHashtags.ToArray();
+            string[] shuffledArray = AllHashtags.ToArray();
             Shuffle(shuffledArray);
 
             return new ConcurrentQueue<string>(shuffledArray);
@@ -282,7 +284,7 @@ namespace Infrastructure.Services
         {
             int n = array.Length;
             // Use Random.Shared for a thread-safe, shared Random instance (.NET 6+).
-            var random = Random.Shared;
+            Random random = Random.Shared;
 
             for (int i = n - 1; i > 0; i--)
             {

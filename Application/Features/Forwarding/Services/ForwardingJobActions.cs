@@ -3,7 +3,6 @@ using Application.Common.Interfaces;
 using Application.Features.Forwarding.Interfaces;
 using Domain.Features.Forwarding.Entities;
 using Domain.Features.Forwarding.ValueObjects;
-using Domain.Features.Fowarding.ValueObjects;
 using Hangfire;
 using Hangfire.Server; // Crucial: Add this for PerformContext
 using Microsoft.Extensions.Logging;
@@ -461,28 +460,28 @@ namespace Application.Features.Forwarding.Services
             // === NEW: EXTRACT CAPTION FROM MEDIA ITEMS ===
             string extractedCaption = initialMessageContentFromOrchestrator ?? string.Empty;
             TL.MessageEntity[]? extractedEntities = initialEntitiesFromOrchestrator?.ToArray();
-            
+
             // If the main message content is empty but we have media items with captions, extract them
             if (string.IsNullOrWhiteSpace(extractedCaption) && mediaGroupItems?.Any() == true)
             {
-                var mediaCaptions = mediaGroupItems
+                List<string?> mediaCaptions = mediaGroupItems
                     .Where(item => !string.IsNullOrWhiteSpace(item.Caption))
                     .Select(item => item.Caption)
                     .ToList();
-                
+
                 if (mediaCaptions.Any())
                 {
                     // Use the first non-empty caption from media items
                     extractedCaption = mediaCaptions.First();
-                    _logger.LogInformation("Job:{JobId}: ProcessCustomSendAsync: Extracted caption from media items: '{ExtractedCaptionPreview}'", 
+                    _logger.LogInformation("Job:{JobId}: ProcessCustomSendAsync: Extracted caption from media items: '{ExtractedCaptionPreview}'",
                         jobId, TruncateString(extractedCaption, 100));
-                    
+
                     // Also extract entities from the first media item that has them
-                    var firstMediaWithEntities = mediaGroupItems.FirstOrDefault(item => item.Entities?.Any() == true);
+                    InputMediaWithCaption? firstMediaWithEntities = mediaGroupItems.FirstOrDefault(item => item.Entities?.Any() == true);
                     if (firstMediaWithEntities?.Entities != null)
                     {
                         extractedEntities = firstMediaWithEntities.Entities.ToArray();
-                        _logger.LogDebug("Job:{JobId}: ProcessCustomSendAsync: Extracted {EntityCount} entities from media items", 
+                        _logger.LogDebug("Job:{JobId}: ProcessCustomSendAsync: Extracted {EntityCount} entities from media items",
                             jobId, extractedEntities.Length);
                     }
                 }

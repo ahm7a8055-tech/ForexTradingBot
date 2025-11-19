@@ -1,5 +1,4 @@
-﻿using Application.Interfaces;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Shared.Results;
 using System.Globalization;
 using System.Net.Http.Headers;

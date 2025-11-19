@@ -1,5 +1,4 @@
-﻿using System;
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
@@ -12,7 +11,7 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(
+            _ = migrationBuilder.CreateTable(
                 name: "AiApiConfigurations",
                 columns: table => new
                 {
@@ -29,20 +28,20 @@ namespace Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_AiApiConfigurations", x => x.Id);
+                    _ = table.PrimaryKey("PK_AiApiConfigurations", x => x.Id);
                 });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_AiApiConfigurations_IsEnabled",
                 table: "AiApiConfigurations",
                 column: "IsEnabled");
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_AiApiConfigurations_ProviderName_IsEnabled",
                 table: "AiApiConfigurations",
                 columns: new[] { "ProviderName", "IsEnabled" });
 
-            migrationBuilder.CreateIndex(
+            _ = migrationBuilder.CreateIndex(
                 name: "IX_AiApiConfigurations_ProviderName_Unique",
                 table: "AiApiConfigurations",
                 column: "ProviderName",
@@ -52,7 +51,7 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
+            _ = migrationBuilder.DropTable(
                 name: "AiApiConfigurations");
         }
     }

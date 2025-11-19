@@ -46,7 +46,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         // 1. ADD NEW PUBLIC CONSTANTS FOR THE DELETE ACTIONS
         public const string ProMonitoringDeletePromptPrefix = "admin_pro_mon_delete_prompt_";
         public const string ProMonitoringDeleteConfirmCallback = "admin_pro_mon_delete_confirm";
-        public AdminCallbackHandler( 
+        public AdminCallbackHandler(
             ILogger<AdminCallbackHandler> logger,
             ITelegramMessageSender messageSender,
             IAdminService adminService,
@@ -86,7 +86,7 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 data == DownloadLogsCallback ||
                 data.StartsWith(ProMonitoringCallbackPrefix) ||
            data.StartsWith(ProMonitoringDeletePromptPrefix) ||
-                data == ProMonitoringDeleteConfirmCallback||
+                data == ProMonitoringDeleteConfirmCallback ||
             data == BackToAdminPanelCallback)
             {
                 return true;
@@ -142,8 +142,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 // Fire-and-forget logging to the database in a background task
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateAsyncScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using AsyncServiceScope scope = _serviceProvider.CreateAsyncScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -222,8 +222,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 // --- ENHANCEMENT: Log the failure to the database in a background task ---
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -269,32 +269,23 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 int barMax = 8;
                 int total = userJoinStats.Sum(x => x.Count);
                 double avgAll = userJoinStats.Average(x => x.Count);
-                var activeDays = userJoinStats.Where(x => x.Count > 0).ToList();
+                List<(DateTime Date, int Count)> activeDays = userJoinStats.Where(x => x.Count > 0).ToList();
                 double avgActive = activeDays.Count > 0 ? activeDays.Average(x => x.Count) : 0;
-                var orderedCounts = userJoinStats.Select(x => x.Count).OrderBy(x => x).ToList();
+                List<int> orderedCounts = userJoinStats.Select(x => x.Count).OrderBy(x => x).ToList();
                 double median = orderedCounts.Count % 2 == 1
                     ? orderedCounts[orderedCounts.Count / 2]
-                    : (orderedCounts[orderedCounts.Count / 2 - 1] + orderedCounts[orderedCounts.Count / 2]) / 2.0;
+                    : (orderedCounts[(orderedCounts.Count / 2) - 1] + orderedCounts[orderedCounts.Count / 2]) / 2.0;
                 // Trend: Compare last 7 days to previous 7 days
                 int trendWindow = 7;
                 int sumLast = userJoinStats.Skip(userJoinStats.Count - trendWindow).Sum(x => x.Count);
-                int sumPrev = userJoinStats.Skip(userJoinStats.Count - 2 * trendWindow).Take(trendWindow).Sum(x => x.Count);
+                int sumPrev = userJoinStats.Skip(userJoinStats.Count - (2 * trendWindow)).Take(trendWindow).Sum(x => x.Count);
                 string trend = sumLast > sumPrev ? "⬆️" : sumLast < sumPrev ? "⬇️" : "➡️";
                 DateTime today = DateTime.UtcNow.Date;
                 _ = stats.AppendLine("👤 *User Joins (Last 30 Days)*\n");
                 _ = stats.AppendLine("` Date   | Users |`");
                 foreach ((DateTime date, int count) in userJoinStats)
                 {
-                    string bar;
-                    if (max == 0)
-                    {
-                        bar = "▏";
-                    }
-                    else
-                    {
-                        bar = count == 0 ? "▏" : new string('█', Math.Max(1, (int)Math.Round((double)count / max * barMax)));
-                    }
-
+                    string bar = max == 0 ? "▏" : count == 0 ? "▏" : new string('█', Math.Max(1, (int)Math.Round((double)count / max * barMax)));
                     string dayMark = date == today ? "➡️" : "  ";
                     _ = stats.AppendLine($"{dayMark}{date:MM-dd} {bar.PadRight(barMax)} {count}");
                 }
@@ -331,8 +322,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 // --- ENHANCEMENT: Log the failure to the database in a background task ---
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -376,8 +367,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 // --- ENHANCEMENT: Log the failure to the database in a background task ---
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -401,10 +392,9 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
 
         private string EscapeMarkdownV1(string text)
         {
-            if (string.IsNullOrEmpty(text))
-                return "";
-
-            return text.Replace("_", "\\_")
+            return string.IsNullOrEmpty(text)
+                ? ""
+                : text.Replace("_", "\\_")
                        .Replace("*", "\\*")
                        .Replace("`", "\\`")
                        .Replace("[", "\\[");
@@ -414,7 +404,9 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         {
             // Return the cached version if we already found it.
             if (_iranTimeZoneInfo != null)
+            {
                 return _iranTimeZoneInfo;
+            }
 
             try
             {
@@ -449,13 +441,13 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 const int MaxMessageLength = 4096;
                 const int PreviewLength = 200;
 
-                int.TryParse(callbackData.Replace(ProMonitoringCallbackPrefix, ""), out int offset);
+                _ = int.TryParse(callbackData.Replace(ProMonitoringCallbackPrefix, ""), out int offset);
 
                 string loadingMessage = offset > 0 ? "🔄 Fetching next page of logs..." : "🔍 Retrieving Pro Monitoring Logs...";
                 await _messageSender.EditMessageTextAsync(chatId, messageId, loadingMessage, cancellationToken: cancellationToken);
 
                 // --- Fetch logs from the service ---
-                var logs = await _adminService.GetRecentProMonitoringLogsAsync(PageSize, offset, cancellationToken);
+                List<ProMonitoringLog> logs = await _adminService.GetRecentProMonitoringLogsAsync(PageSize, offset, cancellationToken);
 
                 if (logs == null || logs.Count == 0)
                 {
@@ -464,62 +456,68 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 }
 
                 // --- Time Zone Conversion Setup ---
-                var iranTimeZone = GetIranTimeZone();
-                var sb = new StringBuilder();
+                TimeZoneInfo? iranTimeZone = GetIranTimeZone();
+                StringBuilder sb = new();
                 int currentPage = (offset / PageSize) + 1;
 
-                sb.AppendLine($"📋 *Pro Monitoring Log* (Page {currentPage})");
-                sb.AppendLine("`" + new string('─', 32) + "`");
+                _ = sb.AppendLine($"📋 *Pro Monitoring Log* (Page {currentPage})");
+                _ = sb.AppendLine("`" + new string('─', 32) + "`");
 
-                foreach (var log in logs)
+                foreach (ProMonitoringLog log in logs)
                 {
                     // --- Timestamp Conversion ---
-                    var utcTime = DateTime.SpecifyKind(log.Timestamp, DateTimeKind.Utc);
+                    DateTime utcTime = DateTime.SpecifyKind(log.Timestamp, DateTimeKind.Utc);
                     string iranTimeFormatted = "N/A";
                     if (iranTimeZone != null)
                     {
-                        var iranTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, iranTimeZone);
+                        DateTime iranTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, iranTimeZone);
                         iranTimeFormatted = iranTime.ToString("yyyy-MM-dd HH:mm:ss");
                     }
                     string utcTimeFormatted = utcTime.ToString("yyyy-MM-dd HH:mm:ss");
 
                     // --- Build Log Entry with Pro UI/UX ---
                     string levelEmoji = GetLevelEmoji(log.Level);
-                    sb.AppendLine($"{levelEmoji} *{log.Level}* | `{EscapeMarkdownV1(log.Source)}`");
-                    sb.AppendLine($"`Message:` {EscapeMarkdownV1(log.Message)}");
-                    sb.AppendLine(); // Whitespace for readability
+                    _ = sb.AppendLine($"{levelEmoji} *{log.Level}* | `{EscapeMarkdownV1(log.Source)}`");
+                    _ = sb.AppendLine($"`Message:` {EscapeMarkdownV1(log.Message)}");
+                    _ = sb.AppendLine(); // Whitespace for readability
 
                     // Details Section
                     if (!string.IsNullOrWhiteSpace(log.Status) || !string.IsNullOrWhiteSpace(log.EventType) || !string.IsNullOrWhiteSpace(log.Exception))
                     {
-                        sb.AppendLine("    *Details*");
+                        _ = sb.AppendLine("    *Details*");
                         if (!string.IsNullOrWhiteSpace(log.Status))
-                            sb.AppendLine($"      `Status:` {EscapeMarkdownV1(log.Status)}");
+                        {
+                            _ = sb.AppendLine($"      `Status:` {EscapeMarkdownV1(log.Status)}");
+                        }
+
                         if (!string.IsNullOrWhiteSpace(log.EventType))
-                            sb.AppendLine($"      `Event:` {EscapeMarkdownV1(log.EventType)}");
+                        {
+                            _ = sb.AppendLine($"      `Event:` {EscapeMarkdownV1(log.EventType)}");
+                        }
+
                         if (!string.IsNullOrWhiteSpace(log.Exception))
                         {
                             string exceptionContent = log.Exception;
                             if (exceptionContent.Length > PreviewLength)
                             {
-                                exceptionContent = exceptionContent.Substring(0, PreviewLength) + "...";
+                                exceptionContent = exceptionContent[..PreviewLength] + "...";
                             }
-                            sb.AppendLine($"      `Exception:`\n```\n{exceptionContent}\n```");
+                            _ = sb.AppendLine($"      `Exception:`\n```\n{exceptionContent}\n```");
                         }
-                        sb.AppendLine();
+                        _ = sb.AppendLine();
                     }
 
                     // Timestamp Section
-                    sb.AppendLine("    ⏰ *Time*");
-                    sb.AppendLine($"      `🇮🇷 Tehran:` `{iranTimeFormatted}`");
-                    sb.AppendLine($"      `🌍 UTC:`     `{utcTimeFormatted}`");
+                    _ = sb.AppendLine("    ⏰ *Time*");
+                    _ = sb.AppendLine($"      `🇮🇷 Tehran:` `{iranTimeFormatted}`");
+                    _ = sb.AppendLine($"      `🌍 UTC:`     `{utcTimeFormatted}`");
 
-                    sb.AppendLine("`" + new string('─', 32) + "`");
+                    _ = sb.AppendLine("`" + new string('─', 32) + "`");
                 }
 
                 // --- Build Keyboard ---
-                var keyboardRows = new List<List<InlineKeyboardButton>>();
-                var navigationRow = new List<InlineKeyboardButton>();
+                List<List<InlineKeyboardButton>> keyboardRows = [];
+                List<InlineKeyboardButton> navigationRow = [];
 
                 if (offset > 0)
                 {
@@ -534,20 +532,20 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                     keyboardRows.Add(navigationRow);
                 }
 
-                var destructiveActionsRow = new List<InlineKeyboardButton>
-        {
+                List<InlineKeyboardButton> destructiveActionsRow =
+                [
             InlineKeyboardButton.WithCallbackData("🗑️ Delete All Logs", $"{ProMonitoringDeletePromptPrefix}{offset}")
-        };
+        ];
                 keyboardRows.Add(destructiveActionsRow);
 
-                keyboardRows.Add(new List<InlineKeyboardButton> { InlineKeyboardButton.WithCallbackData("↩️ Back to Admin Panel", BackToAdminPanelCallback) });
-                var replyMarkup = new InlineKeyboardMarkup(keyboardRows);
+                keyboardRows.Add([InlineKeyboardButton.WithCallbackData("↩️ Back to Admin Panel", BackToAdminPanelCallback)]);
+                InlineKeyboardMarkup replyMarkup = new(keyboardRows);
 
                 // --- Send Message ---
                 string text = sb.ToString();
                 if (text.Length > MaxMessageLength)
                 {
-                    text = text.Substring(0, MaxMessageLength - 50) + "...\n_(Message truncated)_";
+                    text = text[..(MaxMessageLength - 50)] + "...\n_(Message truncated)_";
                 }
 
                 await _messageSender.EditMessageTextAsync(chatId, messageId, text, ParseMode.Markdown, replyMarkup, cancellationToken);
@@ -560,8 +558,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 // --- ENHANCEMENT: Log the failure to the database in a background task ---
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -607,13 +605,13 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
         private async Task HandleDeleteLogsPromptAsync(long chatId, int messageId, string callbackData, CancellationToken cancellationToken)
         {
             // Extract the offset so we can return to the same page on "Cancel"
-            int.TryParse(callbackData.Replace(ProMonitoringDeletePromptPrefix, ""), out int offset);
+            _ = int.TryParse(callbackData.Replace(ProMonitoringDeletePromptPrefix, ""), out int offset);
 
             string text = "⚠️ *CONFIRM DELETION*\n\n" +
                           "Are you absolutely sure you want to delete *ALL* pro monitoring logs?\n\n" +
                           "This action is *irreversible*.";
 
-            var keyboard = MarkupBuilder.CreateInlineKeyboard(
+            InlineKeyboardMarkup? keyboard = MarkupBuilder.CreateInlineKeyboard(
                 new[]
                 {
             InlineKeyboardButton.WithCallbackData("✅ Yes, I am sure. Delete everything.", ProMonitoringDeleteConfirmCallback),
@@ -652,8 +650,8 @@ namespace TelegramPanel.Application.CommandHandlers.Admin
                 // This creates a persistent record of the failed administrative action.
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,

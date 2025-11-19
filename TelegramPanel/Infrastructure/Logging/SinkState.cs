@@ -37,7 +37,7 @@ namespace TelegramPanel.Infrastructure.Logging
             string signature = GenerateErrorSignature(logEvent);
             occurrenceCount = 1;
 
-            if (_errorCache.TryGetValue(signature, out var occurrence))
+            if (_errorCache.TryGetValue(signature, out ErrorOccurrence? occurrence))
             {
                 occurrence.Count++;
                 occurrenceCount = occurrence.Count;
@@ -54,7 +54,7 @@ namespace TelegramPanel.Infrastructure.Logging
             }
 
             // First time seeing this error — store it
-            _errorCache.TryAdd(signature, new ErrorOccurrence());
+            _ = _errorCache.TryAdd(signature, new ErrorOccurrence());
             return false;
         }
 
@@ -65,17 +65,21 @@ namespace TelegramPanel.Infrastructure.Logging
         /// <returns>A base64-encoded SHA-256 hash string representing the error identity.</returns>
         private string GenerateErrorSignature(LogEvent logEvent)
         {
-            var sb = new StringBuilder();
+            StringBuilder sb = new();
 
             if (logEvent.Exception is not null)
-                sb.Append(logEvent.Exception.GetType().FullName);
+            {
+                _ = sb.Append(logEvent.Exception.GetType().FullName);
+            }
 
-            sb.Append(logEvent.MessageTemplate.Text);
+            _ = sb.Append(logEvent.MessageTemplate.Text);
 
-            if (logEvent.Properties.TryGetValue("Caller", out var caller))
-                sb.Append(caller.ToString("l", null));
+            if (logEvent.Properties.TryGetValue("Caller", out LogEventPropertyValue? caller))
+            {
+                _ = sb.Append(caller.ToString("l", null));
+            }
 
-            using var sha = SHA256.Create();
+            using SHA256 sha = SHA256.Create();
             byte[] bytes = Encoding.UTF8.GetBytes(sb.ToString());
             byte[] hash = sha.ComputeHash(bytes);
 

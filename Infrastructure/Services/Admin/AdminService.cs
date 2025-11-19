@@ -1,29 +1,21 @@
 ﻿// --- START OF FILE: Infrastructure/Services/AdminService.cs ---
 
 #region Usings
+using Application.Common.Interfaces;
 using Application.DTOs.Admin;
 using Application.DTOs.Settings;
 using Application.Interfaces;
-using Application.Common.Interfaces;
 using Dapper;
 using Domain.Entities;
-using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Shared.Security; // For SecureExceptionSanitizer
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.IO.Compression;
-using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
 #endregion
 
 namespace Infrastructure.Services.Admin
@@ -66,10 +58,12 @@ namespace Infrastructure.Services.Admin
         private static string SanitizeForLogging(string? input)
         {
             if (string.IsNullOrWhiteSpace(input))
+            {
                 return "[EMPTY_INPUT]";
+            }
 
             // Remove newlines, carriage returns, and other problematic characters
-            var sanitized = input
+            string sanitized = input
                 .Replace("\r", "")
                 .Replace("\n", "")
                 .Replace("\t", " ")
@@ -81,7 +75,7 @@ namespace Infrastructure.Services.Admin
             // Limit length to prevent log flooding
             if (sanitized.Length > 100)
             {
-                sanitized = sanitized.Substring(0, 97) + "...";
+                sanitized = sanitized[..97] + "...";
             }
 
             return sanitized;
@@ -100,7 +94,7 @@ namespace Infrastructure.Services.Admin
                 return null;
             }
 
-            var sanitizedFileName = SanitizeForLogging(fileName);
+            string sanitizedFileName = SanitizeForLogging(fileName);
 
             // Check for path traversal attempts
             if (sanitizedFileName.Contains("..") ||
@@ -205,7 +199,7 @@ namespace Infrastructure.Services.Admin
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Failed to create log archive for admin download.");
                 return (null, "", $"An unexpected error occurred: {ex.Message}");
             }
@@ -215,7 +209,7 @@ namespace Infrastructure.Services.Admin
         public async Task<string> ExecuteRawSqlQueryAsync(string sqlQuery, CancellationToken cancellationToken = default)
         {
             // SECURITY: Sanitize SQL query before logging to prevent log forging
-            var sanitizedQuery = SanitizeForLogging(sqlQuery);
+            string sanitizedQuery = SanitizeForLogging(sqlQuery);
             _logger.LogWarning("Admin is executing a raw SQL query. THIS IS A HIGH-RISK OPERATION. Query: {SanitizedQuery}", sanitizedQuery);
 
             // CORRECTED: Using NpgsqlConnection
@@ -236,14 +230,14 @@ namespace Infrastructure.Services.Admin
             catch (PostgresException pgEx) // CORRECTED: Catch specific PostgreSQL exceptions
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(pgEx);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(pgEx);
                 _logger.LogError(sanitizedException, "Error executing raw SQL query. SQLSTATE: {SqlState}", pgEx.SqlState);
                 return $"❌ **PostgreSQL Execution Error (Code: {pgEx.SqlState}):**\n`{pgEx.Message}`";
             }
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Error executing raw SQL query.");
                 return $"❌ **General Execution Error:**\n`{ex.Message}`";
             }
@@ -254,7 +248,7 @@ namespace Infrastructure.Services.Admin
         public async Task<AdminUserDetailDto?> GetUserDetailByTelegramIdAsync(long telegramId, CancellationToken cancellationToken = default)
         {
             // SECURITY: Sanitize telegramId before logging (though it's a long, it's still user input)
-            var sanitizedTelegramId = SanitizeForLogging(telegramId.ToString());
+            string sanitizedTelegramId = SanitizeForLogging(telegramId.ToString());
             _logger.LogInformation("Fetching detailed profile for Telegram ID: {SanitizedTelegramId} using optimized PG query.", sanitizedTelegramId);
 
             // CORRECTED: A single, optimized query using PostgreSQL's JSON aggregation functions.
@@ -409,15 +403,15 @@ namespace Infrastructure.Services.Admin
 
             // Get user join stats for the last 30 days
             const string sqlJoins = @"SELECT date_trunc('day', ""CreatedAt"" ) AS join_date, COUNT(*) AS count FROM public.""Users"" WHERE ""CreatedAt"" >= (CURRENT_DATE - INTERVAL '29 days') GROUP BY join_date ORDER BY join_date;";
-            var joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
+            List<(DateTime join_date, int count)> joinStatsRaw = (await connection.QueryAsync<(DateTime join_date, int count)>(new CommandDefinition(sqlJoins, cancellationToken: cancellationToken, commandTimeout: CommandTimeoutSeconds))).ToList();
 
             // Fill missing days with 0
-            List<(DateTime Date, int Count)> userJoinStats = new();
+            List<(DateTime Date, int Count)> userJoinStats = [];
             DateTime today = DateTime.UtcNow.Date;
             for (int i = 29; i >= 0; i--)
             {
                 DateTime day = today.AddDays(-i);
-                var found = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
+                (DateTime join_date, int count) found = joinStatsRaw.FirstOrDefault(x => x.join_date.Date == day);
                 int count = found != default ? found.count : 0;
                 userJoinStats.Add((day, count));
             }
@@ -428,14 +422,14 @@ namespace Infrastructure.Services.Admin
         public async Task<AdminDashboardStatsDto> GetAdminDashboardStatsAsync(CancellationToken cancellationToken = default)
         {
             _logger.LogInformation("Fetching admin dashboard statistics.");
-            var stats = new AdminDashboardStatsDto();
+            AdminDashboardStatsDto stats = new();
 
             // Get User Stats
             try
             {
-                var userStatsData = await GetDashboardStatsWithUserJoinsAsync(cancellationToken);
-                stats.TotalUsers = userStatsData.UserCount;
-                stats.UserGrowthLast7Days = userStatsData.UserJoinStats
+                (int UserCount, int NewsItemCount, List<(DateTime Date, int Count)>? UserJoinStats) = await GetDashboardStatsWithUserJoinsAsync(cancellationToken);
+                stats.TotalUsers = UserCount;
+                stats.UserGrowthLast7Days = UserJoinStats
                     .Select(s => new DailyCountDto { Date = s.Date, Count = s.Count })
                     .OrderByDescending(d => d.Date) // Ensure it's for the last 7 days from the GetDashboardStatsWithUserJoinsAsync logic
                     .Take(7) // Take last 7, assuming GetDashboardStatsWithUserJoinsAsync provides enough data
@@ -445,7 +439,7 @@ namespace Infrastructure.Services.Admin
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Error fetching user statistics for admin dashboard.");
                 // Optionally set default/error values or rethrow
                 stats.TotalUsers = -1; // Indicate error or unavailable
@@ -467,7 +461,7 @@ namespace Infrastructure.Services.Admin
                 // Placeholder: Efficient way would be direct DB queries via repository.
                 // Fetching all signals and filtering in memory is inefficient for large datasets.
                 // Using GetAllWithCategoryAsync as it's the closest available method in ISignalRepository.
-                var allSignals = await _signalRepository.GetAllWithCategoryAsync(cancellationToken);
+                IEnumerable<Signal> allSignals = await _signalRepository.GetAllWithCategoryAsync(cancellationToken);
 
                 stats.SignalsToday = allSignals.Count(s => s.PublishedAt.Date == todayStart);
 
@@ -479,11 +473,11 @@ namespace Infrastructure.Services.Admin
                     .ToList();
 
                 // Fill missing days for signals
-                var signalsPerDayFilled = new List<DailyCountDto>();
+                List<DailyCountDto> signalsPerDayFilled = [];
                 for (int i = 0; i < 7; i++)
                 {
                     DateTime day = sevenDaysAgoStart.AddDays(i);
-                    var existingStat = stats.SignalsPerDayLast7Days.FirstOrDefault(s => s.Date == day);
+                    DailyCountDto? existingStat = stats.SignalsPerDayLast7Days.FirstOrDefault(s => s.Date == day);
                     if (existingStat != null)
                     {
                         signalsPerDayFilled.Add(existingStat);
@@ -499,7 +493,7 @@ namespace Infrastructure.Services.Admin
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Error fetching signal statistics for admin dashboard.");
                 stats.SignalsToday = -1; // Indicate error or unavailable
             }
@@ -535,10 +529,10 @@ namespace Infrastructure.Services.Admin
                 if (!Directory.Exists(logDirectory))
                 {
                     _logger.LogWarning("Log directory not found at {LogPath} when listing files.", logDirectory);
-                    return new List<string>();
+                    return [];
                 }
 
-                var logFiles = Directory.GetFiles(logDirectory, "log-*.txt")
+                List<string> logFiles = Directory.GetFiles(logDirectory, "log-*.txt")
                                         .Select(Path.GetFileName)
                                         .OfType<string>() // Ensure GetFileName doesn't return nulls that break ToList()
                                         .OrderByDescending(f => f) // Show newest first
@@ -548,16 +542,16 @@ namespace Infrastructure.Services.Admin
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
                 _logger.LogError(sanitizedException, "Error listing log files.");
-                return new List<string>(); // Return empty list on error
+                return []; // Return empty list on error
             }
         }
 
         public async Task<string?> GetLogFileContentAsync(string fileName, int? lineCount = null, CancellationToken cancellationToken = default)
         {
             // SECURITY: Validate file name before processing
-            var validatedFileName = ValidateFileName(fileName);
+            string? validatedFileName = ValidateFileName(fileName);
             if (validatedFileName == null)
             {
                 _logger.LogWarning("GetLogFileContentAsync called with invalid file name format.");
@@ -584,17 +578,17 @@ namespace Infrastructure.Services.Admin
                 }
 
                 // SECURITY: Sanitize all user inputs before logging
-                var sanitizedFilePath = SanitizeForLogging(filePath);
-                var sanitizedLineCount = lineCount.HasValue ? lineCount.Value.ToString() : "All";
+                string sanitizedFilePath = SanitizeForLogging(filePath);
+                string sanitizedLineCount = lineCount.HasValue ? lineCount.Value.ToString() : "All";
                 _logger.LogInformation("Reading log file: {SanitizedFilePath}. Line count: {SanitizedLineCount}", sanitizedFilePath, sanitizedLineCount);
 
                 if (lineCount.HasValue && lineCount > 0)
                 {
-                    var lines = new List<string>();
+                    List<string> lines = [];
                     // File.ReadLines allows efficient reading for large files if we only need a few lines from the end.
                     // However, getting LAST N lines efficiently requires reading from end or keeping track.
                     // A simpler approach for moderate log files:
-                    var allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
+                    string[] allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
                     lines = allLines.TakeLast(lineCount.Value).ToList();
                     return string.Join(Environment.NewLine, lines);
                 }
@@ -606,8 +600,8 @@ namespace Infrastructure.Services.Admin
             catch (Exception ex)
             {
                 // SECURITY: Use SecureExceptionSanitizer for logging exceptions
-                var sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
-                var sanitizedFileName = SanitizeForLogging(validatedFileName);
+                string sanitizedException = SecureExceptionSanitizer.SanitizeForLogging(ex);
+                string sanitizedFileName = SanitizeForLogging(validatedFileName);
                 _logger.LogError(sanitizedException, "Error reading log file content for {SanitizedFileName}.", sanitizedFileName);
                 return $"Error reading log file '{validatedFileName}': {ex.Message}"; // Return error message as content for user
             }

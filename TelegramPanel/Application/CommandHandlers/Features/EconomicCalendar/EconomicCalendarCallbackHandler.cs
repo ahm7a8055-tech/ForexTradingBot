@@ -92,7 +92,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.EconomicCalendar
             }
 
             StringBuilder sb = new();
-            List<List<InlineKeyboardButton>> keyboardRows = new();
+            List<List<InlineKeyboardButton>> keyboardRows = [];
 
             FredReleaseTableElementDto currentElement = result.Data.Elements.First(); // The API returns the parent as the first element
 
@@ -492,7 +492,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.EconomicCalendar
         /// <returns>An <see cref="InlineKeyboardMarkup"/> for navigation.</returns>
         private InlineKeyboardMarkup GetPaginationKeyboard(int currentPage, bool hasMore)
         {
-            List<InlineKeyboardButton> paginationRow = new();
+            List<InlineKeyboardButton> paginationRow = [];
             if (currentPage > 1)
             {
                 paginationRow.Add(InlineKeyboardButton.WithCallbackData("⬅️ Previous", $"{ReleasesCallbackPrefix}:{currentPage - 1}"));
@@ -502,7 +502,7 @@ namespace TelegramPanel.Application.CommandHandlers.Features.EconomicCalendar
                 paginationRow.Add(InlineKeyboardButton.WithCallbackData("Next ➡️", $"{ReleasesCallbackPrefix}:{currentPage + 1}"));
             }
 
-            List<List<InlineKeyboardButton>> keyboardLayout = new();
+            List<List<InlineKeyboardButton>> keyboardLayout = [];
             if (paginationRow.Any())
             {
                 keyboardLayout.Add(paginationRow);

@@ -1,8 +1,4 @@
 using Domain.Entities;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
-using System;
 
 namespace Application.Common.Interfaces
 {
@@ -27,4 +23,4 @@ namespace Application.Common.Interfaces
         Task<int> DeleteAllAsync(CancellationToken cancellationToken = default);
         #endregion
     }
-} 
+}

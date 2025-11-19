@@ -1,12 +1,7 @@
 using Application.DTOs.Admin;
 using Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace WebAPI.Controllers
 {
@@ -46,7 +41,7 @@ namespace WebAPI.Controllers
             _logger.LogInformation("API Request: Attempting to retrieve admin dashboard statistics.");
             try
             {
-                var stats = await _adminService.GetAdminDashboardStatsAsync(cancellationToken);
+                AdminDashboardStatsDto stats = await _adminService.GetAdminDashboardStatsAsync(cancellationToken);
                 _logger.LogInformation("API Success: Admin dashboard statistics retrieved successfully.");
                 return Ok(stats);
             }

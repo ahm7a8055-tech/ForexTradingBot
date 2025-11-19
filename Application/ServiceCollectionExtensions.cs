@@ -113,9 +113,9 @@ namespace Application // ✅ Namespace ریشه پروژه Application
             // سرویس مدیریت دسته‌بندی سیگنال‌ها (اگر منطق خاصی فراتر از CRUD Repository دارد)
             // services.AddScoped<ISignalCategoryService, SignalCategoryService>();
             // Comment: Example: Registers SignalCategoryService if there's business logic beyond repository.
-            _ =  services.AddSingleton<IGeminiService, GeminiService>(); // Singleton is fine as it's thread-safe and depends on other services.
+            _ = services.AddSingleton<IGeminiService, GeminiService>(); // Singleton is fine as it's thread-safe and depends on other services.
 
-            _ =  services.AddHttpClient("GeminiClient");
+            _ = services.AddHttpClient("GeminiClient");
             // سرویس مدیریت منابع RSS (اگر منطق خاصی مانند پردازش فیدها در این لایه است)
             // services.AddScoped<IRssSourceService, RssSourceService>();
             // Comment: Example: Registers RssSourceService for RSS feed processing logic.

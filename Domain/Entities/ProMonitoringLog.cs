@@ -1,5 +1,4 @@
 #region Usings
-using System;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 #endregion
@@ -64,4 +63,4 @@ namespace Domain.Entities
         public DateTime? UpdatedAt { get; set; }
         #endregion
     }
-} 
+}

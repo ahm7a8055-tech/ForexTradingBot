@@ -6,10 +6,9 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using Polly;
 using Polly.Retry;
-using System.Data;
 using System.Data.Common;
 
-namespace Infrastructure.Persistence.Repositories // Ensure namespace matches your project structure
+namespace Infrastructure.Repositories // Ensure namespace matches your project structure
 {
     /// <summary>
     /// Implements IAiApiConfigurationRepository using Dapper for efficient PostgreSQL data access.
@@ -67,14 +66,18 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
 
         public async Task<AiApiConfiguration?> GetByProviderAndStatusAsync(string providerName, bool isEnabled, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(providerName)) return null;
+            if (string.IsNullOrWhiteSpace(providerName))
+            {
+                return null;
+            }
+
             string sql = $@"{BaseSelectSql} WHERE ""ProviderName"" = @ProviderName AND ""IsEnabled"" = @IsEnabled;";
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.QuerySingleOrDefaultAsync<AiApiConfiguration>(
                         new CommandDefinition(sql, new { ProviderName = providerName, IsEnabled = isEnabled }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -90,14 +93,18 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
 
         public async Task<AiApiConfiguration?> GetByProviderNameAsync(string providerName, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(providerName)) return null;
+            if (string.IsNullOrWhiteSpace(providerName))
+            {
+                return null;
+            }
+
             string sql = $@"{BaseSelectSql} WHERE ""ProviderName"" = @ProviderName;";
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.QuerySingleOrDefaultAsync<AiApiConfiguration>(
                         new CommandDefinition(sql, new { ProviderName = providerName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -118,7 +125,7 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.QueryAsync<AiApiConfiguration>(
                         new CommandDefinition(sql, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -134,14 +141,18 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
 
         public async Task<IEnumerable<AiApiConfiguration>> GetAllByProviderAndStatusAsync(string providerName, bool isEnabled, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(providerName)) return Enumerable.Empty<AiApiConfiguration>();
+            if (string.IsNullOrWhiteSpace(providerName))
+            {
+                return Enumerable.Empty<AiApiConfiguration>();
+            }
+
             string sql = $@"{BaseSelectSql} WHERE ""ProviderName"" = @ProviderName AND ""IsEnabled"" = @IsEnabled;";
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.QueryAsync<AiApiConfiguration>(
                         new CommandDefinition(sql, new { ProviderName = providerName, IsEnabled = isEnabled }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -181,7 +192,7 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     var parameters = new
                     {
@@ -212,9 +223,9 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
 
             try
             {
-                var addedConfig = await _retryPolicy.ExecuteAsync(async () =>
+                AiApiConfiguration addedConfig = await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.QuerySingleAsync<AiApiConfiguration>(
                         new CommandDefinition(sql, configuration, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -248,9 +259,9 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
 
             try
             {
-                var rowsAffected = await _retryPolicy.ExecuteAsync(async () =>
+                int rowsAffected = await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.ExecuteAsync(
                         new CommandDefinition(sql, configuration, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -275,9 +286,9 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
             string sql = $"DELETE FROM public.{TableName} WHERE \"Id\" = @Id;";
             try
             {
-                var rowsAffected = await _retryPolicy.ExecuteAsync(async () =>
+                int rowsAffected = await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
                     return await connection.ExecuteAsync(
                         new CommandDefinition(sql, new { Id = id }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
@@ -299,16 +310,20 @@ namespace Infrastructure.Persistence.Repositories // Ensure namespace matches yo
 
         public async Task<bool> ExistsAsync(string providerName, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(providerName)) return false;
+            if (string.IsNullOrWhiteSpace(providerName))
+            {
+                return false;
+            }
+
             string sql = $"SELECT COUNT(1) FROM public.{TableName} WHERE \"ProviderName\" = @ProviderName;";
 
             try
             {
                 return await _retryPolicy.ExecuteAsync(async () =>
                 {
-                    await using var connection = CreateConnection();
+                    await using DbConnection connection = CreateConnection();
                     await connection.OpenAsync(cancellationToken);
-                    var count = await connection.ExecuteScalarAsync<int>(
+                    int count = await connection.ExecuteScalarAsync<int>(
                         new CommandDefinition(sql, new { ProviderName = providerName }, commandTimeout: CommandTimeoutSeconds, cancellationToken: cancellationToken)
                     );
                     return count > 0;

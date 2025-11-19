@@ -49,7 +49,7 @@ namespace WebAPI.Controllers
                 return BadRequest(new { Message = "Message is required" });
             }
 
-            var response = new TestResponse
+            TestResponse response = new()
             {
                 OriginalMessage = request.Message,
                 Timestamp = DateTime.UtcNow
@@ -59,7 +59,7 @@ namespace WebAPI.Controllers
             {
                 _logger.LogInformation("Testing Gemini enhancement for message: {MessageLength} chars", request.Message.Length);
 
-                var result = await _geminiService.EnhanceMessageAsync(request.Message, ct, request.ApiKeyName);
+                string? result = await _geminiService.EnhanceMessageAsync(request.Message, ct, request.ApiKeyName);
 
                 if (!string.IsNullOrWhiteSpace(result) && !result.StartsWith("Job enqueued"))
                 {
@@ -71,16 +71,16 @@ namespace WebAPI.Controllers
                 else if (!string.IsNullOrWhiteSpace(result) && result.StartsWith("Job enqueued"))
                 {
                     // Background job was enqueued
-                    var jobId = result.Replace("Job enqueued successfully. JobId: ", "");
+                    string jobId = result.Replace("Job enqueued successfully. JobId: ", "");
                     response.JobId = jobId;
                     response.Status = "JOB_ENQUEUED";
                     _logger.LogInformation("Background job enqueued. JobId: {JobId}", jobId);
 
                     // Wait a bit and check the result
                     await Task.Delay(2000, ct); // Wait 2 seconds
-                    var jobResult = await _geminiService.GetJobResultAsync(jobId, ct);
-                    
-                    if (jobResult != "JOB_RUNNING" && jobResult != "JOB_NOT_FOUND")
+                    string? jobResult = await _geminiService.GetJobResultAsync(jobId, ct);
+
+                    if (jobResult is not "JOB_RUNNING" and not "JOB_NOT_FOUND")
                     {
                         response.EnhancedMessage = jobResult;
                         response.Status = "SUCCESS_BACKGROUND";
@@ -112,7 +112,7 @@ namespace WebAPI.Controllers
         [HttpPost("test-gold-message")]
         public async Task<IActionResult> TestGoldMessage(CancellationToken ct)
         {
-            var testMessage = @"GOLD SELL NOW 
+            string testMessage = @"GOLD SELL NOW 
 3295 - 3297
 
 SL : 3300
@@ -121,7 +121,7 @@ TP1: 3293
 TP2: 3291
 TP3: 3289";
 
-            var request = new TestEnhancementRequest { Message = testMessage };
+            TestEnhancementRequest request = new() { Message = testMessage };
             return await TestEnhancement(request, ct);
         }
 
@@ -134,8 +134,8 @@ TP3: 3289";
             try
             {
                 // Test with a simple message to check if service is working
-                var testMessage = "Test message for service status check";
-                var result = await _geminiService.EnhanceMessageAsync(testMessage, ct);
+                string testMessage = "Test message for service status check";
+                string? result = await _geminiService.EnhanceMessageAsync(testMessage, ct);
 
                 var status = new
                 {
@@ -173,13 +173,13 @@ TP3: 3289";
 
             try
             {
-                var result = await _geminiService.GetJobResultAsync(jobId, ct);
-                
+                string? result = await _geminiService.GetJobResultAsync(jobId, ct);
+
                 var response = new
                 {
                     JobId = jobId,
                     Status = result,
-                    IsCompleted = result != "JOB_RUNNING" && result != "JOB_NOT_FOUND",
+                    IsCompleted = result is not "JOB_RUNNING" and not "JOB_NOT_FOUND",
                     Timestamp = DateTime.UtcNow
                 };
 
@@ -191,4 +191,4 @@ TP3: 3289";
             }
         }
     }
-} 
+}

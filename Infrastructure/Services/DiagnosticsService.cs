@@ -59,7 +59,7 @@ namespace Infrastructure.Services
             status.DatabaseProvider = _configuration.GetValue<string>("DatabaseProvider"); // e.g., "PostgreSQL" or "SQLite" from appsettings
             if (string.IsNullOrEmpty(status.DatabaseProvider))
             {
-                 status.DatabaseProvider = "Unknown (Not configured in appsettings:DatabaseProvider)";
+                status.DatabaseProvider = "Unknown (Not configured in appsettings:DatabaseProvider)";
             }
 
             try
@@ -84,7 +84,7 @@ namespace Infrastructure.Services
                     }
                     else
                     {
-                         status.DatabaseError = $"Failed to open connection. State: {connection.State}";
+                        status.DatabaseError = $"Failed to open connection. State: {connection.State}";
                     }
                 }
             }

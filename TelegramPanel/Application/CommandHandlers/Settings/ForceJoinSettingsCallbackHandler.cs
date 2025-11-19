@@ -130,14 +130,9 @@ namespace TelegramPanel.Application.CommandHandlers.Settings
             _ = text.AppendLine();
             _ = text.AppendLine("**Message:**");
 
-            if (!string.IsNullOrWhiteSpace(settings.Message))
-            {
-                _ = text.AppendLine(TelegramMessageFormatter.Bold(settings.Message));
-            }
-            else
-            {
-                _ = text.AppendLine("_Default message will be used._");
-            }
+            _ = !string.IsNullOrWhiteSpace(settings.Message)
+                ? text.AppendLine(TelegramMessageFormatter.Bold(settings.Message))
+                : text.AppendLine("_Default message will be used._");
 
             InlineKeyboardMarkup keyboard = GetKeyboard(settings);
 

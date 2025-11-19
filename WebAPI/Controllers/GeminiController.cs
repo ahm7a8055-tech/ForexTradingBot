@@ -27,7 +27,7 @@ namespace WebAPI.Controllers
 
         public class BatchEnhanceRequest
         {
-            public List<string> Texts { get; set; } = new();
+            public List<string> Texts { get; set; } = [];
             public string? ApiKeyName { get; set; }
         }
 
@@ -57,11 +57,11 @@ namespace WebAPI.Controllers
 
             try
             {
-                var jobId = await _geminiService.EnhanceMessageAsync(request.Text, ct, request.ApiKeyName);
-                
+                string? jobId = await _geminiService.EnhanceMessageAsync(request.Text, ct, request.ApiKeyName);
+
                 _logger.LogInformation("Message enhancement job enqueued. JobId: {JobId}", jobId);
 
-                var response = new JobResultResponse
+                JobResultResponse response = new()
                 {
                     JobId = jobId ?? "UNKNOWN",
                     Status = "ENQUEUED",
@@ -92,14 +92,14 @@ namespace WebAPI.Controllers
 
             try
             {
-                var result = await _geminiService.GetJobResultAsync(jobId, ct);
-                
+                string? result = await _geminiService.GetJobResultAsync(jobId, ct);
+
                 if (result == "JOB_NOT_FOUND")
                 {
                     return NotFound(new { Message = "Job not found", JobId = jobId });
                 }
 
-                var response = new JobResultResponse
+                JobResultResponse response = new()
                 {
                     JobId = jobId,
                     Status = result == "JOB_RUNNING" ? "RUNNING" : "COMPLETED",
@@ -111,7 +111,7 @@ namespace WebAPI.Controllers
             }
             catch (Exception ex)
             {
-                var sanitizedJobId = jobId.Replace("\n", "").Replace("\r", "");
+                string sanitizedJobId = jobId.Replace("\n", "").Replace("\r", "");
                 _logger.LogError(ex, "Failed to get job result for JobId: {JobId}", sanitizedJobId);
                 return StatusCode(500, new { Message = "Failed to get job result", Error = ex.Message });
             }
@@ -137,12 +137,13 @@ namespace WebAPI.Controllers
 
             try
             {
-                var jobIds = await _geminiService.EnhanceMessagesBatchAsync(request.Texts, ct, request.ApiKeyName);
-                
-                _logger.LogInformation("Batch enhancement jobs enqueued. Count: {Count}, JobIds: {JobIds}", 
+                List<string> jobIds = await _geminiService.EnhanceMessagesBatchAsync(request.Texts, ct, request.ApiKeyName);
+
+                _logger.LogInformation("Batch enhancement jobs enqueued. Count: {Count}, JobIds: {JobIds}",
                     jobIds.Count, string.Join(", ", jobIds));
 
-                return Accepted(new { 
+                return Accepted(new
+                {
                     Message = "Batch jobs enqueued successfully",
                     JobCount = jobIds.Count,
                     JobIds = jobIds
@@ -174,12 +175,12 @@ namespace WebAPI.Controllers
 
             try
             {
-                var results = new List<JobResultResponse>();
-                
-                foreach (var jobId in jobIds)
+                List<JobResultResponse> results = [];
+
+                foreach (string jobId in jobIds)
                 {
-                    var result = await _geminiService.GetJobResultAsync(jobId, ct);
-                    
+                    string? result = await _geminiService.GetJobResultAsync(jobId, ct);
+
                     results.Add(new JobResultResponse
                     {
                         JobId = jobId,
@@ -189,7 +190,7 @@ namespace WebAPI.Controllers
                             "JOB_RUNNING" => "RUNNING",
                             _ => "COMPLETED"
                         },
-                        Result = result == "JOB_RUNNING" || result == "JOB_NOT_FOUND" ? null : result,
+                        Result = result is "JOB_RUNNING" or "JOB_NOT_FOUND" ? null : result,
                         Timestamp = DateTime.UtcNow
                     });
                 }
@@ -205,4 +206,4 @@ namespace WebAPI.Controllers
 
         #endregion
     }
-} 
+}

@@ -1,6 +1,6 @@
-﻿using System.Collections.Concurrent;
+﻿using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 using System.Threading.RateLimiting;
-using Microsoft.Extensions.Logging;
 
 namespace TelegramPanel.Infrastructure.Services
 {
@@ -26,7 +26,7 @@ namespace TelegramPanel.Infrastructure.Services
         public async Task<bool> IsRequestAllowedAsync(long userId)
         {
             // Get or create a composite rate limiter for the specific user.
-            var limiter = _userLimiters.GetOrAdd(userId, _ => CreateNewUserLimiter());
+            RateLimiter limiter = _userLimiters.GetOrAdd(userId, _ => CreateNewUserLimiter());
 
             // Acquire a permit from the composite limiter.
             using RateLimitLease lease = await limiter.AcquireAsync(1);
@@ -45,7 +45,7 @@ namespace TelegramPanel.Infrastructure.Services
             // This is the manual way to chain limiters in .NET 6/7.
 
             // Rule 1: General Anti-Spam (Burst) - 1 message per second
-            var antiSpamLimiter = new FixedWindowRateLimiter(new FixedWindowRateLimiterOptions
+            _ = new FixedWindowRateLimiter(new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 1,
                 Window = TimeSpan.FromSeconds(1.2),
@@ -53,7 +53,7 @@ namespace TelegramPanel.Infrastructure.Services
             });
 
             // Rule 2: Sustained Rate (Telegram Policy Aligned) - 20 messages per minute
-            var sustainedRateLimiter = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
+            _ = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
             {
                 TokenLimit = 20,
                 TokensPerPeriod = 20,

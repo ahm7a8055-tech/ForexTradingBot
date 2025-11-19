@@ -1,7 +1,7 @@
-using System.Globalization;
-using System.Resources;
-using System.Reflection;
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Reflection;
+using System.Resources;
 
 namespace Shared.Utilities
 {
@@ -23,10 +23,10 @@ namespace Shared.Utilities
         public LocalizationService()
         {
             _assembly = typeof(LocalizationService).Assembly;
-            foreach (var lang in SupportedLanguages)
+            foreach (string lang in SupportedLanguages)
             {
-                var culture = new CultureInfo(lang);
-                var rm = new ResourceManager(_baseName, _assembly);
+                _ = new CultureInfo(lang);
+                ResourceManager rm = new(_baseName, _assembly);
                 _resourceManagers[lang] = rm;
             }
         }
@@ -34,22 +34,30 @@ namespace Shared.Utilities
         public string GetString(string key, string? langCode = null)
         {
             langCode = NormalizeLang(langCode);
-            if (!_resourceManagers.TryGetValue(langCode, out var rm))
+            if (!_resourceManagers.TryGetValue(langCode, out ResourceManager? rm))
+            {
                 rm = _resourceManagers["fa"];
-            var value = rm.GetString(key, new CultureInfo(langCode));
+            }
+
+            string? value = rm.GetString(key, new CultureInfo(langCode));
             if (string.IsNullOrEmpty(value) && langCode != "fa")
+            {
                 value = _resourceManagers["fa"].GetString(key, new CultureInfo("fa"));
+            }
+
             return value ?? key;
         }
 
         private static string NormalizeLang(string? lang)
         {
-            if (string.IsNullOrWhiteSpace(lang)) return "fa";
+            if (string.IsNullOrWhiteSpace(lang))
+            {
+                return "fa";
+            }
+
             lang = lang.ToLowerInvariant();
-            if (lang.StartsWith("fa")) return "fa";
-            if (lang.StartsWith("ru")) return "ru";
-            return "fa";
+            return lang.StartsWith("fa") ? "fa" : lang.StartsWith("ru") ? "ru" : "fa";
         }
     }
     #endregion
-} 
+}

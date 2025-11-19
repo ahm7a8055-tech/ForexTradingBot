@@ -17,10 +17,11 @@ using Hangfire.Storage.SQLite;
 using Infrastructure.Caching;
 using Infrastructure.ExternalServices;
 using Infrastructure.Hangfire;
-using Infrastructure.Persistence; // For DbConnectionFactory
-using Infrastructure.Data;
+using Infrastructure.Persistence.Configurations;
+using Infrastructure.Repositories;
 using Infrastructure.Services;
 using Infrastructure.Services.Admin;
+using Infrastructure.Services.CoinGecko;
 using Infrastructure.Services.Fmp;
 // --- Microsoft ---
 using Microsoft.EntityFrameworkCore;
@@ -34,11 +35,6 @@ using Serilog;
 using StackExchange.Redis;
 using System.Net;
 using System.Net.Http.Headers;
-using Infrastructure.Persistence.Configurations;
-using Infrastructure.Repositories;
-using TelegramPanel.Application.Interfaces;
-using TelegramPanel.Infrastructure.Services;
-using Infrastructure.Persistence.Repositories;
 #endregion
 
 namespace Infrastructure.Data
@@ -142,53 +138,31 @@ namespace Infrastructure.Data
                 // Detect provider if not explicitly set
                 if (string.IsNullOrEmpty(dbProvider))
                 {
-                    if (conn.Contains("PostgreSQL", StringComparison.OrdinalIgnoreCase) ||
-                        conn.Contains("postgres", StringComparison.OrdinalIgnoreCase))
-                    {
-                        dbProvider = "postgres";
-                    }
-                    else if (conn.Contains("Server=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        dbProvider = "sqlserver";
-                    }
-                    else if (conn.Contains("Data Source=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        dbProvider = "sqlite";
-                    }
-                    else
-                    {
-                        dbProvider = "sqlite";
-                    }
+                    dbProvider = conn.Contains("PostgreSQL", StringComparison.OrdinalIgnoreCase) ||
+                        conn.Contains("postgres", StringComparison.OrdinalIgnoreCase)
+                        ? "postgres"
+                        : conn.Contains("Server=", StringComparison.OrdinalIgnoreCase)
+                            ? "sqlserver"
+                            : conn.Contains("Data Source=", StringComparison.OrdinalIgnoreCase) ? "sqlite" : "sqlite";
 
                     Log.Information("Database provider auto-detected as: {Provider}", dbProvider);
                 }
 
                 // --- 1. Configure the Main DbContext (fatal on failure) ---
-                switch (dbProvider)
+                _ = dbProvider switch
                 {
-                    case "sqlite":
-                        _ = services.AddDbContext<AppDbContext>(opts =>
-                            opts.UseSqlite(conn, sqlite =>
-                                sqlite.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
-                        break;
-
-                    case "postgres":
-                    case "postgresql":
-                        _ = services.AddDbContextPool<AppDbContext>(opts =>
-                                opts.UseNpgsql(conn, npgsql =>
-                                    npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)),
-                                poolSize: 32);
-                        break;
-
-                    case "sqlserver":
-                        _ = services.AddDbContext<AppDbContext>(opts =>
-                            opts.UseSqlServer(conn, sql =>
-                                sql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
-                        break;
-
-                    default:
-                        throw new NotSupportedException($"Unsupported DatabaseProvider: '{dbProvider}'.");
-                }
+                    "sqlite" => services.AddDbContext<AppDbContext>(opts =>
+                                                opts.UseSqlite(conn, sqlite =>
+                                                    sqlite.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName))),
+                    "postgres" or "postgresql" => services.AddDbContextPool<AppDbContext>(opts =>
+                                                    opts.UseNpgsql(conn, npgsql =>
+                                                        npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)),
+                                                    poolSize: 32),
+                    "sqlserver" => services.AddDbContext<AppDbContext>(opts =>
+                                                opts.UseSqlServer(conn, sql =>
+                                                    sql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName))),
+                    _ => throw new NotSupportedException($"Unsupported DatabaseProvider: '{dbProvider}'."),
+                };
 
                 // --- 2. Configure Hangfire with DB storage + safe fallback ---
                 _ = services.AddHangfire(config =>

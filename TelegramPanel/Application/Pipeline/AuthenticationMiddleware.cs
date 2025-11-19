@@ -162,8 +162,8 @@ namespace TelegramPanel.Application.Pipeline
                 // Background error log
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -241,7 +241,7 @@ namespace TelegramPanel.Application.Pipeline
                 _logger.LogError(ex, "Failed to send 'Join Channel' message with button to UserID {UserId}.", telegramId);
 
                 // --- ENHANCEMENT: Log this failure to the database ---
-                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                 await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                 {
                     Timestamp = DateTime.UtcNow,
@@ -276,7 +276,7 @@ namespace TelegramPanel.Application.Pipeline
                 _logger.LogError(ex, "Failed to send 'Access Denied' message to UserID {UserId}.", telegramId);
 
                 // --- ENHANCEMENT: Log this failure to the database ---
-                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                 await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                 {
                     Timestamp = DateTime.UtcNow,
@@ -308,7 +308,7 @@ namespace TelegramPanel.Application.Pipeline
             {
                 _logger.LogError(ex, "Failed to send critical failure message to UserID {UserId}.", telegramId);
 
-                var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                 await repo.AddAsync(new Domain.Entities.ProMonitoringLog
                 {
                     Timestamp = DateTime.UtcNow,

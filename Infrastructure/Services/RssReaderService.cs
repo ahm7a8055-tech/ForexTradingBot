@@ -38,7 +38,6 @@ using System.ServiceModel.Syndication;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
-using System.Net.Http;
 
 #endregion
 
@@ -553,8 +552,8 @@ namespace Infrastructure.Services
                 _logger.LogCritical(ex, "An unexpected critical error occurred during the fetch pipeline for RssSource '{SourceName}' (ID: {RssSourceId}).", rssSource.SourceName, rssSource.Id);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -607,8 +606,8 @@ namespace Infrastructure.Services
                 _logger.LogCritical(deleteEx, "SELF-HEALING FAILED: Could not delete source {RssSourceId}. Manual inspection is required.", rssSource.Id);
                 _ = Task.Run(async () =>
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    var repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
+                    using IServiceScope scope = _serviceProvider.CreateScope();
+                    IProMonitoringLogRepository repo = scope.ServiceProvider.GetRequiredService<IProMonitoringLogRepository>();
                     await repo.AddAsync(new ProMonitoringLog
                     {
                         Timestamp = DateTime.UtcNow,
@@ -987,7 +986,7 @@ namespace Infrastructure.Services
                 ProcessedInThisBatch: new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase)
             );
 
-            ConcurrentBag<NewsItem> newNewsEntitiesBag = new();
+            ConcurrentBag<NewsItem> newNewsEntitiesBag = [];
             _logger.LogDebug("Beginning PARALLEL processing of {ItemCount} fetched syndication items.", syndicationItems.Count());
 
             try
@@ -1359,7 +1358,7 @@ namespace Infrastructure.Services
                 return Enumerable.Empty<NewsItemDto>();
             }
 
-            HashSet<Guid> dispatchedItemIds = new();
+            HashSet<Guid> dispatchedItemIds = [];
             _logger.LogInformation("Dispatching Batch: Enqueuing notification tasks for {Count} items.", itemsToDispatch.Count);
             await EnqueueDispatchTasks(itemsToDispatch, "AllItemsBatch", dispatchedItemIds, cancellationToken);
 
@@ -1432,7 +1431,7 @@ namespace Infrastructure.Services
             const string methodName = nameof(EnqueueDispatchTasks);
             _logger.LogTrace("Entering {MethodName} for batch '{BatchName}' with {ItemCount} items.", methodName, batchName, itemsToEnqueue.Count);
 
-            List<Task> tasks = new();
+            List<Task> tasks = [];
             foreach (NewsItem item in itemsToEnqueue)
             {
                 if (ct.IsCancellationRequested)
@@ -1866,7 +1865,7 @@ namespace Infrastructure.Services
         private string? ExtractImageUrlWithHtmlAgility(NewsItemCreationContext context, string? summary, string? content)
         {
             const string methodName = nameof(ExtractImageUrlWithHtmlAgility);
-            var item = context.SyndicationItem;
+            SyndicationItem item = context.SyndicationItem;
             _logger.LogTrace("Entering {MethodName} for item '{ItemTitle}'", methodName, item.Title?.Text.Truncate(50));
 
             // --- Strategy 1: Enhanced media:content (from Media RSS extension) ---
@@ -2158,10 +2157,10 @@ namespace Infrastructure.Services
         {
             try
             {
-                var httpClient = _httpClientFactory.CreateClient();
-                using var request = new HttpRequestMessage(HttpMethod.Head, imageUrl);
+                HttpClient httpClient = _httpClientFactory.CreateClient();
+                using HttpRequestMessage request = new(HttpMethod.Head, imageUrl);
                 request.Headers.UserAgent.ParseAdd(_settings.UserAgent);
-                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using HttpResponseMessage response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 if (!response.IsSuccessStatusCode || response.Content.Headers.ContentType == null || !response.Content.Headers.ContentType.MediaType.StartsWith("image/"))
                 {
                     _logger.LogError(
