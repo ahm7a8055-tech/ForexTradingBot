@@ -1245,7 +1245,7 @@ try
     #endregion
 
     #region Map Controllers & Run Application (region master)
-  
+
     // ------------------- FIX FOR CI/CD HEALTH CHECK -------------------
     // In SmokeTest mode (GitHub Actions), we force the Health Check to return 200 OK
     // even if the Telegram Bot Token is missing/invalid (Unhealthy).
@@ -1254,21 +1254,21 @@ try
     {
         Predicate = _ => true,
         ResultStatusCodes = isSmokeTest ?
-            new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
-            {
+               new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
+               {
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded, 200 },
-                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 200 } // ✅ Force 200 OK in CI
-            } :
-            new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
-            {
+                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 200 } // ✅ نکته مهم: در تست، خرابی = 200
+               } :
+               new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
+               {
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded, 200 },
-                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 503 } // Default behavior in Prod
-            }
+                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 503 } // در حالت عادی، خرابی = 503
+               }
     };
 
-    _ = app.MapHealthChecks("/healthz");
+    _ = app.MapHealthChecks("/healthz", healthCheckOptions);
 
 
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
