@@ -128,9 +128,9 @@ try
     // 3) In smoke-test mode, ensure a quick SQLite DB so EF/Hangfire don't break.
     if (isSmokeTest)
     {
-        // A) Force Kestrel to listen only on the expected HTTP port.
-        //    This avoids issues with HTTPS dev certs and redirection in CI environments.
-        builder.Configuration["Urls"] = "http://localhost:5000";
+        // A) FIX: Bind to 0.0.0.0:80 so Docker port mapping (-p 8080:80) works.
+        //    Previously "localhost:5000" made the app unreachable from outside the container.
+        builder.Configuration["Urls"] = "http://0.0.0.0:80";
 
         // B) Force a quick SQLite DB, overriding any other settings to ensure isolation.
         const string smokeConn = "Data Source=smoketest.db";
@@ -142,7 +142,7 @@ try
         easySetupStore?.Save("DatabaseSettings:DatabaseProvider", "sqlite", isSensitive: false);
         easySetupStore?.Save("ConnectionStrings:DefaultConnection", smokeConn, isSensitive: true);
 
-        Log.Information("[SmokeTest] Overriding configuration for smoke test: URL=http://localhost:5000, DB=SQLite");
+        Log.Information("[SmokeTest] Overriding configuration for smoke test: URL=http://0.0.0.0:80, DB=SQLite");
     }
 
     // 4) Run the Easy Setup Wizard (DB + BotToken + optional secrets).
