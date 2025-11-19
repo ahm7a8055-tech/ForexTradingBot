@@ -342,7 +342,7 @@
         }
       ]
     },
-    "job_12_docker_push": {
+   "job_12_docker_push": {
       "name": "⬆️ 12 Docker Push Image",
       "needs": [
         "job_10_docker_build_test",
@@ -351,7 +351,9 @@
       "runs-on": "ubuntu-latest",
       "permissions": {
         "contents": "read",
-        "packages": "write"
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write"
       },
       "steps": [
         {
@@ -369,7 +371,7 @@
           "with": {
             "registry": "ghcr.io",
             "username": "${{ github.actor }}",
-            "password": "${{ secrets.GHCR_TOKEN }}"
+            "password": "${{ secrets.GITHUB_TOKEN }}"
           }
         },
         {
@@ -382,7 +384,8 @@
             "tags": "${{ needs.job_09_docker_meta.outputs.tags }}",
             "labels": "${{ needs.job_09_docker_meta.outputs.labels }}",
             "cache-from": "type=gha",
-            "cache-to": "type=gha,mode=max"
+            "cache-to": "type=gha,mode=max",
+            "provenance": false 
           }
         }
       ]
