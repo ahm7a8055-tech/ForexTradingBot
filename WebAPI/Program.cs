@@ -1245,8 +1245,7 @@ try
     #endregion
 
     #region Map Controllers & Run Application (region master)
-    _ = app.MapHealthChecks("/healthz");
-
+  
     // ------------------- FIX FOR CI/CD HEALTH CHECK -------------------
     // In SmokeTest mode (GitHub Actions), we force the Health Check to return 200 OK
     // even if the Telegram Bot Token is missing/invalid (Unhealthy).
@@ -1269,6 +1268,7 @@ try
             }
     };
 
+    _ = app.MapHealthChecks("/healthz");
 
 
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
