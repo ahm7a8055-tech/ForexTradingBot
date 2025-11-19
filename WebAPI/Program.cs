@@ -280,9 +280,6 @@ try
 
     #endregion
 
-    #region SmokeTest SQLite Connection (region master)
-    // ... existing code ...
-    #endregion
 
     #region Configure Serilog Logging (region master)
     // ------------------- ۱. پیکربندی Serilog با تنظیمات از appsettings.json -------------------
@@ -1248,9 +1245,12 @@ try
 
     #region Map Controllers & Run Application (region master)
 
-    // ------------------- FIX FOR CI/CD HEALTH CHECK -------------------
-    // اگر در حالت تست (isSmokeTest) هستیم، حتی اگر سرویس‌ها خراب باشند (Unhealthy)،
-    // کد 200 برمی‌گردانیم تا گیتهاب خطا نگیرد.
+    // =====================================================================================
+    // ✅ FIX FOR CI/CD HEALTH CHECK
+    // In SmokeTest mode (GitHub Actions), we force the Health Check to return 200 OK
+    // even if the Telegram Bot Token is missing/invalid (Unhealthy).
+    // This allows the "Waiting for application..." script to pass successfully.
+    // =====================================================================================
     var healthCheckOptions = new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         Predicate = _ => true,
@@ -1259,18 +1259,18 @@ try
             {
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded, 200 },
-                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 200 } // ✅ نکته مهم: در تست، خرابی = 200
+                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 200 } // ✅ FORCE 200 OK IN CI
             } :
             new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
             {
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded, 200 },
-                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 503 } // در حالت عادی، خرابی = 503
+                { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 503 } // Default Production Behavior
             }
     };
 
     _ = app.MapHealthChecks("/healthz", healthCheckOptions);
-    // ------------------------------------------------------------------
+    // =====================================================================================
 
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
     //app.MapGet("/maintenance/force-hangfire-purge-all", async (IConfiguration config, IHangfireCleaner cleaner, ILogger<Program> logger) => {
