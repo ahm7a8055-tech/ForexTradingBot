@@ -1,4 +1,4 @@
-﻿// --- File: Infrastructure/Logging/TelegramAdminSink.cs (V8.4-CLEAN) ---
+﻿// --- File: Infrastructure/Logging/TelegramAdminSink.cs (V8.5-RESILIENT) ---
 
 using Microsoft.Extensions.Configuration;
 using Polly;
@@ -20,7 +20,7 @@ namespace TelegramPanel.Infrastructure.Logging
         private readonly AsyncRetryPolicy _retryPolicy;
         private readonly SinkState _sinkState;
         private readonly TelegramMessageBuilder _messageBuilder;
-        private readonly TelegramBotClient _botClient;
+        private readonly TelegramBotClient? _botClient; // Nullable to handle init failure gracefully
 
         public TelegramAdminSink(IConfiguration configuration)
         {
@@ -28,34 +28,59 @@ namespace TelegramPanel.Infrastructure.Logging
             _sinkState = new SinkState();
 
             Console.WriteLine("\n╔═════════════════════════════════════╗");
-            Console.WriteLine("║   Ultimate V8.4 Telegram Sink Init  ║");
+            Console.WriteLine("║   Ultimate V8.5 Telegram Sink Init  ║");
             Console.WriteLine("╚═════════════════════════════════════╝");
 
             _botToken = _configuration["TelegramPanel:BotToken"] ?? string.Empty;
             _adminChatIds = _configuration.GetSection("TelegramPanel:AdminUserIds").Get<List<long>>() ?? [];
 
             string? dashboardUrl = _configuration["TelegramPanel:DashboardUrl"];
-            _messageBuilder = new TelegramMessageBuilder(dashboardUrl);
-            _botClient = new TelegramBotClient(_botToken);
+            // Safe handling if dashboardUrl is null
+            _messageBuilder = new TelegramMessageBuilder(dashboardUrl ?? "http://localhost:5000");
 
-            bool configValid = !string.IsNullOrWhiteSpace(_botToken) && _adminChatIds.Any();
-            Console.ForegroundColor = configValid ? ConsoleColor.Green : ConsoleColor.Red;
-            Console.WriteLine($"[SINK V8.4] Status: {(configValid ? "✅ CONFIG OK" : "❌ CONFIG FAILED")}");
+            // --- FIX: Validation logic to prevent crash on startup ---
+            bool isTokenValid = !string.IsNullOrWhiteSpace(_botToken)
+                                && !_botToken.Contains("REPLACE")
+                                && !_botToken.Contains("123456"); // Detect CI/CD placeholder
+
+            if (isTokenValid && _adminChatIds.Any())
+            {
+                try
+                {
+                    // Initialize client inside try-catch to prevent app crash if token format is bad
+                    _botClient = new TelegramBotClient(_botToken);
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("[SINK V8.5] Status: ✅ CONFIG OK");
+                }
+                catch (Exception ex)
+                {
+                    _botClient = null;
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"[SINK V8.5] Warning: Bot client init failed ({ex.Message}). Sink disabled.");
+                }
+            }
+            else
+            {
+                _botClient = null;
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("[SINK V8.5] Status: ⚠️ DISABLED (Invalid Config or Test Mode)");
+            }
             Console.ResetColor();
+            // ----------------------------------------------------------
 
             _retryPolicy = Policy
                 .Handle<Exception>()
-                .WaitAndRetryAsync(3, _ => TimeSpan.FromSeconds(15), (ex, ts, attempt, _) =>
+                .WaitAndRetryAsync(3, _ => TimeSpan.FromSeconds(5), (ex, ts, attempt, _) =>
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"[SINK RETRY] Attempt {attempt} failed: {ex.Message}. Retrying in {ts.TotalSeconds}s...");
-                    Console.ResetColor();
+                    // Reduced log noise for retries
+                    // Console.WriteLine($"[SINK RETRY] Attempt {attempt} failed..."); 
                 });
         }
 
         public void Emit(LogEvent logEvent)
         {
-            if (string.IsNullOrEmpty(_botToken) || !_adminChatIds.Any())
+            // FIX: Early exit if client failed to initialize
+            if (_botClient == null || !_adminChatIds.Any())
             {
                 return;
             }
@@ -70,45 +95,41 @@ namespace TelegramPanel.Infrastructure.Logging
 
         private async Task SendNotificationAsync(LogEvent logEvent, int occurrenceCount)
         {
+            if (_botClient == null) return;
+
             try
             {
                 (string? messageText, Telegram.Bot.Types.ReplyMarkups.ReplyMarkup? keyboard) = _messageBuilder.Build(logEvent, occurrenceCount);
-                InputFileStream? exceptionAttachment = BuildExceptionAttachment(logEvent);
+
+                // Optional: logic to build attachment if needed (commented out in original)
+                // InputFileStream? exceptionAttachment = BuildExceptionAttachment(logEvent);
 
                 foreach (long adminId in _adminChatIds)
                 {
                     await _retryPolicy.ExecuteAsync(async () =>
                     {
-                        _ = await _botClient.SendMessage(
-                            chatId: adminId,
-                            text: messageText,
-                            parseMode: ParseMode.Markdown,
-                            replyMarkup: keyboard
-                        );
-
-                        // Enable the following if you want to send the exception file
-                        /*
-                        if (exceptionAttachment != null)
+                        if (messageText != null)
                         {
-                            exceptionAttachment.Content.Position = 0;
-                            await _botClient.SendDocumentAsync(
+                            await _botClient.SendMessage(
                                 chatId: adminId,
-                                document: exceptionAttachment,
-                                caption: "🗂️ Debug attachment"
+                                text: messageText,
+                                parseMode: ParseMode.Markdown,
+                                replyMarkup: keyboard
                             );
                         }
-                        */
                     });
                 }
             }
             catch (Exception ex)
             {
-                string errorMessage = $"[SINK ERROR] {DateTime.UtcNow:O} - Failed to send log: {ex}";
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine(errorMessage);
-                Console.ResetColor();
-
-                await File.AppendAllTextAsync("telegram_sink_errors.log", errorMessage + Environment.NewLine);
+                // Fallback logging to file if Telegram fails
+                try
+                {
+                    string errorMessage = $"[SINK ERROR] {DateTime.UtcNow:O} - Failed to send log: {ex.Message}";
+                    // Avoid Console.WriteLine here to prevent log loops if console is piped to Serilog
+                    await File.AppendAllTextAsync("telegram_sink_errors.log", errorMessage + Environment.NewLine);
+                }
+                catch { /* Ignore file write errors */ }
             }
         }
 

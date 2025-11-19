@@ -1,0 +1,7 @@
+title: ForexTradingBot
+description: High-frequency trading documentation.
+theme: just-the-docs
+url: "https://opselon.github.io/ForexTradingBot"
+search_enabled: true
+sass:
+  style: compressed

@@ -1,0 +1,25 @@
+:root {
+    --site-background-color: #0b0d12;
+    --content-background-color: #0b0d12;
+    --side-bar-bg-color: #11141b;
+    --text-color: #c9d1d9;
+    --heading-color: #ffffff;
+    --link-color: #00e676;
+    --btn-primary-color: #00e676;
+}
+
+[[1](https://www.google.com/url?sa=E&q=https%3A%2F%2Fgithub.com%2FOpselon%2FForexTradingBot%2Ftree%2Fmaster%2Fdocs%2F)][[2](https://www.google.com/url?sa=E&q=https%3A%2F%2Fgithub.com%2FOpselon%2FForexTradingBot)]
+
+/* Dashboard Grid for Home */
+.grid-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 30px;
+}
+.grid-item {
+    background: #161b22;
+    padding: 20px;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+}
