@@ -61,15 +61,31 @@ namespace TelegramPanel.Extensions
             _ = services.Configure<TelegramPanelSettings>(configuration.GetSection(TelegramPanelSettings.SectionName));
             _ = services.Configure<List<ForwardingRule>>(configuration.GetSection("ForwardingRules"));
             _ = services.Configure<UpdateQueueOptions>(configuration.GetSection("TelegramPanel:Queue"));
-            // 2. Register ITelegramBotClient
+
+            // 2. Register ITelegramBotClient (Robust)
             _ = services.AddSingleton<ITelegramBotClient>(serviceProvider =>
             {
                 TelegramPanelSettings settings = serviceProvider.GetRequiredService<IOptions<TelegramPanelSettings>>().Value;
-                return string.IsNullOrWhiteSpace(settings.BotToken)
-                    ? throw new ArgumentNullException(nameof(settings.BotToken), "TelegramPanel: Bot Token is not configured.")
-                    : (ITelegramBotClient)new TelegramBotClient(settings.BotToken);
-            });
 
+                // --- FIX: Check for smoke test or invalid token to prevent crash ---
+                bool isSmokeTest = configuration.GetValue<bool>("IsSmokeTest");
+                bool isValidToken = !string.IsNullOrWhiteSpace(settings.BotToken) && !settings.BotToken.Contains("123456");
+
+                if (!isValidToken)
+                {
+                    if (isSmokeTest)
+                    {
+                        Log.Warning("⚠️ [SmokeTest] Invalid Bot Token detected. Using a dummy/disabled TelegramBotClient to allow startup.");
+                        // Return a dummy client with a fake token that won't be used because services are disabled
+                        return new TelegramBotClient("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789");
+                    }
+
+                    // In production, this IS critical
+                    throw new ArgumentNullException(nameof(settings.BotToken), "TelegramPanel: Bot Token is not configured.");
+                }
+
+                return new TelegramBotClient(settings.BotToken);
+            });
 
 
             _ = services.AddSingleton<IUserRateLimiterService, UserRateLimiterService>();
@@ -116,22 +132,6 @@ namespace TelegramPanel.Extensions
                     return new TelegramUpdateChannel(inMemoryLogger);
                 }
             });
-
-            //// 7. Register IConnectionMultiplexer for Redis
-            //services.AddSingleton<IConnectionMultiplexer>(sp =>
-            //{
-            //    var config = sp.GetRequiredService<IConfiguration>();
-            //    var connectionString = config.GetConnectionString("Redis");
-
-            //    if (string.IsNullOrWhiteSpace(connectionString))
-            //    {
-            //        throw new InvalidOperationException("Redis connection string is not configured.");
-            //    }
-
-            //    var options = ConfigurationOptions.Parse(connectionString);
-            //    options.AbortOnConnectFail = false; // For startup resiliency  
-            //    return ConnectionMultiplexer.Connect(options);
-            //});
 
 
             // 8. Register ITelegramUpdateJobService for Hangfire
