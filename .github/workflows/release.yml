@@ -204,7 +204,7 @@
         }
       ]
     },
-    "job_07_test_smoke_linux": {
+"job_07_test_smoke_linux": {
       "name": "💨 07 Run Linux Smoke Test",
       "needs": "job_06_test_integration_redis",
       "runs-on": "ubuntu-latest",
@@ -221,9 +221,13 @@
           }
         },
         {
+          "name": "✅ Build Application",
+          "run": "dotnet build WebAPI/WebAPI.csproj -c Debug"
+        },
+        {
           "name": "✅ Run Smoke Test (with Logging)",
           "shell": "bash",
-          "run": "echo \"Starting application in the background for smoke test...\"\n# Capture stdout and stderr to a file for debugging\ndotnet run --project WebAPI/WebAPI.csproj --no-launch-profile --urls \"http://localhost:5000\" > app_output.log 2>&1 &\nAPP_PID=$!\n\necho \"Waiting for application to start (polling http://localhost:5000/healthz)...\"\n\nfor i in {1..30}; do\n  if curl -s --fail http://localhost:5000/healthz > /dev/null; then\n    echo \"✅ Health check passed!\"\n    kill \"$APP_PID\" || true\n    exit 0\n  fi\n  # Check if process is still running\n  if ! kill -0 \"$APP_PID\" 2>/dev/null; then\n    echo \"❌ Application crashed immediately!\"\n    echo \"===== APP LOGS =====\"\n    cat app_output.log\n    exit 1\n  fi\n  echo \"Health check failed. Retrying in 1 second...\"\n  sleep 1\ndone\n\necho \"❌ Health check failed after 30 seconds.\"\necho \"===== APP LOGS (Timeout) =====\"\ncat app_output.log\nkill \"$APP_PID\" || true\nexit 1\n",
+          "run": "echo \"Starting application in the background for smoke test...\"\n\n# Run the DLL directly to avoid 'dotnet run' overhead and ensure clean log capture\nnohup dotnet bin/Debug/net9.0/WebAPI.dll --urls \"http://localhost:5000\" > app_output.log 2>&1 &\nAPP_PID=$!\necho \"App started with PID $APP_PID\"\n\necho \"Waiting for application to start (polling http://localhost:5000/healthz)...\"\n\nfor i in {1..30}; do\n  if curl -s --fail http://localhost:5000/healthz > /dev/null; then\n    echo \"✅ Health check passed!\"\n    kill \"$APP_PID\" || true\n    exit 0\n  fi\n  # Check if process is still running\n  if ! kill -0 \"$APP_PID\" 2>/dev/null; then\n    echo \"❌ Application crashed immediately!\"\n    echo \"===== APP LOGS =====\"\n    cat app_output.log\n    exit 1\n  fi\n  echo \"Health check failed. Retrying in 1 second...\"\n  sleep 1\ndone\n\necho \"❌ Health check failed after 30 seconds.\"\necho \"===== APP LOGS (Timeout) =====\"\ncat app_output.log\nkill \"$APP_PID\" || true\nexit 1\n",
           "env": {
             "IsSmokeTest": "true",
             "ASPNETCORE_ENVIRONMENT": "Development",
