@@ -2214,20 +2214,79 @@ namespace Infrastructure.Services
         {
             throw new NotImplementedException();
         }
+        // =========================================================================
+        // ✅ SMART IMPLEMENTATION: ListLeftPushAsync (In-Memory Redis)
+        // =========================================================================
 
         public Task<long> ListLeftPushAsync(RedisKey key, RedisValue value, When when = When.Always, CommandFlags flags = CommandFlags.None)
         {
-            throw new NotImplementedException();
+            lock (_lock)
+            {
+                string strKey = key.ToString();
+
+                // Check existence for conditional insertion (When.Exists / When.NotExists)
+                bool exists = _cache.TryGetValue(strKey, out object? obj);
+
+                if (when == When.Exists && !exists) return Task.FromResult(0L);
+                if (when == When.NotExists && exists) return Task.FromResult(0L);
+
+                // Get or create list
+                List<RedisValue> list;
+                if (!exists || obj is not List<RedisValue>)
+                {
+                    // If key doesn't exist or isn't a list (and we're overwriting/ignoring types for simple fallback), create new
+                    list = new List<RedisValue>();
+                    _cache[strKey] = list;
+                }
+                else
+                {
+                    list = (List<RedisValue>)obj!;
+                }
+
+                list.Insert(0, value);
+                return Task.FromResult((long)list.Count);
+            }
         }
 
         public Task<long> ListLeftPushAsync(RedisKey key, RedisValue[] values, When when = When.Always, CommandFlags flags = CommandFlags.None)
         {
-            throw new NotImplementedException();
+            if (values == null || values.Length == 0) return Task.FromResult(0L);
+
+            lock (_lock)
+            {
+                string strKey = key.ToString();
+                bool exists = _cache.TryGetValue(strKey, out object? obj);
+
+                if (when == When.Exists && !exists) return Task.FromResult(0L);
+                if (when == When.NotExists && exists) return Task.FromResult(0L);
+
+                List<RedisValue> list;
+                if (!exists || obj is not List<RedisValue>)
+                {
+                    list = new List<RedisValue>();
+                    _cache[strKey] = list;
+                }
+                else
+                {
+                    list = (List<RedisValue>)obj!;
+                }
+
+                // Redis LPUSH behavior: values are pushed one by one.
+                // LPUSH key a b c -> results in [c, b, a, ...]
+                // So we iterate normally and Insert(0, ...) or InsertRange(0, values.Reverse())
+                // Simpler: Insert them in reverse order at index 0 to maintain input order at the head.
+                for (int i = 0; i < values.Length; i++)
+                {
+                    list.Insert(i, values[i]);
+                }
+
+                return Task.FromResult((long)list.Count);
+            }
         }
 
         public Task<long> ListLeftPushAsync(RedisKey key, RedisValue[] values, CommandFlags flags)
         {
-            throw new NotImplementedException();
+            return ListLeftPushAsync(key, values, When.Always, flags);
         }
 
         public Task<long> ListLengthAsync(RedisKey key, CommandFlags flags = CommandFlags.None)
@@ -2267,7 +2326,36 @@ namespace Infrastructure.Services
 
         public Task<RedisValue> ListRightPopLeftPushAsync(RedisKey source, RedisKey destination, CommandFlags flags = CommandFlags.None)
         {
-            throw new NotImplementedException();
+            lock (_lock)
+            {
+                string srcKey = source.ToString();
+
+                // 1. Validate Source: Must exist, be a List, and not be empty
+                if (!_cache.TryGetValue(srcKey, out object? srcObj) ||
+                    srcObj is not List<RedisValue> sourceList ||
+                    sourceList.Count == 0)
+                {
+                    return Task.FromResult(RedisValue.Null);
+                }
+
+                // 2. RPOP: Get and remove the last element
+                RedisValue value = sourceList[sourceList.Count - 1];
+                sourceList.RemoveAt(sourceList.Count - 1);
+
+                // 3. LPUSH: Insert into destination
+                string destKey = destination.ToString();
+
+                // Check if destination list exists, if not (or if types mismatch), create new list
+                if (!_cache.TryGetValue(destKey, out object? destObj) || destObj is not List<RedisValue> destList)
+                {
+                    destList = new List<RedisValue>();
+                    _cache[destKey] = destList;
+                }
+
+                destList.Insert(0, value);
+
+                return Task.FromResult(value);
+            }
         }
 
         public Task<long> ListRightPushAsync(RedisKey key, RedisValue value, When when = When.Always, CommandFlags flags = CommandFlags.None)
