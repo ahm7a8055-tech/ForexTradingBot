@@ -1,59 +1,63 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 
 namespace Infrastructure.Configuration
 {
-
-    /// <summary>
-    /// Ultra-safe, cross-platform SQLite key/value store used by the First-Run Wizard.
-    /// All keys follow ASP.NET Core configuration conventions (e.g., "ConnectionStrings:DefaultConnection").
-    /// This store is intentionally minimal, atomic, resilient, and UTF-8 safe.
-    ///
-    /// Design goals:
-    /// - Zero corruption (atomic writes)
-    /// - Zero sensitive-data leaks
-    /// - Fully cross platform (Windows / Linux / macOS)
-    /// - Thread-safe file locking (SQLite handles this internally)
-    /// - Silent fallback behavior for invalid values
-    /// </summary>
     public sealed class EasySetupConfigStore
     {
         private readonly string _connectionString;
+        private readonly ILogger<EasySetupConfigStore>? _logger;
 
-        #region Constructor & DB Initialization (UTF8-Safe)
-        public EasySetupConfigStore(string basePath)
+        // ============================================================
+        #region Constructor & Initialization
+        // ============================================================
+        public EasySetupConfigStore(string basePath, ILogger<EasySetupConfigStore>? logger = null)
         {
-            // DB file lives next to the application root (fully portable)
-            var dbPath = Path.Combine(basePath, "easysetup_config.db");
+            _logger = logger;
 
-            // SQLite default encoding = UTF-8; Shared cache = better multi-thread stability
-            _connectionString = $"Data Source={dbPath};Cache=Shared;Mode=ReadWriteCreate";
+            try
+            {
+                var dbPath = Path.Combine(basePath, "easysetup_config.db");
 
-            EnsureSchema();
+                // FIX: Ensure the directory exists before SQLite tries to open the file
+                var directory = Path.GetDirectoryName(dbPath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                _connectionString = $"Data Source={dbPath};Cache=Shared;Mode=ReadWriteCreate";
+
+                _logger?.LogInformation("Initializing EasySetupConfigStore at path: {DbPath}", dbPath);
+
+                EnsureSchema();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogCritical(ex, "Failed to initialize EasySetupConfigStore.");
+                throw;
+            }
         }
         #endregion
 
-        #region EnsureSchema()
-        /// <summary>
-        /// Creates database file (if missing) and a durable schema to store wizard settings.
-        /// On corruption or access issues, throws immediately (fail fast).
-        /// </summary>
+
+
+        // ============================================================
+        #region Schema Initialization
+        // ============================================================
         private void EnsureSchema()
         {
-            using var connection = new SqliteConnection(_connectionString);
-            connection.Open();
+            try
+            {
+                using var connection = new SqliteConnection(_connectionString);
+                connection.Open();
 
-            // WAL gives us:
-            // - Crash-safe commits
-            // - Better concurrent access
-            using var walCmd = connection.CreateCommand();
-            walCmd.CommandText = "PRAGMA journal_mode = WAL;";
-            walCmd.ExecuteNonQuery();
+                using var walCmd = connection.CreateCommand();
+                walCmd.CommandText = "PRAGMA journal_mode = WAL;";
+                walCmd.ExecuteNonQuery();
+                _logger?.LogInformation("SQLite journal mode set to WAL.");
 
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText =
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText =
                 """
                 CREATE TABLE IF NOT EXISTS WizardSettings (
                     Key TEXT PRIMARY KEY COLLATE NOCASE,
@@ -61,72 +65,167 @@ namespace Infrastructure.Configuration
                     IsSensitive INTEGER NOT NULL DEFAULT 0
                 );
                 """;
-            cmd.ExecuteNonQuery();
+                cmd.ExecuteNonQuery();
+
+                _logger?.LogInformation("SQLite schema ensured successfully.");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Schema initialization failed.");
+                throw;
+            }
         }
         #endregion
 
-        #region LoadAll()
-        /// <summary>
-        /// Loads all stored configuration values into a flat dictionary.
-        /// Returned values may include sensitive keys;
-        /// caller is responsible for filtering if needed.
-        /// </summary>
+
+
+        // ============================================================
+        #region SAFE LoadAll
+        // ============================================================
+        public OperationResult<Dictionary<string, string?>> LoadAllSafe()
+        {
+            try
+            {
+                var data = LoadAll();
+                return OperationResult<Dictionary<string, string?>>.Ok(data);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "LoadAll failed.");
+
+                return OperationResult<Dictionary<string, string?>>.Fail(
+                    $"LoadAll failed: {ex.Message}"
+                );
+            }
+        }
+        #endregion
+
+
+
+        // ============================================================
+        #region LoadAll (Raw)
+        // ============================================================
         public Dictionary<string, string?> LoadAll()
         {
             var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
-            using var connection = new SqliteConnection(_connectionString);
-            connection.Open();
-
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT Key, Value FROM WizardSettings;";
-            using var reader = cmd.ExecuteReader();
-
-            while (reader.Read())
+            try
             {
-                string key = reader.GetString(0);
-                string? value = reader.IsDBNull(1) ? null : reader.GetString(1);
+                using var connection = new SqliteConnection(_connectionString);
+                connection.Open();
 
-                // Always UTF8-safe, SQLite handles encoding internally
-                result[key] = value;
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = "SELECT Key, Value FROM WizardSettings;";
+                using var reader = cmd.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    string key = reader.GetString(0);
+                    string? value = reader.IsDBNull(1) ? null : reader.GetString(1);
+
+                    result[key] = value;
+                }
+
+                _logger?.LogInformation("LoadAll retrieved {Count} configuration entries.", result.Count);
+            }
+            catch
+            {
+                _logger?.LogError("Unexpected error occurred during LoadAll execution.");
+                throw;
             }
 
             return result;
         }
         #endregion
 
-        #region Save()
-        /// <summary>
-        /// Atomically inserts or updates a setting.
-        /// Sensitive data (like Telegram tokens) is marked with IsSensitive=1
-        /// so it can be suppressed in logs/UI.
-        /// </summary>
+
+
+        // ============================================================
+        #region SAFE Save
+        // ============================================================
+        public OperationResult<bool> SaveSafe(string key, string? value, bool isSensitive)
+        {
+            try
+            {
+                Save(key, value, isSensitive);
+                return OperationResult<bool>.Ok(true);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Save failed for key: {Key}", key);
+
+                return OperationResult<bool>.Fail(
+                    $"Save failed for key '{key}': {ex.Message}"
+                );
+            }
+        }
+        #endregion
+
+
+
+        // ============================================================
+        #region Save (Raw)
+        // ============================================================
         public void Save(string key, string? value, bool isSensitive)
         {
             if (string.IsNullOrWhiteSpace(key))
-                throw new ArgumentException("Configuration key cannot be null or empty.", nameof(key));
+            {
+                _logger?.LogWarning("Attempted to save a null/empty configuration key.");
+                throw new ArgumentException("Configuration key cannot be empty.", nameof(key));
+            }
 
-            using var connection = new SqliteConnection(_connectionString);
-            connection.Open();
+            try
+            {
+                using var connection = new SqliteConnection(_connectionString);
+                connection.Open();
 
-            using var cmd = connection.CreateCommand();
-
-            // Uses UPSERT (ON CONFLICT DO UPDATE)
-            cmd.CommandText =
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText =
                 """
                 INSERT INTO WizardSettings (Key, Value, IsSensitive)
                 VALUES ($key, $value, $isSensitive)
-                ON CONFLICT(Key) DO UPDATE SET 
-                    Value      = excluded.Value,
+                ON CONFLICT(Key) DO UPDATE SET
+                    Value       = excluded.Value,
                     IsSensitive = excluded.IsSensitive;
                 """;
 
-            cmd.Parameters.AddWithValue("$key", key);
-            cmd.Parameters.AddWithValue("$value", (object?)value ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$isSensitive", isSensitive ? 1 : 0);
+                cmd.Parameters.AddWithValue("$key", key);
+                cmd.Parameters.AddWithValue("$value", (object?)value ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$isSensitive", isSensitive ? 1 : 0);
 
-            cmd.ExecuteNonQuery();
+                cmd.ExecuteNonQuery();
+
+                _logger?.LogInformation(
+                    "Key '{Key}' was saved successfully. Sensitive: {IsSensitive}",
+                    key,
+                    isSensitive
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Unexpected error while saving key: {Key}", key);
+                throw;
+            }
         }
         #endregion
     }
+
+
+
+    // ============================================================
+    #region OperationResult<T> (AI-Friendly Result Model)
+    // ============================================================
+    public sealed class OperationResult<T>
+    {
+        public bool Success { get; init; }
+        public string? Error { get; init; }
+        public T? Data { get; init; }
+
+        public static OperationResult<T> Ok(T data) =>
+            new() { Success = true, Data = data };
+
+        public static OperationResult<T> Fail(string message) =>
+            new() { Success = false, Error = message };
+    }
+    #endregion
 }

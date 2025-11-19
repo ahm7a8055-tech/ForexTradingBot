@@ -87,16 +87,27 @@ try
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
     builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "True");
     builder.WebHost.UseSetting("UseLaunchSettings", "false");
+
     // AI-FRIENDLY: Create a small SQLite-backed store for wizard settings.
     // The DB file will live under ContentRootPath/easysetup_config.db
-    var easySetupStore = new Infrastructure.Configuration.EasySetupConfigStore(builder.Environment.ContentRootPath);
 
-    // 1) Load persisted wizard settings and plug them into the configuration pipeline.
-    //    This happens BEFORE anything else so every service sees them.
-    var persistedSettings = easySetupStore.LoadAll();
-    if (persistedSettings.Count > 0)
+    // FIX: Wrap EasySetupConfigStore init in try-catch to prevent crash on file permission errors
+    Infrastructure.Configuration.EasySetupConfigStore? easySetupStore = null;
+    try
     {
-        ((IConfigurationBuilder)builder.Configuration).AddInMemoryCollection(persistedSettings);
+        easySetupStore = new Infrastructure.Configuration.EasySetupConfigStore(builder.Environment.ContentRootPath);
+
+        // 1) Load persisted wizard settings and plug them into the configuration pipeline.
+        //    This happens BEFORE anything else so every service sees them.
+        var persistedSettings = easySetupStore.LoadAll();
+        if (persistedSettings.Count > 0)
+        {
+            ((IConfigurationBuilder)builder.Configuration).AddInMemoryCollection(persistedSettings);
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Failed to initialize EasySetupConfigStore. Wizard settings will not be persisted and defaults/env vars will be used.");
     }
 
     // 2) Detect smoke-test mode once and reuse this flag everywhere.
@@ -125,9 +136,9 @@ try
         builder.Configuration["DatabaseSettings:DatabaseProvider"] = "sqlite";
         builder.Configuration["ConnectionStrings:DefaultConnection"] = smokeConn;
 
-        // C) Persist in store so subsequent runs are consistent
-        easySetupStore.Save("DatabaseSettings:DatabaseProvider", "sqlite", isSensitive: false);
-        easySetupStore.Save("ConnectionStrings:DefaultConnection", smokeConn, isSensitive: true);
+        // C) Persist in store so subsequent runs are consistent (only if store exists)
+        easySetupStore?.Save("DatabaseSettings:DatabaseProvider", "sqlite", isSensitive: false);
+        easySetupStore?.Save("ConnectionStrings:DefaultConnection", smokeConn, isSensitive: true);
 
         Log.Information("[SmokeTest] Overriding configuration for smoke test: URL=http://localhost:5000, DB=SQLite");
     }
@@ -316,74 +327,82 @@ try
 
     #region Caching and External Services (region master)
 
+    #region Caching and External Services (Redis)
+
     if (isSmokeTest)
     {
         Log.Information("[SmokeTest] Bypassing Redis setup and using in-memory fallback.");
+
         builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
             return new Infrastructure.Services.FallbackRedisService(logger);
         });
+
+        // در حالت SmokeTest هیچ تلاش واقعی برای اتصال Redis انجام نمی‌دهیم
     }
     else
     {
-        // Original, production-ready Redis logic
-        string? redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+        // 1) Determine / prepare connection string
+        var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
         if (string.IsNullOrWhiteSpace(redisConnectionString))
         {
-            Log.Warning("⚠️ Redis connection string not found. Attempting to start embedded Redis server for this session.");
+            Log.Warning("Redis connection string not found. Attempting to start embedded Redis server for this session.");
+
+            // Embedded Redis به عنوان HostedService بالا می‌آید
             builder.Services.AddHostedService<Infrastructure.Services.EmbeddedRedisService>();
+
             redisConnectionString = "localhost:6379";
             builder.Configuration.GetSection("ConnectionStrings")["Redis"] = redisConnectionString;
-            Log.Information("Embedded Redis registered. Connection string set to '{RedisConnectionString}' for this session.", redisConnectionString);
+
+            Log.Information(
+                "Embedded Redis registered. Connection string set to '{RedisConnectionString}' for this session.",
+                redisConnectionString
+            );
         }
         else
         {
-            Log.Information("✅ External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
+            Log.Information("External Redis connection string found. Will connect to {RedisEndpoint}", redisConnectionString);
         }
-        try
+
+        // 2) Prepare Redis options once (no network I/O here)
+        var redisOptions = ConfigurationOptions.Parse(redisConnectionString);
+        redisOptions.AbortOnConnectFail = false;
+        redisOptions.ConnectTimeout = 10000;
+        redisOptions.SyncTimeout = 10000;
+
+        // 3) Register a resilient singleton that either:
+        //    - returns a real ConnectionMultiplexer, OR
+        //    - transparently falls back to in-memory implementation on failure.
+        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+            var logger = sp.GetRequiredService<ILogger<Program>>();
+
+            try
             {
-                var configuration = sp.GetRequiredService<IConfiguration>();
-                string? connectionString = configuration.GetConnectionString("Redis");
+                var endpoint = redisOptions.EndPoints.FirstOrDefault();
+                logger.LogInformation("Creating Redis ConnectionMultiplexer for {Endpoint}...", endpoint);
 
-                if (string.IsNullOrWhiteSpace(connectionString))
-                {
-                    Log.Fatal("Redis connection string is null or empty at the moment of creating the multiplexer.");
-                    throw new InvalidOperationException("Redis connection string is not configured.");
-                }
+                var mux = ConnectionMultiplexer.Connect(redisOptions);
 
-                var options = ConfigurationOptions.Parse(connectionString);
-                options.AbortOnConnectFail = false;
-                options.ConnectTimeout = 10000;
-                options.SyncTimeout = 10000;
-
-                Log.Information("Attempting to create a resilient Redis connection to {Endpoint}...", options.EndPoints.FirstOrDefault());
-
-                try
-                {
-                    return ConnectionMultiplexer.Connect(options);
-                }
-                catch (Exception ex)
-                {
-                    Log.Fatal(ex, "Failed to initiate Redis ConnectionMultiplexer. The connection string may be invalid.");
-                    throw;
-                }
-            });
-            Log.Information("✅ Redis services configured. The multiplexer will connect resiliently.");
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to configure Redis connection multiplexer. Using fallback in-memory Redis.");
-            builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+                logger.LogInformation("Redis ConnectionMultiplexer successfully created for {Endpoint}.", endpoint);
+                return mux;
+            }
+            catch (Exception ex)
             {
-                var logger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
-                return new Infrastructure.Services.FallbackRedisService(logger);
-            });
-        }
+                logger.LogError(ex,
+                    "Failed to create Redis ConnectionMultiplexer. Falling back to in-memory Redis (FallbackRedisService).");
+
+                var fallbackLogger = sp.GetRequiredService<ILogger<Infrastructure.Services.FallbackRedisService>>();
+                return new Infrastructure.Services.FallbackRedisService(fallbackLogger);
+            }
+        });
+
+        Log.Information("Redis services registered. Multiplexer (or fallback) will be created on first resolution.");
     }
+
+    #endregion
     // --- NEW: Test Redis connectivity and fallback to local if needed ---
     // Note: We'll test Redis connectivity after the application starts, not during configuration
     // This allows the EmbeddedRedisService to start the Redis server first if needed.
@@ -554,7 +573,7 @@ try
     builder.Services.AddScoped<ISettingsService, SettingsService>();
     builder.Services.AddScoped<IDiagnosticsService, DiagnosticsService>();
     Log.Information("Data Protection, Dynamic Configuration, Settings, and Diagnostics services registered.");
-   
+
     // --- DATABASE CONNECTION PROMPT (before infrastructure services) ---
 
     var configBuilder = builder.Configuration;
@@ -1455,7 +1474,7 @@ internal static class EasySetupWizard
 {
     public static async Task RunAsync(
         WebApplicationBuilder builder,
-        Infrastructure.Configuration.EasySetupConfigStore store,
+        Infrastructure.Configuration.EasySetupConfigStore? store, // FIX: accept nullable store
         bool isSmokeTest)
     {
         var config = builder.Configuration;
@@ -1486,7 +1505,7 @@ internal static class EasySetupWizard
 
     private static void EnsureDefaultConnection(
         IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store,
+        Infrastructure.Configuration.EasySetupConfigStore? store,
         bool isInteractive,
         WebApplicationBuilder builder)
     {
@@ -1508,8 +1527,8 @@ internal static class EasySetupWizard
             config["DatabaseSettings:DatabaseProvider"] = fallbackProvider;
             config["ConnectionStrings:DefaultConnection"] = fallbackConn;
 
-            store.Save("DatabaseSettings:DatabaseProvider", fallbackProvider, isSensitive: false);
-            store.Save("ConnectionStrings:DefaultConnection", fallbackConn, isSensitive: true);
+            store?.Save("DatabaseSettings:DatabaseProvider", fallbackProvider, isSensitive: false);
+            store?.Save("ConnectionStrings:DefaultConnection", fallbackConn, isSensitive: true);
 
             Log.Warning(
                 "DefaultConnection was missing in non-interactive mode. Falling back to SQLite at '{ConnectionString}'.",
@@ -1549,7 +1568,7 @@ internal static class EasySetupWizard
 
     private static void SetupDatabaseWithSQLite(
         IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store)
+        Infrastructure.Configuration.EasySetupConfigStore? store)
     {
         Console.WriteLine("\nUsing local SQLite file database (local_forex_bot.db).");
 
@@ -1559,13 +1578,13 @@ internal static class EasySetupWizard
         config["DatabaseSettings:DatabaseProvider"] = provider;
         config["ConnectionStrings:DefaultConnection"] = conn;
 
-        store.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
-        store.Save("ConnectionStrings:DefaultConnection", conn, isSensitive: true);
+        store?.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
+        store?.Save("ConnectionStrings:DefaultConnection", conn, isSensitive: true);
     }
 
     private static void SetupDatabaseManually(
         IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store)
+        Infrastructure.Configuration.EasySetupConfigStore? store)
     {
         Console.Write("\nEnter your full database connection string (or leave empty to fall back to SQLite): ");
         var connectionString = Console.ReadLine()?.Trim();
@@ -1583,8 +1602,8 @@ internal static class EasySetupWizard
         config["DatabaseSettings:DatabaseProvider"] = provider;
         config["ConnectionStrings:DefaultConnection"] = connectionString;
 
-        store.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
-        store.Save("ConnectionStrings:DefaultConnection", connectionString, isSensitive: true);
+        store?.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
+        store?.Save("ConnectionStrings:DefaultConnection", connectionString, isSensitive: true);
 
         Console.WriteLine($"\nDatabase configured. Provider='{provider}'.");
     }
@@ -1611,7 +1630,7 @@ internal static class EasySetupWizard
 
     private static void SetupDatabaseWithPortablePostgres(
         IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store,
+        Infrastructure.Configuration.EasySetupConfigStore? store,
         WebApplicationBuilder builder)
     {
         Console.WriteLine("\nStarting automatic setup for local PostgreSQL & Redis...");
@@ -1652,12 +1671,12 @@ internal static class EasySetupWizard
             throw new InvalidOperationException("Portable PostgreSQL setup reported success but DefaultConnection is still empty.");
         }
 
-        store.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
-        store.Save("ConnectionStrings:DefaultConnection", defaultConn, isSensitive: true);
+        store?.Save("DatabaseSettings:DatabaseProvider", provider, isSensitive: false);
+        store?.Save("ConnectionStrings:DefaultConnection", defaultConn, isSensitive: true);
 
         if (!string.IsNullOrWhiteSpace(redisConn))
         {
-            store.Save("ConnectionStrings:Redis", redisConn, isSensitive: true);
+            store?.Save("ConnectionStrings:Redis", redisConn, isSensitive: true);
         }
     }
 
@@ -1667,7 +1686,7 @@ internal static class EasySetupWizard
 
     private static void EnsureTelegramPanelBotToken(
         IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store,
+        Infrastructure.Configuration.EasySetupConfigStore? store,
         bool isInteractive)
     {
         var botToken = config["TelegramPanel:BotToken"];
@@ -1711,7 +1730,7 @@ internal static class EasySetupWizard
             }
 
             config["TelegramPanel:BotToken"] = input;
-            store.Save("TelegramPanel:BotToken", input, isSensitive: true);
+            store?.Save("TelegramPanel:BotToken", input, isSensitive: true);
 
             Log.Information("TelegramPanel:BotToken was configured via Easy Setup Wizard.");
             break;
@@ -1732,7 +1751,7 @@ internal static class EasySetupWizard
 
     private static void EnsureOptionalTelegramUserApi(
           IConfiguration config,
-          Infrastructure.Configuration.EasySetupConfigStore store)
+          Infrastructure.Configuration.EasySetupConfigStore? store)
     {
         var apiIdRaw = config["TelegramUserApi:ApiId"];
         var apiHash = config["TelegramUserApi:ApiHash"];
@@ -1762,8 +1781,8 @@ internal static class EasySetupWizard
             config["TelegramUserApi:ApiId"] = null;
             config["TelegramUserApi:ApiHash"] = null;
 
-            store.Save("TelegramUserApi:ApiId", null, isSensitive: false);
-            store.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
+            store?.Save("TelegramUserApi:ApiId", null, isSensitive: false);
+            store?.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
 
             Log.Information("User skipped TelegramUserApi credentials. Auto-forwarding will be disabled.");
             return;
@@ -1778,8 +1797,8 @@ internal static class EasySetupWizard
             config["TelegramUserApi:ApiId"] = null;
             config["TelegramUserApi:ApiHash"] = null;
 
-            store.Save("TelegramUserApi:ApiId", null, isSensitive: false);
-            store.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
+            store?.Save("TelegramUserApi:ApiId", null, isSensitive: false);
+            store?.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
 
             return;
         }
@@ -1796,8 +1815,8 @@ internal static class EasySetupWizard
             config["TelegramUserApi:ApiId"] = null;
             config["TelegramUserApi:ApiHash"] = null;
 
-            store.Save("TelegramUserApi:ApiId", null, isSensitive: false);
-            store.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
+            store?.Save("TelegramUserApi:ApiId", null, isSensitive: false);
+            store?.Save("TelegramUserApi:ApiHash", null, isSensitive: true);
             return;
         }
 
@@ -1805,8 +1824,8 @@ internal static class EasySetupWizard
         config["TelegramUserApi:ApiId"] = parsedApiId.ToString();
         config["TelegramUserApi:ApiHash"] = hashInput;
 
-        store.Save("TelegramUserApi:ApiId", parsedApiId.ToString(), isSensitive: false);
-        store.Save("TelegramUserApi:ApiHash", hashInput, isSensitive: true);
+        store?.Save("TelegramUserApi:ApiId", parsedApiId.ToString(), isSensitive: false);
+        store?.Save("TelegramUserApi:ApiHash", hashInput, isSensitive: true);
 
         Log.Information("TelegramUserApi credentials configured via Easy Setup Wizard.");
     }
@@ -1816,7 +1835,7 @@ internal static class EasySetupWizard
 
     private static void EnsureOptionalCryptoPay(
         IConfiguration config,
-        Infrastructure.Configuration.EasySetupConfigStore store)
+        Infrastructure.Configuration.EasySetupConfigStore? store)
     {
         var apiToken = config["CryptoPay:ApiToken"];
 
@@ -1838,14 +1857,14 @@ internal static class EasySetupWizard
         {
             // Explicitly disable feature.
             config["CryptoPay:ApiToken"] = null;
-            store.Save("CryptoPay:ApiToken", null, isSensitive: true);
+            store?.Save("CryptoPay:ApiToken", null, isSensitive: true);
 
             Log.Information("User skipped CryptoPay API Token. Payment features will be disabled.");
             return;
         }
 
         config["CryptoPay:ApiToken"] = tokenInput;
-        store.Save("CryptoPay:ApiToken", tokenInput, isSensitive: true);
+        store?.Save("CryptoPay:ApiToken", tokenInput, isSensitive: true);
 
         Log.Information("CryptoPay API Token configured via Easy Setup Wizard.");
     }
@@ -2001,4 +2020,5 @@ public static class SystemInfoHelper
 #endregion
 
 #endregion
+
 #endregion
