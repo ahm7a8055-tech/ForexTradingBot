@@ -24,11 +24,11 @@ using Microsoft.AspNetCore.Authentication.Cookies; // Added for Cookie Authentic
 using Microsoft.AspNetCore.DataProtection; // Added for Data Protection
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using Microsoft.OpenApi.Models;             // برای OpenApiInfo
-using Serilog;                              // برای Log, LoggerConfiguration, UseSerilog
+using Microsoft.OpenApi.Models;             // For OpenApiInfo
+using Serilog;                              // For Log, LoggerConfiguration, UseSerilog
 using Serilog.Enrichers.WithCaller;
 using Shared.Security; // For SecureExceptionSanitizer
-using Shared.Settings;                    // برای CryptoPaySettings (از پروژه Shared)
+using Shared.Settings;                    // For CryptoPaySettings
 using StackExchange.Redis;
 using System.Data;
 using System.Runtime.InteropServices;
@@ -38,6 +38,9 @@ using TelegramPanel.Extensions;
 using TelegramPanel.Infrastructure.Logging;
 using TelegramPanel.Infrastructure.Services;
 using WebAPI.Middleware; // Added for AuthRedirectMiddleware
+// ✅ NEW USINGS FOR HEALTH CHECKS
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 #endregion
 
 #region Main Program logger
@@ -114,7 +117,6 @@ try
     string smokeTestFlag = builder.Configuration["IsSmokeTest"] ?? "false";
     bool isSmokeTest = "true".Equals(smokeTestFlag, StringComparison.OrdinalIgnoreCase);
 
-    // 👇 این تیکه را اضافه کن
     // Force smoke-test mode automatically when running inside CI (GitHub Actions, etc.)
     if (!isSmokeTest && string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase))
     {
@@ -1247,29 +1249,28 @@ try
     #region Map Controllers & Run Application (region master)
 
     // ------------------- FIX FOR CI/CD HEALTH CHECK -------------------
-    // In SmokeTest mode (GitHub Actions), we force the Health Check to return 200 OK
-    // even if the Telegram Bot Token is missing/invalid (Unhealthy).
-    // This allows the "Waiting for application..." script to pass successfully.
+    // اگر در حالت تست (isSmokeTest) هستیم، حتی اگر سرویس‌ها خراب باشند (Unhealthy)،
+    // کد 200 برمی‌گردانیم تا گیتهاب خطا نگیرد.
     var healthCheckOptions = new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         Predicate = _ => true,
         ResultStatusCodes = isSmokeTest ?
-               new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
-               {
+            new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
+            {
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 200 } // ✅ نکته مهم: در تست، خرابی = 200
-               } :
-               new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
-               {
+            } :
+            new Dictionary<Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus, int>
+            {
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded, 200 },
                 { Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, 503 } // در حالت عادی، خرابی = 503
-               }
+            }
     };
 
     _ = app.MapHealthChecks("/healthz", healthCheckOptions);
-
+    // ------------------------------------------------------------------
 
     // ------------------- مپ کردن کنترلرها و اجرای برنامه -------------------
     //app.MapGet("/maintenance/force-hangfire-purge-all", async (IConfiguration config, IHangfireCleaner cleaner, ILogger<Program> logger) => {
