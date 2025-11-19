@@ -86,35 +86,61 @@ namespace Infrastructure.Services
 
         #region Constructor
         public TelegramUserApiClient(IAdviceService adviceService, IServiceProvider serviceProvider,
-             ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService,IMemoryCache memoryCache,
+             ILogger<TelegramUserApiClient> logger, IHashtagService hashtagService, IMemoryCache memoryCache,
              IOptions<TelegramUserApiSettings> settingsOptions,
-             MarkdownParserService markdownParserService, // Add markdown parser service parameter
-             IGeminiService geminiService, // Inject GeminiService singleton
-             INotificationToAdminService notificationToAdminService, // Add notification service parameter
-             bool useChannelForDispatch = false) // LEVEL 10: New parameter in constructor
+             MarkdownParserService markdownParserService,
+             IGeminiService geminiService,
+             INotificationToAdminService notificationToAdminService,
+             bool useChannelForDispatch = false)
         {
             _memoryCache = memoryCache;
-            _serviceProvider = serviceProvider; 
+            _serviceProvider = serviceProvider;
             _geminiService = geminiService ?? throw new ArgumentNullException(nameof(geminiService));
             _hashtagService = hashtagService;
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _settings = settingsOptions?.Value ?? throw new ArgumentNullException(nameof(settingsOptions));
-            _useChannelForDispatch = useChannelForDispatch; // LEVEL 10: Initialize the flag
-            _notifToAdmin = notificationToAdminService ?? throw new ArgumentNullException(nameof(notificationToAdminService)); // Initialize notification service
-
-            _markdownParserService = markdownParserService ?? throw new ArgumentNullException(nameof(markdownParserService)); // Initialize markdown parser service
-            // Set up the session file path for WTelegramClient's custom session management.
-            _sessionPath = Path.Combine(AppContext.BaseDirectory, _settings.SessionPath ?? "telegram_user.session");
+            _useChannelForDispatch = useChannelForDispatch;
+            _notifToAdmin = notificationToAdminService ?? throw new ArgumentNullException(nameof(notificationToAdminService));
+            _markdownParserService = markdownParserService ?? throw new ArgumentNullException(nameof(markdownParserService));
             _adviceService = adviceService;
-            // Ensure the directory for the session file exists.
-            string? sessionDir = Path.GetDirectoryName(_sessionPath);
-            if (!string.IsNullOrEmpty(sessionDir) && !Directory.Exists(sessionDir))
+
+            // --- FIX: Robust Session Path Logic ---
+            string defaultPath = Path.Combine(AppContext.BaseDirectory, _settings.SessionPath ?? "telegram_user.session");
+            string? dir = Path.GetDirectoryName(defaultPath);
+
+            // Check write permission by trying to create a dummy file
+            bool isWritable = false;
+            try
             {
-                _logger.LogInformation("Creating session directory: {SessionDirectory}", sessionDir);
-                _ = Directory.CreateDirectory(sessionDir);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    string dummyPath = Path.Combine(dir, ".write_test_" + Guid.NewGuid());
+                    using (File.Create(dummyPath, 1, FileOptions.DeleteOnClose)) { }
+                    isWritable = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Permission check failed for path '{Path}': {Message}", defaultPath, ex.Message);
+                isWritable = false;
             }
 
-            // Configure WTelegramClient's internal logging to use Microsoft.Extensions.Logging.
+            if (isWritable)
+            {
+                _sessionPath = defaultPath;
+                _logger.LogInformation("Session file will be stored at: {Path}", _sessionPath);
+            }
+            else
+            {
+                // Fallback to Temp directory if App directory is read-only (common in Docker)
+                string fallbackPath = Path.Combine(Path.GetTempPath(), Path.GetFileName(defaultPath));
+                _logger.LogWarning("⚠️ Write permission denied for '{DefaultPath}'. Falling back to system temp directory: '{FallbackPath}'", defaultPath, fallbackPath);
+                _sessionPath = fallbackPath;
+            }
+            // ---------------------------------------
+
+            // Configure WTelegramClient's internal logging
             WTelegram.Helpers.Log = (level, message) =>
             {
                 LogLevel msLevel = level switch
@@ -126,55 +152,50 @@ namespace Infrastructure.Services
                     4 => Microsoft.Extensions.Logging.LogLevel.Error,
                     _ => Microsoft.Extensions.Logging.LogLevel.None,
                 };
+                // Avoid spamming logs with basic info unless debugging
+                if (msLevel >= Microsoft.Extensions.Logging.LogLevel.Warning || _logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                {
+                    _logger.Log(msLevel, "[WTelegram] {Message}", message);
+                }
             };
 
-            // Define custom session loader delegate for WTelegramClient.
+            // Define custom session loader
             byte[]? startSessionLoader()
             {
                 _logger.LogTrace("Custom session loader: Attempting to load session from {SessionPath}...", _sessionPath);
                 if (!File.Exists(_sessionPath))
                 {
-                    _logger.LogDebug("Custom session loader: Session file {SessionPath} does not exist. Returning null (empty session).", _sessionPath);
-                    return null; // Return null if no session file exists, WTelegramClient will create a new session.
+                    _logger.LogDebug("Custom session loader: Session file {SessionPath} does not exist. Returning null.", _sessionPath);
+                    return null;
                 }
                 try
                 {
                     byte[] data = File.ReadAllBytes(_sessionPath);
-                    _logger.LogInformation("Custom session loader: Successfully loaded {BytesRead} bytes from {SessionPath}.", data.Length, _sessionPath);
+                    _logger.LogInformation("Custom session loader: Successfully loaded {BytesRead} bytes.", data.Length);
                     return data;
                 }
                 catch (Exception ex)
                 {
-                    // Log the cryptographic error specifically
-                    _logger.LogError(ex, "Custom session loader: Error reading or decrypting session file {SessionPath}. This usually indicates file corruption or an incorrect API hash/ID. Attempting to delete corrupt file to force relogin.", _sessionPath);
-                    try
-                    {
-                        File.Delete(_sessionPath);
-                        _logger.LogInformation("Successfully deleted corrupt session file {SessionPath}. A new login will be required.", _sessionPath);
-                    }
-                    catch (Exception deleteEx)
-                    {
-                        _logger.LogError(deleteEx, "Failed to delete corrupt session file {SessionPath}. Manual intervention might be required.", _sessionPath);
-                    }
-                    return null; // Return null to signal WTelegramClient to start a new session (triggers relogin).
+                    _logger.LogError(ex, "Custom session loader: Error reading session file {SessionPath}. Deleting corrupt file.", _sessionPath);
+                    try { File.Delete(_sessionPath); } catch { }
+                    return null;
                 }
             }
 
-            // Define custom session saver delegate for WTelegramClient.
+            // Define custom session saver
             void saveSessionAction(byte[] bytes)
             {
-                _logger.LogTrace("Custom session saver: Attempting to save {BytesLength} bytes to {SessionPath}...", bytes.Length, _sessionPath);
+                _logger.LogTrace("Custom session saver: Saving {BytesLength} bytes to {SessionPath}...", bytes.Length, _sessionPath);
                 try
                 {
-                    // Use a temporary file and rename to ensure atomic write and data integrity.
                     string tempPath = _sessionPath + ".tmp";
                     File.WriteAllBytes(tempPath, bytes);
-                    File.Move(tempPath, _sessionPath, overwrite: true); // Overwrite existing session file
-                    _logger.LogInformation("Custom session saver: Successfully saved {BytesLength} bytes to {SessionPath}.", bytes.Length, _sessionPath);
+                    File.Move(tempPath, _sessionPath, overwrite: true);
+                    _logger.LogInformation("Custom session saver: Saved successfully.");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Custom session saver: Error writing to session file {SessionPath}. Data might not be persisted.", _sessionPath);
+                    _logger.LogError(ex, "Custom session saver: Failed to save session to {SessionPath}.", _sessionPath);
                 }
             }
 
@@ -182,20 +203,12 @@ namespace Infrastructure.Services
             {
                 _client = new WTelegram.Client(ConfigProvider, startSessionLoader(), saveSessionAction);
             }
-            catch (Exception ex) // Catch the specific exception for better logging.
+            catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create WTelegram.Client. This is expected if the feature is disabled via configuration. Check ApiId/ApiHash if this is unintentional.");
-
-                // THE FIX: Throw a new exception to HALT the constructor immediately.
-                // This prevents any further code in the constructor from running with a null _client.
-                // We include the original exception ('ex') as an "inner exception" to preserve all details.
-                throw new InvalidOperationException("WTelegram.Client could not be initialized. The service cannot be constructed.", ex);
+                _logger.LogError(ex, "Failed to create WTelegram.Client.");
+                throw new InvalidOperationException("WTelegram.Client could not be initialized.", ex);
             }
 
-            // The code will ONLY reach this point if the 'try' block succeeded and _client is NOT null.
-
-            // Subscribe to WTelegramClient's OnUpdates event to process incoming updates.
-            // This is now safe to do without a separate try-catch block because we know _client is valid.
             _client.OnUpdates += async updates =>
             {
                 if (updates is TL.UpdatesBase updatesBase)
@@ -203,92 +216,35 @@ namespace Infrastructure.Services
                     await HandleUpdatesBaseAsync(updatesBase);
                 }
             };
+
             try
             {
-                // Start a periodic timer for cache cleanup.
-                _cacheCleanupTimer = new System.Threading.Timer(
-                      CacheCleanup,
-                      null,
-                      (int)_cacheCleanupInterval.TotalMilliseconds,
-                      (int)_cacheCleanupInterval.TotalMilliseconds
-                  );
-                _logger.LogInformation("Started cache cleanup timer with interval {IntervalMinutes} minutes.", _cacheCleanupInterval.TotalMinutes);
-
+                _cacheCleanupTimer = new System.Threading.Timer(CacheCleanup, null, (int)_cacheCleanupInterval.TotalMilliseconds, (int)_cacheCleanupInterval.TotalMilliseconds);
             }
-            catch
-            {
-                _logger.LogError("Failed to start cache cleanup timer.");
-            }
+            catch { _logger.LogError("Failed to start cache cleanup timer."); }
 
-            // Configure Polly for resilience (retry policy for network and specific RPC errors).
+            // Configure Polly
             _resiliencePipeline = new ResiliencePipelineBuilder()
-        .AddRetry(new RetryStrategyOptions
-        {
-            ShouldHandle = new PredicateBuilder()
-                .Handle<HttpRequestException>()
-                // <<< CHANGE: Added to handle transient network I/O errors.
-                // This directly addresses the critical IOException seen in the logs.
-                .Handle<IOException>()
-                .Handle<RpcException>(rpcEx =>
+                .AddRetry(new RetryStrategyOptions
                 {
-                    // Server-side errors (5xx) are often transient and worth retrying.
-                    if (rpcEx.Code is >= 500 and < 600)
+                    ShouldHandle = new PredicateBuilder()
+                        .Handle<HttpRequestException>()
+                        .Handle<IOException>()
+                        .Handle<RpcException>(rpcEx => rpcEx.Code is >= 500 and < 600 || rpcEx.Message.Contains("FLOOD_WAIT") || rpcEx.Message.Contains("TOO_MANY_REQUESTS")),
+                    DelayGenerator = args =>
                     {
-                        _logger.LogWarning(rpcEx, "Polly: Retrying RPC error {RpcCode} ({RpcMessage}) as it's a server-side error.", rpcEx.Code, rpcEx.Message);
-                        return true;
-                    }
-                    // Rate-limiting and flood control errors are explicitly retry-able.
-                    if (rpcEx.Message.Contains("TOO_MANY_REQUESTS", StringComparison.OrdinalIgnoreCase) ||
-                        rpcEx.Message.Contains("FLOOD_WAIT_", StringComparison.OrdinalIgnoreCase))
+                        int attempt = args.AttemptNumber;
+                        return attempt < _retryDelays.Length ? ValueTask.FromResult<TimeSpan?>(_retryDelays[attempt]) : ValueTask.FromResult<TimeSpan?>(null);
+                    },
+                    MaxRetryAttempts = _retryDelays.Length,
+                    OnRetry = args =>
                     {
-                        // For FLOOD_WAIT, we can be smarter. If the wait time is excessive, we should not retry.
-                        if (rpcEx.Message.StartsWith("FLOOD_WAIT_") &&
-                            int.TryParse(rpcEx.Message["FLOOD_WAIT_".Length..], out int seconds))
-                        {
-                            // Failsafe: If Telegram requests a wait time longer than our max delay, abort.
-                            if (seconds > _retryDelays[^1].TotalSeconds * 2)
-                            {
-                                _logger.LogCritical(rpcEx, "Polly: Encountered a FLOOD_WAIT of {Seconds}s, which greatly exceeds max configured retry delay. Aborting retries for this specific error to prevent resource exhaustion.", seconds);
-                                return false;
-                            }
-                            _logger.LogWarning(rpcEx, "Polly: Retrying FLOOD_WAIT of {Seconds}s.", seconds);
-                            return true;
-                        }
-                        _logger.LogWarning(rpcEx, "Polly: Retrying TOO_MANY_REQUESTS or unknown FLOOD_WAIT type.");
-                        return true;
+                        _logger.LogWarning("Polly Retry: Attempt {Attempt} failed. Retrying...", args.AttemptNumber + 1);
+                        return default;
                     }
-                    // Any other RpcException is considered non-transient (e.g., auth errors, bad requests) and should fail immediately.
-                    return false;
-                }),
-            DelayGenerator = args =>
-            {
-                int retryAttempt = args.AttemptNumber;
-                if (retryAttempt < _retryDelays.Length)
-                {
-                    TimeSpan delay = _retryDelays[retryAttempt];
-                    // Note: The original log message was slightly confusing. Simplified for clarity.
-                    _logger.LogWarning(args.Outcome.Exception, "Polly Retry: Attempt {AttemptNumber} for '{OperationKey}' failed with {ExceptionType}. Delaying for {Delay}ms.",
-                        retryAttempt + 1, args.Context.OperationKey ?? "N/A", args.Outcome.Exception?.GetType().Name ?? "N/A", delay.TotalMilliseconds);
-                    return ValueTask.FromResult<TimeSpan?>(delay);
-                }
-                _logger.LogWarning("Polly Retry: Max retries ({MaxRetries}) reached for operation '{OperationKey}'. No further retries will be attempted.",
-                    _retryDelays.Length, args.Context.OperationKey ?? "N/A");
-                return ValueTask.FromResult<TimeSpan?>(null); // Stop retrying
-            },
-            MaxRetryAttempts = _retryDelays.Length,
-            OnRetry = args => // OnRetry is useful for metrics or state changes, logging is often better in DelayGenerator
-            {
-                // Logging is already handled well in DelayGenerator, so this could be simplified or used for other side-effects.
-                // For now, keeping it as is for consistency with the original code.
-                _logger.LogTrace(args.Outcome.Exception,
-                    "Polly OnRetry: Triggered for '{OperationKey}' on attempt {AttemptNumber}.",
-                    args.Context.OperationKey ?? "N/A", args.AttemptNumber + 1);
-                return default;
-            },
-        })
-        .Build();
+                })
+                .Build();
 
-            // LEVEL 10: Start channel pipeline if enabled
             if (_useChannelForDispatch)
             {
                 StartUpdateChannelPipeline();
@@ -532,15 +488,26 @@ namespace Infrastructure.Services
         /// </summary>
         private string? ConfigProvider(string key)
         {
-            return key switch
+            switch (key)
             {
-                "api_id" => _settings.ApiId.ToString(),
-                "api_hash" => _settings.ApiHash,
-                "phone_number" => _settings.PhoneNumber,
-                "verification_code" => AskCode("Telegram asks for verification code: ", _settings.VerificationCodeSource),
-                "password" => AskCode("Telegram asks for 2FA password (if enabled): ", _settings.TwoFactorPasswordSource),
-                _ => null
-            };
+                case "api_id":
+                    return _settings.ApiId.ToString();
+                case "api_hash":
+                    return _settings.ApiHash;
+                case "phone_number":
+                    // Fix: Explicitly check and log if phone number is missing
+                    if (string.IsNullOrWhiteSpace(_settings.PhoneNumber))
+                    {
+                        _logger.LogCritical("❌ Configuration Error: 'phone_number' is requested by Telegram but is missing in settings. Please set 'TelegramUserApi:PhoneNumber' in appsettings.json.");
+                    }
+                    return _settings.PhoneNumber;
+                case "verification_code":
+                    return AskCode("Telegram asks for verification code: ", _settings.VerificationCodeSource);
+                case "password":
+                    return AskCode("Telegram asks for 2FA password (if enabled): ", _settings.TwoFactorPasswordSource);
+                default:
+                    return null;
+            }
         }
 
         /// <summary>
