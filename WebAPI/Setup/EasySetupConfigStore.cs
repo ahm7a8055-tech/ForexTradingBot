@@ -16,14 +16,26 @@ namespace Infrastructure.Configuration
 
             try
             {
-                var dbPath = Path.Combine(basePath, "easysetup_config.db");
+                // --- FIX: Smart Permission Handling ---
+                string storageDir = basePath;
 
-                // FIX: Ensure the directory exists before SQLite tries to open the file
-                var directory = Path.GetDirectoryName(dbPath);
-                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                // 1. Check if we have write access to the base path (usually /app)
+                if (!IsDirectoryWritable(storageDir))
                 {
-                    Directory.CreateDirectory(directory);
+                    // 2. If not, fallback to the system Temp folder (usually /tmp)
+                    string tempPath = Path.GetTempPath();
+                    _logger?.LogWarning("⚠️ Write permission denied for '{BasePath}'. Falling back to system temp directory: '{TempPath}' for EasySetup database.", basePath, tempPath);
+                    storageDir = tempPath;
                 }
+
+                // 3. Ensure directory exists
+                if (!Directory.Exists(storageDir))
+                {
+                    Directory.CreateDirectory(storageDir);
+                }
+
+                var dbPath = Path.Combine(storageDir, "easysetup_config.db");
+                // ---------------------------------------
 
                 _connectionString = $"Data Source={dbPath};Cache=Shared;Mode=ReadWriteCreate";
 
@@ -33,8 +45,45 @@ namespace Infrastructure.Configuration
             }
             catch (Exception ex)
             {
-                _logger?.LogCritical(ex, "Failed to initialize EasySetupConfigStore.");
-                throw;
+                // Log critical error but DO NOT THROW.
+                // Throwing here crashes the application startup.
+                // Instead, fallback to an In-Memory database so the app can at least start.
+                _logger?.LogCritical(ex, "Failed to initialize EasySetupConfigStore. Falling back to In-Memory (non-persistent) mode.");
+
+                _connectionString = "Data Source=:memory:;Mode=Memory;Cache=Shared";
+                try
+                {
+                    EnsureSchema();
+                }
+                catch
+                {
+                    // If even memory fails, suppress to allow app startup
+                }
+            }
+        }
+
+        /// <summary>
+        /// Helper to test if a directory is writable without throwing exceptions up the stack.
+        /// </summary>
+        private bool IsDirectoryWritable(string dirPath)
+        {
+            try
+            {
+                // If directory doesn't exist, try to create it
+                if (!Directory.Exists(dirPath))
+                {
+                    Directory.CreateDirectory(dirPath);
+                    return true;
+                }
+
+                // Try to create a temporary file to verify write permissions
+                string testFile = Path.Combine(dirPath, $".write_test_{Guid.NewGuid()}");
+                using (File.Create(testFile, 1, FileOptions.DeleteOnClose)) { }
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
         #endregion
