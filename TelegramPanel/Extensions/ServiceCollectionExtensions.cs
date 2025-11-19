@@ -67,24 +67,30 @@ namespace TelegramPanel.Extensions
             {
                 TelegramPanelSettings settings = serviceProvider.GetRequiredService<IOptions<TelegramPanelSettings>>().Value;
 
-                // --- FIX: Check for smoke test or invalid token to prevent crash ---
+                // --- FIX: Robust Token Handling for CI/CD ---
+                string token = settings.BotToken;
                 bool isSmokeTest = configuration.GetValue<bool>("IsSmokeTest");
-                bool isValidToken = !string.IsNullOrWhiteSpace(settings.BotToken) && !settings.BotToken.Contains("123456");
 
-                if (!isValidToken)
+                // Check if token is clearly invalid (empty, placeholder, or missing colon separator)
+                bool isInvalidToken = string.IsNullOrWhiteSpace(token)
+                                      || token.Contains("REPLACE")
+                                      || !token.Contains(":");
+
+                if (isInvalidToken)
                 {
                     if (isSmokeTest)
                     {
-                        Log.Warning("⚠️ [SmokeTest] Invalid Bot Token detected. Using a dummy/disabled TelegramBotClient to allow startup.");
-                        // Return a dummy client with a fake token that won't be used because services are disabled
-                        return new TelegramBotClient("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789");
+                        Log.Warning("⚠️ [SmokeTest] Invalid Bot Token detected ('{Token}'). Using a syntactically valid dummy token to allow startup.", token);
+                        // Use a token that passes TelegramBotClient's regex validation but won't work online
+                        // Format: 123456:ABC-DEF1234567890-abcdef1234567
+                        return new TelegramBotClient("123456789:ABC-DEF1234567890-abcdef1234567");
                     }
 
-                    // In production, this IS critical
-                    throw new ArgumentNullException(nameof(settings.BotToken), "TelegramPanel: Bot Token is not configured.");
+                    // In production, we MUST crash if the token is invalid
+                    throw new ArgumentException($"TelegramPanel: Bot Token is invalid or missing. Value: '{token}'", nameof(settings.BotToken));
                 }
 
-                return new TelegramBotClient(settings.BotToken);
+                return new TelegramBotClient(token);
             });
 
 
