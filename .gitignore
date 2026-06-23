@@ -363,3 +363,9 @@ MigrationBackup/
 FodyWeavers.xsd
 /.tmp.driveupload
 /_site
+/WebAPI/easysetup_config.db
+/WebAPI/local_forex_bot.db
+/WebAPI/keys/key-ad58a4e1-acbd-47d7-b739-42351595bbb5.xml
+/WebAPI/Data Source=local_forex_bot.db
+/WebAPI/easysetup_config.db
+/WebAPI/easysetup_config.db
