@@ -43,7 +43,7 @@ namespace Domain.Entities
 
         #region Message & Details
         [Required]
-        [MaxLength(500)]
+        [Column(TypeName = "TEXT")]
         public string Message { get; set; } = string.Empty;
 
         [Column(TypeName = "TEXT")]
