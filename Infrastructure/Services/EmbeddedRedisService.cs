@@ -16,7 +16,9 @@ namespace Infrastructure.Services
     {
         public const string SectionName = "EmbeddedRedis";
         public string ServerExecutablePath { get; set; } = "redis-server/redis-server.exe";
-        public string ConnectionString { get; set; } = "localhost:6379";
+        public string ConnectionString { get; set; } =
+     Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING")
+     ?? "localhost:6379";
         public int StartupPingTimeoutSeconds { get; set; } = 5;
     }
 
